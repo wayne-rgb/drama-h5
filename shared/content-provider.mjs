@@ -104,6 +104,11 @@ export const provider = {
       throw new Error("分集数据异常");
     return { ...card(api.itemToCard(series)), id, episodes };
   },
+  async playbackMetadata(seriesId, episodeId) {
+    if (!/^\d+$/.test(String(seriesId)) || !/^\d+$/.test(String(episodeId)))
+      throw new Error("剧集或分集标识无效");
+    return api.routerData(`${SITE}/player/${seriesId}/${episodeId}`);
+  },
   async stream(id, fresh = false) {
     if (fresh) {
       api.streamCache.delete(`${id}|auto`);

@@ -191,44 +191,72 @@ let rankPageCache = new Map();
 const vidToSeriesMap = new Map();
 const webStreamCache = new Map();
 
-// 获取官方 Web 端原生 720P 高兼容 H.264 视频直链
-async function getOfficialWeb720pStream(seriesId, vid) {
-  if (!seriesId || !vid) return null;
+// 读取官方播放页提供的公开媒体，校验剧集与分集对应关系。
+async function getOfficialWebPlayback(seriesId, vid) {
+  if (!/^\d+$/.test(String(seriesId)) || !/^\d+$/.test(String(vid))) return null;
   const cacheKey = `${seriesId}_${vid}`;
   const cached = webStreamCache.get(cacheKey);
-  if (cached && Date.now() - cached.time < 15 * 60 * 1000) {
-    return cached.url;
+  if (cached && Date.now() - cached.time < 3 * 60 * 1000) {
+    return cached.value;
   }
+  const data = await coreProvider.playbackMetadata(seriesId, vid);
+  const player = data?.loaderData?.["player_(series_id)/(vid)/page"] || data?.loaderData?.["player_(series_id)/page"];
+  const publicVideo = player?.publicVideoSeo;
+  let value = null;
+  if (publicVideo?.available === true && String(publicVideo.seriesId) === String(seriesId) && String(publicVideo.itemId) === String(vid)) {
+    value = { url: `https://hongguoduanju.com/video/public/${vid}/360p.mp4`, key: "360P", qualityNum: 360, codec: "H.264", label: "360P 流畅" };
+  } else if (!player?.protectedPlayback && /^https:\/\//.test(player?.video_player_info?.main_url || "")) {
+    value = { url: player.video_player_info.main_url, key: "720P", qualityNum: 720, codec: "H.264", label: "720P 高清" };
+  }
+  if (value) {
+    while (webStreamCache.size >= 100) webStreamCache.delete(webStreamCache.keys().next().value);
+    webStreamCache.set(cacheKey, { time: Date.now(), value });
+  }
+  return value;
+}
 
-  const urlsToTry = [
-    `https://hongguoduanju.com/player/${seriesId}/${vid}`,
-    `https://hongguoduanju.com/player/${seriesId}?vid=${vid}`,
-    `https://hongguoduanju.com/player/${seriesId}`
-  ];
-
-  for (const url of urlsToTry) {
-    try {
-      const res = await axios.get(url, {
-        timeout: 6000,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-      });
-      const match = res.data.match(/_ROUTER_DATA\s*=\s*(\{[\s\S]*?\});/);
-      if (match) {
-        const data = JSON.parse(match[1]);
-        const p = data?.loaderData?.["player_(series_id)/(vid)/page"] || data?.loaderData?.["player_(series_id)/page"];
-        const mainUrl = p?.video_player_info?.main_url;
-        if (mainUrl) {
-          webStreamCache.set(cacheKey, { time: Date.now(), url: mainUrl });
-          return mainUrl;
-        }
-      }
-    } catch (err) {
-      // 尝试下一个 URL
+// 原样代理字节范围，避免转发源站 Cookie 和逐跳头；浏览器中断时释放上游连接。
+async function proxyWebVideo(req, res, playback) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  res.once("close", abort);
+  try {
+    const headers = { "Referer": "https://hongguoduanju.com/", "Accept-Encoding": "identity" };
+    if (req.headers.range) headers.Range = req.headers.range;
+    const upstream = await axios({
+      method: req.method === "HEAD" ? "HEAD" : "GET", url: playback.url,
+      responseType: "stream", headers, signal: controller.signal,
+      timeout: 20000, validateStatus: () => true,
+    });
+    if (res.destroyed) { upstream.data.destroy(); return; }
+    if (![200, 206, 416].includes(upstream.status)) {
+      upstream.data.destroy();
+      webStreamCache.clear();
+      return json(res, { error: "视频源暂不可用，请重试" }, 502);
     }
+    if (upstream.status !== 416 && !/^video\//i.test(upstream.headers["content-type"] || "")) {
+      upstream.data.destroy();
+      return json(res, { error: "视频源未返回有效媒体" }, 502);
+    }
+    const responseHeaders = {
+      "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges, X-Video-Quality",
+      "X-Video-Quality": playback.key,
+    };
+    for (const name of ["content-range", "content-length"]) {
+      if (upstream.headers[name] !== undefined) responseHeaders[name] = upstream.headers[name];
+    }
+    if (upstream.status === 416) responseHeaders["content-length"] = "0";
+    res.writeHead(upstream.status, responseHeaders);
+    if (req.method === "HEAD" || upstream.status === 416) { upstream.data.destroy(); res.end(); return; }
+    upstream.data.once("error", () => res.destroy());
+    upstream.data.pipe(res);
+  } catch (error) {
+    if (res.destroyed || controller.signal.aborted) return;
+    if (res.headersSent) res.destroy();
+    else json(res, { error: "视频加载超时或连接中断，请重试" }, 502);
   }
-  return null;
 }
 
 
@@ -720,6 +748,14 @@ const server = http.createServer(async (req, res) => {
       const list = [];
       const seenKeys = new Set();
 
+      try {
+        const playback = await getOfficialWebPlayback(seriesId, episodeId);
+        if (playback) return json(res, {
+          episodeId, defaultQuality: playback.key,
+          qualities: [{ key: playback.key, label: playback.label, qualityNum: playback.qualityNum, codec: playback.codec, rawKey: "official_web", isDefault: true }],
+        });
+      } catch (error) { console.warn("[网页播放信息读取失败]:", error.message); }
+
       const labelMap = {
         2160: "4K 超高清",
         1440: "2K 超清",
@@ -767,30 +803,24 @@ const server = http.createServer(async (req, res) => {
       // 如果 720P 在 App 端属于 bytevc2 被过滤，但官方 Web 网页端拥有原生可播放的 720P H.264，则由官方 Web 补充
       if (!seenKeys.has("720P") && seriesId) {
         try {
-          const webUrl = await getOfficialWeb720pStream(seriesId, episodeId);
-          if (webUrl) {
-            seenKeys.add("720P");
+          const playback = await getOfficialWebPlayback(seriesId, episodeId);
+          if (playback && !seenKeys.has(playback.key)) {
+            seenKeys.add(playback.key);
             list.push({
-              key: "720P",
-              label: "720P 高清",
-              qualityNum: 720,
-              codec: "H.264",
-              rawKey: "web_720p",
+              key: playback.key,
+              label: playback.label,
+              qualityNum: playback.qualityNum,
+              codec: playback.codec,
+              rawKey: "official_web",
               isDefault: false,
             });
           }
         } catch (_) {}
       }
 
-      // 兜底保障
+      // 没有真实画质时返回失败，不能构造不存在的高清选项。
       if (list.length === 0) {
-        list.push({
-          key: "1080P",
-          label: "1080P 超清",
-          qualityNum: 1080,
-          codec: "HEVC",
-          isDefault: true,
-        });
+        return json(res, { error: "当前剧集没有可用的视频源，请稍后重试" }, 502);
       } else {
         // 按分辨率从高到低排序，最高清晰度设为默认
         list.sort((a, b) => b.qualityNum - a.qualityNum);
@@ -808,7 +838,7 @@ const server = http.createServer(async (req, res) => {
     const pMatch = /^\/api\/episodes\/(\d+)\/play$/.exec(pathname);
     if (pMatch) {
       const episodeId = pMatch[1];
-      const quality = u.searchParams.get("quality") || "1080P";
+      const quality = u.searchParams.get("quality") || "auto";
       const seriesId = u.searchParams.get("seriesId") || u.searchParams.get("series_id") || vidToSeriesMap.get(episodeId) || "";
       const sParam = seriesId ? `&seriesId=${encodeURIComponent(seriesId)}` : "";
       return json(res, {
@@ -821,8 +851,17 @@ const server = http.createServer(async (req, res) => {
     const sMatch = /^\/api\/episodes\/(\d+)\/stream$/.exec(pathname);
     if (sMatch) {
       const episodeId = sMatch[1];
-      const quality = u.searchParams.get("quality") || "1080P";
+      const quality = u.searchParams.get("quality") || "auto";
       const seriesId = u.searchParams.get("seriesId") || u.searchParams.get("series_id") || vidToSeriesMap.get(episodeId);
+
+      try {
+        const playback = await getOfficialWebPlayback(seriesId, episodeId);
+        if (playback) {
+          if (quality !== playback.key && quality !== "auto")
+            return json(res, { error: "当前视频不支持所选画质", availableQuality: playback.key }, 400);
+          return await proxyWebVideo(req, res, playback);
+        }
+      } catch (error) { console.warn("[网页视频读取失败]:", error.message); }
 
       // 分支 A: 用户选择 720P 时，若官方 App 端该流属于 bytevc2（不可解码），自动优先调度官方 Web 端原生 H.264 零报错直链
       let preferWeb720p = false;
@@ -846,28 +885,9 @@ const server = http.createServer(async (req, res) => {
 
       if (preferWeb720p && seriesId) {
         try {
-          const webUrl = await getOfficialWeb720pStream(seriesId, episodeId);
-          if (webUrl) {
-            const headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Referer": "https://hongguoduanju.com/",
-            };
-            if (req.headers["range"]) headers["Range"] = req.headers["range"];
-            const streamRes = await axios({
-              method: "GET",
-              url: webUrl,
-              responseType: "stream",
-              headers,
-              timeout: 15000,
-              validateStatus: () => true,
-            });
-            res.writeHead(streamRes.status, {
-              ...streamRes.headers,
-              "Content-Type": "video/mp4",
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-            });
-            return streamRes.data.pipe(res);
+          const playback = await getOfficialWebPlayback(seriesId, episodeId);
+          if (playback) {
+            return await proxyWebVideo(req, res, playback);
           }
         } catch (err) {
           console.warn("[Web 720p Stream Error]:", err.message);
@@ -930,28 +950,9 @@ const server = http.createServer(async (req, res) => {
       // 如果解密引擎不可用且用户请求的是 720P，降级尝试官方 Web 端流
       if (seriesId) {
         try {
-          const webUrl = await getOfficialWeb720pStream(seriesId, episodeId);
-          if (webUrl) {
-            const headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Referer": "https://hongguoduanju.com/",
-            };
-            if (req.headers["range"]) headers["Range"] = req.headers["range"];
-            const streamRes = await axios({
-              method: "GET",
-              url: webUrl,
-              responseType: "stream",
-              headers,
-              timeout: 15000,
-              validateStatus: () => true,
-            });
-            res.writeHead(streamRes.status, {
-              ...streamRes.headers,
-              "Content-Type": "video/mp4",
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-            });
-            return streamRes.data.pipe(res);
+          const playback = await getOfficialWebPlayback(seriesId, episodeId);
+          if (playback) {
+            return await proxyWebVideo(req, res, playback);
           }
         } catch (err) {
           console.warn("[Web Stream Fallback Error]:", err.message);

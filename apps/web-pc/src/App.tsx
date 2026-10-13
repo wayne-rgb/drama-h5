@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
+import { readPlaybackLocation, playbackLocation } from "./playback-location";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -183,6 +184,7 @@ export default function App() {
   const [streamShowQualityMenu, setStreamShowQualityMenu] = useState<boolean>(false);
   const [streamQualities, setStreamQualities] = useState<VideoQualityItem[]>([]);
   const [streamQualitiesLoading, setStreamQualitiesLoading] = useState<boolean>(false);
+  const [streamQualityEpisodeId, setStreamQualityEpisodeId] = useState("");
   const [streamIsDraggingProgress, setStreamIsDraggingProgress] = useState<boolean>(false);
   const streamQualitySwitchTimeRef = useRef<number | null>(null);
   const streamVideoRef = useRef<HTMLVideoElement>(null);
@@ -205,7 +207,14 @@ export default function App() {
     setLoading(false); setStreamDetailLoading(false);
   };
   const setTab = (next: typeof tab) => { invalidatePlaybackRequests(); setTabState(next); };
-  const setActiveSeries = (next: Detail | null) => { if (!next) invalidatePlaybackRequests(); setActiveSeriesState(next); };
+  const setActiveSeries = (next: Detail | null) => {
+    if (!next) {
+      invalidatePlaybackRequests();
+      window.history.replaceState(null, "", playbackLocation(window.location.href));
+    }
+    setActiveSeriesState(next);
+  };
+  const openSeriesRef = useRef<typeof handleSelectSeries>();
   useEffect(() => () => { detailRequest.current++; streamDetailRequest.current++; navigationGeneration.current++; }, []);
 
   const [favSubTab, setFavSubTab] = useState<"favorites" | "history">("favorites");
@@ -246,6 +255,8 @@ export default function App() {
   });
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [qualitiesLoading, setQualitiesLoading] = useState(false);
+  const [qualityEpisodeId, setQualityEpisodeId] = useState("");
+  const [qualityRetry, setQualityRetry] = useState(0);
 
   // 🌟 同类好剧推荐状态 (任务 01: 猜你喜欢 & 任务 02: 换一批)
   const [relatedSeries, setRelatedSeries] = useState<Series[]>([]);
@@ -312,6 +323,15 @@ export default function App() {
     setFavorites(getFavorites());
     void refreshHistory();
     setSearchHistoryList(getSearchHistory());
+    const location = readPlaybackLocation(window.location.href);
+    if (location.seriesId) void openSeriesRef.current?.({ id: location.seriesId }, undefined, location.episodeId);
+    const back = () => {
+      const location = readPlaybackLocation(window.location.href);
+      if (location.seriesId) void openSeriesRef.current?.({ id: location.seriesId }, undefined, location.episodeId);
+      else setActiveSeries(null);
+    };
+    window.addEventListener("popstate", back);
+    return () => window.removeEventListener("popstate", back);
   }, []);
 
   const refreshHistory = async () => {
@@ -393,13 +413,14 @@ export default function App() {
     const watch = streamWatchRef.current, video = streamVideoRef.current;
     if (tab !== "recommend" || activeSeries || !video) {watch.pause();return;}
     return bindRecommendationPlayback(video, watch);
-  }, [tab, activeSeries, streamCurrentEpisode?.id, streamQuality]);
+  }, [tab, activeSeries, streamCurrentEpisode?.id, streamQuality, streamQualityEpisodeId, streamPlaybackAttempt]);
 
   // 🌟 PC端键盘上下键切剧 (仅在 recommend 标签且无主动播放弹窗时生效)
   useEffect(() => {
     if (tab !== "recommend" || activeSeries) return;
 
     const handleStreamKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable='true']")) return;
       if (e.key === "ArrowUp") {
         e.preventDefault();
         handleSwitchStream("prev");
@@ -411,8 +432,7 @@ export default function App() {
         const video = streamVideoRef.current;
         if (video) {
           if (video.paused) {
-            video.play().catch(() => {});
-            setStreamIsPlaying(true);
+            video.play().then(() => setStreamIsPlaying(true)).catch(() => setStreamIsPlaying(false));
           } else {
             video.pause();
             setStreamIsPlaying(false);
@@ -521,6 +541,9 @@ export default function App() {
     const session = streamFeedRef.current.id;
     streamWatchRef.current.pause();streamVideoRef.current?.pause();
     setStreamCurrentEpisode(null);setStreamDetail(null);
+    setStreamQualityEpisodeId("");setStreamQualities([]);setStreamError("");
+    setStreamEpisodeIndex(0);setStreamIsPlaying(false);
+    setStreamShowQualityMenu(false);setStreamShowSpeedMenu(false);
     if (streamWatchRef.current.active?.value.seriesId !== series.id) beginRecommendationExposure(series, session);
     try {
       setStreamDetailLoading(true);
@@ -530,39 +553,21 @@ export default function App() {
       setStreamIsLandscape(false);
       
       const detail = await api.getSeries(series.id);
+      const progress = await getServerProgress(series.id).catch(() => null);
 
       if (request !== streamDetailRequest.current) return;
       detail.contentType = series.contentType || detail.contentType;
       setStreamDetail(detail);
-      const ep = detail.episodes?.[0] || null;
-      beginHistory(detail);
+      const savedIndex = detail.episodes?.findIndex(episode => episode.id === progress?.episodeId) ?? -1;
+      const episodeIndex = savedIndex >= 0 ? progress?.completed ? (savedIndex + 1) % detail.episodes.length : savedIndex : 0;
+      const ep = detail.episodes?.[episodeIndex] || null;
+      const position = savedIndex >= 0 && !progress?.completed ? progress?.position || 0 : 0;
+      beginHistory(detail, progress || undefined);
       setPlaybackSpeed(getPlaybackPreferences().speed);setStreamPlaybackSpeed(getPlaybackPreferences().speed);
-      setStreamEpisodeIndex(0);setStreamCurrentEpisode(ep);
-      if (ep) saveProgress(series.id, ep.id, 0, {title: detail.title, cover: detail.cover, badge: detail.badge, tags: detail.tags, episodeNumber: ep.number, duration: 0});
-      setStreamIsPlaying(true);streamQualitySwitchTimeRef.current = 0;
+      setStreamEpisodeIndex(episodeIndex);setStreamCurrentEpisode(ep);
+      if (ep) saveProgress(series.id, ep.id, position, {title: detail.title, cover: detail.cover, badge: detail.badge, tags: detail.tags, episodeNumber: ep.number, duration: savedIndex >= 0 && !progress?.completed ? progress?.duration || 0 : 0});
+      setStreamIsPlaying(false);streamQualitySwitchTimeRef.current = position;
 
-      // 加载官方清晰度
-      if (ep) {
-        setStreamQualitiesLoading(true);
-        api.getVideoQualities(ep.id, series.id)
-          .then((res) => {
-            if (request !== streamDetailRequest.current) return;
-            if (res.qualities && res.qualities.length > 0) {
-              setStreamQualities(res.qualities);
-              const pref = getPlaybackPreferences().quality;
-              const hasPref = pref && res.qualities.some((q) => q.key === pref);
-              if (hasPref) {
-                setStreamQuality(pref);
-              } else if (res.defaultQuality) {
-                setStreamQuality(res.defaultQuality);
-              } else {
-                setStreamQuality(res.qualities[0].key);
-              }
-            }
-          })
-          .catch(() => {})
-          .finally(() => { if (request === streamDetailRequest.current) setStreamQualitiesLoading(false); });
-      }
     } catch (err) {
       if (request === streamDetailRequest.current) {setStreamError("剧集加载失败，请重试");console.warn("加载流剧集详情失败:", err);}
     } finally {
@@ -573,17 +578,36 @@ export default function App() {
   streamDetailLoaderRef.current = loadStreamDetail;
 
   // 推荐流中无缝播放当前短剧的下一集
+  useEffect(() => {
+    if (!streamCurrentEpisode || !streamDetail) return;
+    let active = true;
+    setStreamQualityEpisodeId(""); setStreamQualities([]); setStreamQualitiesLoading(true);
+    setStreamError(""); setStreamIsPlaying(false);
+    api.getVideoQualities(streamCurrentEpisode.id, streamDetail.id).then(response => {
+      if (!active) return;
+      if (!response.qualities?.length) throw new Error("视频画质不可用");
+      const preferred = getPlaybackPreferences().quality;
+      const quality = response.qualities.some(item => item.key === preferred) ? preferred : response.defaultQuality || response.qualities[0].key;
+      setStreamQualities(response.qualities); setStreamQuality(quality);
+      setStreamQualityEpisodeId(streamCurrentEpisode.id);
+    }).catch(() => { if (active) setStreamError("当前剧集没有可用的视频源，请稍后重试"); })
+      .finally(() => { if (active) setStreamQualitiesLoading(false); });
+    return () => { active = false; };
+  }, [streamCurrentEpisode?.id, streamDetail?.id, streamPlaybackAttempt]);
+
   const handleStreamNextEpisode = (automatic = false) => {
     if (!streamDetail || !streamDetail.episodes || streamDetail.episodes.length === 0) return;
     streamWatchRef.current.pause();
     const nextIdx = streamEpisodeIndex + 1;
     if (nextIdx < streamDetail.episodes.length) {
       const nextEp = streamDetail.episodes[nextIdx];
+      streamQualitySwitchTimeRef.current = 0;
       setStreamEpisodeIndex(nextIdx);
       setStreamCurrentEpisode(nextEp);
       setStreamCurrentTime(0);
+      setStreamDuration(0);
       setStreamIsPlaying(true);
-      showToast("已自动连播：第{{number}}集", { number: nextEp.number || nextIdx + 1 });
+      if (automatic) showToast("已自动连播：第{{number}}集", { number: nextEp.number || nextIdx + 1 });
     } else {
       // 当前短剧全集播放完毕，自动切到推荐流下一部短剧
       showToast("本剧已连播完毕，自动为您切换下一部精选短剧");
@@ -715,7 +739,7 @@ export default function App() {
   };
 
   // 选择短剧进入播放详情
-  const handleSelectSeries = async (series: Series, selectedProgress?: HistoryItem) => {
+  const handleSelectSeries = async (series: Pick<Series, "id"> & Partial<Series>, selectedProgress?: HistoryItem, requestedEpisode = "") => {
     const request = ++detailRequest.current;
     try {
       setShowSeriesEndModal(false);
@@ -729,6 +753,10 @@ export default function App() {
         if (found !== -1) initIndex = found;
       }
       if (prog?.completed && detail.episodes[initIndex]?.id === prog.episodeId && initIndex < detail.episodes.length - 1) initIndex++;
+      if (requestedEpisode) {
+        const requestedIndex = detail.episodes.findIndex(episode => episode.id === requestedEpisode);
+        if (requestedIndex >= 0) initIndex = requestedIndex;
+      }
       beginHistory(detail, prog);
       setPlaybackSpeed(getPlaybackPreferences().speed);
       setStreamPlaybackSpeed(getPlaybackPreferences().speed);
@@ -754,6 +782,7 @@ export default function App() {
       if (request === detailRequest.current) setLoading(false);
     }
   };
+  openSeriesRef.current = handleSelectSeries;
 
   // 收藏 / 取消收藏
   const handleToggleFav = (series: Series) => {
@@ -764,10 +793,18 @@ export default function App() {
 
   const currentEpisode: Episode | undefined = activeSeries?.episodes?.[currentEpisodeIndex];
   useEffect(() => {
+    if (!activeSeries || !currentEpisode) return;
+    const location = readPlaybackLocation(window.location.href);
+    const url = playbackLocation(window.location.href, activeSeries.id, currentEpisode.id);
+    if (url === window.location.href) return;
+    if (location.seriesId !== activeSeries.id) window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
+  }, [activeSeries?.id, currentEpisode?.id]);
+  useEffect(() => {
     const watch = detailWatchRef.current, video = videoRef.current;
     if (!activeSeries || !video) {watch.pause();return;}
     return bindRecommendationPlayback(video, watch);
-  }, [activeSeries, currentEpisode?.id, currentQuality]);
+  }, [activeSeries, currentEpisode?.id, currentQuality, qualityEpisodeId]);
 
   useEffect(() => {
     const snapshot = () => {
@@ -790,7 +827,7 @@ export default function App() {
       document.removeEventListener("visibilitychange", visibility);
       video?.removeEventListener("seeked", snapshot);
     };
-  }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id]);
+  }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id, qualityEpisodeId, streamQualityEpisodeId]);
 
 
   // 1. 选集切换时，从官方真实接口拉取该分集的可播放真实清晰度列表
@@ -799,6 +836,10 @@ export default function App() {
 
     let isMounted = true;
     setQualitiesLoading(true);
+    setVideoQualities([]);
+    setQualityEpisodeId("");
+    setPlaybackError("");
+    setCurrentTime(0); setDuration(0); setIsPlaying(false);
 
     api.getVideoQualities(currentEpisode.id, activeSeries?.id)
       .then((res) => {
@@ -815,9 +856,13 @@ export default function App() {
           } else {
             setCurrentQuality(res.qualities[0].key);
           }
+          setQualityEpisodeId(currentEpisode.id);
+        } else {
+          setPlaybackError("当前剧集没有可用的视频源，请稍后重试");
         }
       })
       .catch((err) => {
+        if (isMounted) setPlaybackError("当前剧集没有可用的视频源，请稍后重试");
         console.warn("加载官方画质失败:", err);
       })
       .finally(() => {
@@ -827,7 +872,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [currentEpisode?.id, activeSeries?.id]);
+  }, [currentEpisode?.id, activeSeries?.id, qualityRetry]);
 
   // 🌟 1.5 切换短剧时，自动拉取同题材推荐短剧 (任务 01: 猜你喜欢 & 任务 02: 换一批)
   useEffect(() => {
@@ -1224,8 +1269,7 @@ export default function App() {
   const handleTogglePlay = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play();
-      setIsPlaying(true);
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
@@ -1255,8 +1299,7 @@ export default function App() {
       }
     }
 
-    videoRef.current.play().catch(() => {});
-    setIsPlaying(true);
+    videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
   };
 
 
@@ -1650,13 +1693,14 @@ export default function App() {
                   isFullscreen ? "fixed inset-0 z-50 rounded-none border-none max-h-none aspect-auto w-screen h-screen" : ""
                 }`}
               >
-                {currentEpisode ? (
+                {currentEpisode && qualityEpisodeId === currentEpisode.id ? (
                   <>
                     <video
                       ref={videoRef}
                       key={currentEpisode.id}
                       src={api.getVideoStreamUrl(currentEpisode.id, currentQuality, activeSeries.id)}
                       autoPlay
+                      playsInline
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={handleLoadedMetadata}
                       onEnded={handleVideoEnded}
@@ -1675,7 +1719,7 @@ export default function App() {
                       className="w-full h-full object-contain cursor-pointer"
                     />
 
-                    {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)}</div>}
+                    {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => {qualitySwitchTimeRef.current = videoRef.current?.currentTime || 0;setQualityRetry(attempt => attempt + 1);}}>{t("重试")}</button></div>}
 
                     {/* 暂停时中央呼吸播放大按钮 */}
                     {!isPlaying && (
@@ -2062,7 +2106,9 @@ export default function App() {
                     )}
                   </>
                 ) : (
-                  <div className="text-slate-500 text-sm">{t("加载中...")}</div>
+                  <div className="text-slate-400 text-sm text-center p-4">
+                    {playbackError ? <div role="alert">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => setQualityRetry(attempt => attempt + 1)}>{t("重试")}</button></div> : t("加载中...")}
+                  </div>
                 )}
               </div>
 
@@ -2622,14 +2668,14 @@ export default function App() {
             ) : (() => {
               const currentItem = streamList[streamIndex] || streamList[0];
               const isFav = favorites.some((f) => String(f.id) === String(currentItem.id));
-              const videoStreamUrl = streamCurrentEpisode
+              const videoStreamUrl = streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id
                 ? api.getVideoStreamUrl(streamCurrentEpisode.id, undefined, currentItem.id)
                 : "";
 
               return (
-                <div className="relative w-full h-full overflow-hidden bg-black flex flex-col justify-between group">
+                <div className="relative w-full h-full overflow-clip bg-black flex flex-col justify-between group">
                   {streamError && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
-                    if (streamError === "无法播放媒体") {
+                    if (streamCurrentEpisode && (streamError === "无法播放媒体" || streamError === "当前剧集没有可用的视频源，请稍后重试")) {
                       streamQualitySwitchTimeRef.current = streamCurrentTime;
                       setStreamPlaybackAttempt(attempt => attempt + 1);
                     } else if (!streamCurrentEpisode) void loadStreamDetail(currentItem);
@@ -2649,8 +2695,7 @@ export default function App() {
                       const video = streamVideoRef.current;
                       if (!video) return;
                       if (video.paused) {
-                        video.play().catch(() => {});
-                        setStreamIsPlaying(true);
+                        video.play().then(() => setStreamIsPlaying(true)).catch(() => setStreamIsPlaying(false));
                       } else {
                         video.pause();
                         setStreamIsPlaying(false);
@@ -2665,6 +2710,7 @@ export default function App() {
                         onError={() => { setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
                         autoPlay
                         playsInline
+                        onPlaying={() => setStreamIsPlaying(true)}
                         className="w-full h-full object-contain transition-all duration-300"
                         onLoadedMetadata={(e) => {
                           const v = e.currentTarget;
@@ -2743,11 +2789,16 @@ export default function App() {
                     )}
 
                     {/* 暂停时显示居中播放按钮（参考图二：精致半透明播放三角图标） */}
-                    {!streamIsPlaying && (
+                    {(streamDetailLoading || streamQualitiesLoading) && !streamError ? (
+                      <div role="status" className="absolute inset-0 bg-black/35 flex flex-col gap-3 items-center justify-center pointer-events-none">
+                        <RefreshCw className="w-8 h-8 animate-spin text-white" />
+                        <span className="text-white">{t("加载中...")}</span>
+                      </div>
+                    ) : videoStreamUrl && !streamIsPlaying && !streamError && (
                       <div className="absolute inset-0 bg-black/35 backdrop-blur-[2px] flex items-center justify-center z-10">
-                        <div className="w-20 h-20 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 text-white flex items-center justify-center shadow-2xl scale-105 transition-transform">
+                        <button type="button" aria-label={t("播放")} className="w-20 h-20 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 text-white flex items-center justify-center shadow-2xl scale-105 transition-transform">
                           <Play className="w-10 h-10 fill-white ms-1 text-white opacity-95" />
-                        </div>
+                        </button>
                       </div>
                     )}
 
@@ -2757,7 +2808,7 @@ export default function App() {
                   </div>
 
                   {/* 顶部状态与控制栏：当前分集、倍速、清晰度 */}
-                  <div className="relative z-10 px-6 pt-5 flex items-center justify-between text-xs text-white/90 pointer-events-none">
+                  <div className="relative z-10 px-3 md:px-6 pt-5 flex flex-wrap gap-2 items-center justify-between text-xs text-white/90 pointer-events-none">
                     <div className="flex items-center gap-2 pointer-events-auto">
                       <span className="px-3.5 py-1.5 rounded-full bg-rose-600/30 text-rose-300 border border-rose-500/40 font-bold text-xs backdrop-blur-md shadow-lg">
                         {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })}
@@ -2816,6 +2867,7 @@ export default function App() {
                       <div className="relative">
                         <button
                           type="button"
+                          disabled={!streamCurrentEpisode || streamQualityEpisodeId !== streamCurrentEpisode.id}
                           onClick={(e) => {
                             e.stopPropagation();
                             setStreamShowQualityMenu(!streamShowQualityMenu);
@@ -2824,7 +2876,7 @@ export default function App() {
                           className="px-3 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/15 text-xs font-bold text-rose-300 transition flex items-center gap-1.5 shadow-lg cursor-pointer"
                         >
                           <Sliders className="w-3.5 h-3.5 text-rose-400" />
-                          <span>{streamQuality}</span>
+                          <span>{streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id ? streamQuality : t("清晰度画质")}</span>
                         </button>
 
                         {streamShowQualityMenu && (
@@ -2852,33 +2904,17 @@ export default function App() {
                                   {streamQuality === q.key && <Check className="w-3.5 h-3.5" />}
                                 </button>
                               ))
-                            ) : (
-                              ["1080P", "720P", "480P"].map((q) => (
-                                <button
-                                  key={q}
-                                  type="button"
-                                  onClick={() => handleStreamSelectQuality(q)}
-                                  className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                                    streamQuality === q
-                                      ? "bg-rose-600 text-white font-bold"
-                                      : "hover:bg-slate-800 text-slate-300"
-                                  }`}
-                                >
-                                  <span>{q}{t("超清")}</span>
-                                  {streamQuality === q && <Check className="w-3.5 h-3.5" />}
-                                </button>
-                              ))
-                            )}
+                            ) : <span className="px-2 py-2 text-xs text-slate-400">{t("加载中...")}</span>}
                           </div>
                         )}
                       </div>
 
-                      <span className="text-[11px] text-white/70 bg-black/50 px-3 py-1.5 rounded-full backdrop-blur-md border border-white/15 shadow-lg">{t("滚轮 / ↑↓ 键切剧")}</span>
+                      <span className="hidden md:inline text-[11px] text-white/70 bg-black/50 px-3 py-1.5 rounded-full backdrop-blur-md border border-white/15 shadow-lg">{t("滚轮 / ↑↓ 键切剧")}</span>
                     </div>
                   </div>
 
                   {/* 👉 右侧纵向操作栏（严格参考图二排布：头像/追剧、爱心、评论、收藏、分享、切剧） */}
-                  <div className="absolute end-6 bottom-20 z-20 flex flex-col items-center gap-4">
+                  <div className="absolute end-3 md:end-6 bottom-20 z-20 flex flex-col items-center gap-4">
                     {/* 1. 作者/剧集头像 + 追剧加号小标 */}
                     <div 
                       onClick={(e) => {
@@ -2946,28 +2982,27 @@ export default function App() {
                   </div>
 
                   {/* 👈 左下角信息层与胶囊条（严格参考图二：@创作者/剧名、第X集、#标签、合集条） */}
-                  <div className="relative z-10 px-8 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto">
+                  <div className="relative z-10 ps-4 pe-20 md:ps-8 md:pe-24 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto">
                     {/* 剧名与发布/集数信息 */}
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
-                        <h3 className="text-lg md:text-xl font-black text-white leading-snug drop-shadow-md">
+                        <h3 className="min-w-0 flex-1 line-clamp-2 text-base md:text-xl font-black text-white leading-snug drop-shadow-md">
                           @{currentItem.title}
                         </h3>
                         {currentItem.badge && (
-                          <span className="text-xs text-white/70 font-medium">
+                          <span className="shrink-0 text-xs text-white/70 font-medium">
                             {localizeLabel(currentItem.badge)}
                           </span>
                         )}
                       </div>
-                      <p className="text-sm font-semibold text-white/90 drop-shadow">
+                      <p className="text-sm font-semibold text-white/90 drop-shadow line-clamp-2">
                         {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })} · <bdi>{currentItem.title}</bdi>
                       </p>
                       {/* #标签 (参考图二黄色/主题高亮标签) */}
-                      <div className="flex items-center gap-2 pt-0.5">
-                        <span className="text-xs font-bold text-amber-400 drop-shadow">{t("#短剧")}</span>
-                        <span className="text-xs font-bold text-amber-400 drop-shadow">#{localizeLabel(currentItem.tags) || t("爆款推荐")}</span>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 max-h-12 overflow-y-auto">
+                        <span className="text-xs font-bold text-amber-400 drop-shadow whitespace-nowrap">{t("#短剧")}</span>
                         {currentItem.tags?.split("/").map((tag, idx) => (
-                          <span key={idx} className="text-xs font-bold text-amber-300 drop-shadow">
+                          <span key={idx} className="text-xs font-bold text-amber-300 drop-shadow whitespace-nowrap">
                             #{localizeLabel(tag.trim())}
                           </span>
                         ))}
@@ -2979,7 +3014,7 @@ export default function App() {
                       <p 
                         onClick={() => setStreamDescriptionExpanded(!streamDescriptionExpanded)}
                         className={`text-xs text-slate-300/90 leading-relaxed drop-shadow cursor-pointer hover:text-white transition ${
-                          streamDescriptionExpanded ? "" : "line-clamp-2"
+                          streamDescriptionExpanded ? "max-h-28 overflow-y-auto" : "line-clamp-2"
                         }`}
                       >
                         {currentItem.description || t("精彩短剧连播，高潮迭起，逆袭反转不停歇！")}
@@ -2991,11 +3026,11 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleSelectSeries(currentItem)}
-                        className="px-4 py-2 rounded-xl bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-bold flex items-center gap-2 shadow-xl hover:border-rose-500/60 transition group/col cursor-pointer"
+                        className="min-w-0 max-w-full px-3 py-2 rounded-xl bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-bold flex items-center gap-2 shadow-xl hover:border-rose-500/60 transition group/col cursor-pointer"
                       >
-                        <Layers className="w-3.5 h-3.5 text-rose-400" />
-                        <span>{t("合集：")}{currentItem.title}</span>
-                        <span className="text-slate-400 text-[11px] font-normal border-l border-white/20 ps-2 ms-1">
+                        <Layers className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        <span className="min-w-0 truncate" title={currentItem.title}>{t("合集：")}{currentItem.title}</span>
+                        <span className="shrink-0 text-slate-400 text-[11px] font-normal border-s border-white/20 ps-2 ms-1">
                           {localizeLabel(currentItem.badge) || t("连载热播")}
                         </span>
                         <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover/col:translate-x-0.5 transition-transform" />
@@ -3064,6 +3099,9 @@ export default function App() {
                         onChange={(e) => {
                           const newTime = parseFloat(e.target.value);
                           setStreamCurrentTime(newTime);
+                          if (!streamIsDraggingProgress && streamVideoRef.current) {
+                            streamVideoRef.current.currentTime = newTime;
+                          }
                         }}
                         onMouseUp={(e) => {
                           setStreamIsDraggingProgress(false);
