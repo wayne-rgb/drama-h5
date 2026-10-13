@@ -5,6 +5,14 @@ import path from "path";
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        "mobile-prototype": path.resolve(__dirname, "mobile-prototype.html"),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@shared": path.resolve(__dirname, "../../shared"),

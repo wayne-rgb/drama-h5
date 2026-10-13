@@ -77,14 +77,14 @@ import {
   Tv
 } from "lucide-react";
 
-export default function App() {
+export default function App({ mobilePrototype = false }: { mobilePrototype?: boolean } = {}) {
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
   const changeLanguage = (value: string) => {
     if (languages.some(item => item.id === value)) setLanguageSaved(setLanguage(value as Language));
   };
   // 顶层主标签：首页 | 推荐刷剧 | 分类 | 榜单 | 搜索 | 追剧 | 设置
-  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">("home");
+  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(mobilePrototype ? "recommend" : "home");
 
   // 1. 首页状态
   const [selectedHomeSection, setSelectedHomeSection] = useState<string>("all");
@@ -189,6 +189,9 @@ export default function App() {
   const streamQualitySwitchTimeRef = useRef<number | null>(null);
   const streamVideoRef = useRef<HTMLVideoElement>(null);
   const streamWheelLockRef = useRef(false);
+  const streamGestureRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const suppressStreamClickUntil = useRef(0);
+  const [streamInfoOpen, setStreamInfoOpen] = useState(false);
 
   // 5. 播放器与画质倍速控制状态
   const [activeSeries, setActiveSeriesState] = useState<Detail | null>(null);
@@ -217,7 +220,7 @@ export default function App() {
   const openSeriesRef = useRef<typeof handleSelectSeries>();
   useEffect(() => () => { detailRequest.current++; streamDetailRequest.current++; navigationGeneration.current++; }, []);
 
-  const [favSubTab, setFavSubTab] = useState<"favorites" | "history">("favorites");
+  const [favSubTab, setFavSubTab] = useState<"favorites" | "history" | "settings">("favorites");
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
   const [syncStatus, setSyncStatus] = useState(getSyncStatus());
   const [remoteUrl, setRemoteUrl] = useState("");
@@ -548,6 +551,7 @@ export default function App() {
     try {
       setStreamDetailLoading(true);
       setStreamDescriptionExpanded(false);
+      if (mobilePrototype) setStreamInfoOpen(false);
       setStreamCurrentTime(0);
       setStreamDuration(0);
       setStreamIsLandscape(false);
@@ -1504,7 +1508,7 @@ export default function App() {
   const todayStr = t("更新日期", { date: formatDate(new Date(), { month: "short", day: "numeric" }) });
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none">
+    <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
       {/* 提示条 Toast */}
       {toast && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800/95 border border-slate-700/80 backdrop-blur px-5 py-2.5 rounded-full text-sm shadow-2xl text-rose-400 font-semibold animate-bounce">
@@ -1513,7 +1517,7 @@ export default function App() {
       )}
 
       {/* 🔝 顶部通用导航栏（TV 遥控器与电脑鼠标通用，导航栏置顶） */}
-      <header className="h-16 md:h-20 bg-[#0a0f1d]/95 backdrop-blur border-b border-slate-800/80 px-4 md:px-8 flex items-center justify-between z-30 shrink-0">
+      {!mobilePrototype && <header className="h-16 md:h-20 bg-[#0a0f1d]/95 backdrop-blur border-b border-slate-800/80 px-4 md:px-8 flex items-center justify-between z-30 shrink-0">
         <div className="flex-1 min-w-0 flex items-center gap-3 md:gap-8 overflow-x-auto no-scrollbar">
           {/* Logo */}
           <div 
@@ -1656,7 +1660,12 @@ export default function App() {
             <span>{t("本地服务")}</span>
           </div>
         </div>
-      </header>
+      </header>}
+      {mobilePrototype && <header className="prototype-header">
+        <div className="prototype-brand"><span className="prototype-brand-icon"><Play size={17} fill="currentColor" /></span><strong>{t(tab === "category" ? "分类" : tab === "rank" ? "榜单" : tab === "favorites" || tab === "settings" ? "我的" : tab === "search" ? "搜索" : "推荐")}</strong></div>
+        {tab === "recommend" && !activeSeries && <button aria-label={t("搜索")} onClick={() => { setTab("search"); setActiveSeries(null); }}><Search size={22} /></button>}
+        {tab === "search" && <button aria-label={t("返回")} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><X size={22} /></button>}
+      </header>}
 
       {!languageSaved && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{t("语言偏好无法保存")}</div>}
       {historyStorageWarning && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{localizeError(historyStorageWarning)}</div>}
@@ -2640,6 +2649,26 @@ export default function App() {
         {!activeSeries && tab === "recommend" && (
           <div 
             className="w-full h-full flex items-center justify-center relative select-none overflow-hidden bg-black"
+            style={mobilePrototype ? { touchAction: "pan-x" } : undefined}
+            onPointerDown={event => {
+              if (!mobilePrototype || (event.target as HTMLElement).closest("button, input, select, [data-gesture-exclude]")) return;
+              streamGestureRef.current = { x: event.clientX, y: event.clientY, at: Date.now() };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerUp={event => {
+              const start = streamGestureRef.current;
+              streamGestureRef.current = null;
+              if (!mobilePrototype || !start) return;
+              const dx = event.clientX - start.x, dy = event.clientY - start.y;
+              if (Math.abs(dy) >= 70 && Math.abs(dy) > Math.abs(dx) * 1.3 && Date.now() - start.at < 1200) {
+                suppressStreamClickUntil.current = Date.now() + 400;
+                void handleSwitchStream(dy < 0 ? "next" : "prev");
+              }
+            }}
+            onPointerCancel={() => { streamGestureRef.current = null; }}
+            onClickCapture={event => {
+              if (mobilePrototype && Date.now() < suppressStreamClickUntil.current && !(event.target as HTMLElement).closest("button, input")) { suppressStreamClickUntil.current = 0; event.preventDefault(); event.stopPropagation(); }
+            }}
             onWheel={(e) => {
               e.preventDefault();
               if (streamWheelLockRef.current) return;
@@ -2982,7 +3011,7 @@ export default function App() {
                   </div>
 
                   {/* 👈 左下角信息层与胶囊条（严格参考图二：@创作者/剧名、第X集、#标签、合集条） */}
-                  <div className="relative z-10 ps-4 pe-20 md:ps-8 md:pe-24 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto">
+                  <div data-gesture-exclude={mobilePrototype ? true : undefined} className={`relative z-10 ps-4 pe-20 md:ps-8 md:pe-24 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto ${mobilePrototype ? "prototype-stream-info" : ""}`}>
                     {/* 剧名与发布/集数信息 */}
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
@@ -2998,8 +3027,9 @@ export default function App() {
                       <p className="text-sm font-semibold text-white/90 drop-shadow line-clamp-2">
                         {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })} · <bdi>{currentItem.title}</bdi>
                       </p>
+                      {mobilePrototype && <button className="prototype-info-toggle" aria-expanded={streamInfoOpen} onClick={() => setStreamInfoOpen(value => !value)}>{t(streamInfoOpen ? "收起剧集信息" : "展开剧集信息")}<ChevronDown size={14} /></button>}
                       {/* #标签 (参考图二黄色/主题高亮标签) */}
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 max-h-12 overflow-y-auto">
+                      <div className={`${mobilePrototype && !streamInfoOpen ? "hidden" : "flex"} flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 max-h-12 overflow-y-auto`}>
                         <span className="text-xs font-bold text-amber-400 drop-shadow whitespace-nowrap">{t("#短剧")}</span>
                         {currentItem.tags?.split("/").map((tag, idx) => (
                           <span key={idx} className="text-xs font-bold text-amber-300 drop-shadow whitespace-nowrap">
@@ -3010,7 +3040,7 @@ export default function App() {
                     </div>
 
                     {/* 剧情简介（点击展开/折叠） */}
-                    <div className="max-w-[560px]">
+                    <div className={`max-w-[560px] ${mobilePrototype && !streamInfoOpen ? "hidden" : ""}`}>
                       <p 
                         onClick={() => setStreamDescriptionExpanded(!streamDescriptionExpanded)}
                         className={`text-xs text-slate-300/90 leading-relaxed drop-shadow cursor-pointer hover:text-white transition ${
@@ -3152,6 +3182,9 @@ export default function App() {
         {/* ======================= 3. 官方分类板块 (Category) ======================= */}
         {!activeSeries && tab === "category" && (
           <div className="max-w-7xl mx-auto space-y-6 pb-14">
+            {mobilePrototype && currentBanner && <button className="prototype-featured" onClick={() => handleSelectSeries(currentBanner)}>
+              <img src={currentBanner.backgroundCover || currentBanner.cover} alt="" /><div><span>{t("推荐")}</span><h3><bdi>{currentBanner.title}</bdi></h3><span className="prototype-featured-play"><Play size={14} fill="currentColor" />{t("立即观看")}</span></div>
+            </button>}
             {/* 分类标题与当前状态 */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
               <div>
@@ -3752,7 +3785,7 @@ export default function App() {
 
         {/* ======================= 6. 我的追剧与观看历史板块 (Favorites & History) ======================= */}
         {!activeSeries && tab === "favorites" && (
-          <div className="max-w-7xl mx-auto pb-14 space-y-6">
+          <div className={`max-w-7xl mx-auto pb-14 space-y-6 ${mobilePrototype ? "prototype-my-content" : ""} ${mobilePrototype && favSubTab === "settings" ? "prototype-my-settings-content" : ""}`}>
             {/* 顶部双选项卡切换栏与操作区 */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
               {/* 双选项卡: 我的追剧 / 观看历史 */}
@@ -3805,6 +3838,7 @@ export default function App() {
                 </button>
               </div>
 
+              {mobilePrototype && <button onClick={() => setFavSubTab("settings")} className={`prototype-settings-button ${favSubTab === "settings" ? "is-active" : ""}`}><SettingsIcon size={17} />{t("设置")}</button>}
               {/* 右侧操作按钮：仅在历史记录页且有记录时展示清空全部按钮 */}
               {favSubTab === "history" && historyList.length > 0 && (
                 <div className="flex items-center gap-3">
@@ -4008,7 +4042,7 @@ export default function App() {
           </div>
         )}
 
-        {!activeSeries && tab === "settings" && (
+        {!activeSeries && (tab === "settings" || mobilePrototype && tab === "favorites" && favSubTab === "settings") && (
           <div className="max-w-xl mx-auto space-y-6 pt-6">
             <h2 className="text-xl font-bold flex items-center gap-2"><SettingsIcon className="w-5 h-5 text-rose-500" />{t("本地服务与远程同步")}</h2>
             <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-3">
@@ -4047,6 +4081,12 @@ export default function App() {
           </div>
         )}
       </main>
+      {mobilePrototype && <nav className="prototype-bottom-nav" aria-label={t("主导航")}>
+        <button className={tab === "recommend" || tab === "search" ? "active" : ""} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><Compass size={22} /><span>{t("推荐")}</span></button>
+        <button className={tab === "category" || tab === "home" ? "active" : ""} onClick={() => { setTab("category"); setActiveSeries(null); if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage); }}><Grid size={22} /><span>{t("分类")}</span></button>
+        <button className={tab === "rank" ? "active" : ""} onClick={() => { setTab("rank"); setActiveSeries(null); if (!rankItems.length) void fetchRankList(selectedRankSlug, rankPage); }}><Trophy size={22} /><span>{t("榜单")}</span></button>
+        <button className={tab === "favorites" || tab === "settings" ? "active" : ""} onClick={() => { setTab("favorites"); setActiveSeries(null); void refreshHistory(); setFavorites(getFavorites()); }}><UserCheck size={22} /><span>{t("我的")}</span></button>
+      </nav>}
     </div>
   );
 }
