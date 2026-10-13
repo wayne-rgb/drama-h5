@@ -20,10 +20,10 @@
 .prototype-featured h3 { max-width: 100%; font-size: 18px; font-weight: 700; line-height: 1.4; }
 .prototype-featured span { font-size: 11px; }
 .prototype-featured-play { display: flex; align-items: center; gap: 6px; background: #e11d48; border-radius: 8px; padding: 8px 12px; }
-.prototype-my-content > div:first-child { display: flex; flex-wrap: wrap; flex-direction: row; align-items: center; gap: 8px; }
-.prototype-my-content > div:first-child > div:first-child { flex: 1; min-width: 0; gap: 4px; padding: 4px; }
-.prototype-my-content > div:first-child > div:first-child button { flex: 1; justify-content: center; min-height: 44px; padding: 8px 5px; gap: 4px; font-size: 11px; }
-.prototype-my-content > div:first-child > div:first-child button > span:last-child:not(:first-of-type) { padding: 2px 4px; }
+.prototype-my-tabs { display: flex; flex-wrap: wrap; flex-direction: row; align-items: center; gap: 8px; }
+.prototype-my-tabs > div:first-child { flex: 1; min-width: 0; gap: 4px; padding: 4px; }
+.prototype-my-tabs > div:first-child button { flex: 1; justify-content: center; min-height: 44px; padding: 8px 5px; gap: 4px; font-size: 11px; }
+.prototype-my-tabs > div:first-child button > span:last-child:not(:first-of-type) { padding: 2px 4px; }
 .prototype-settings-button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 11px; border-radius: 12px; background: #0f172a; color: #94a3b8; font-size: 11px; }
 .prototype-settings-button.is-active { color: white; background: #e11d48; }
 .prototype-my-settings-content { padding-bottom: 0; }

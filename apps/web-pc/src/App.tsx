@@ -3,6 +3,8 @@ import { useI18n, languages, translate, LocalizedMessage, MessageValues, Languag
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
 import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from "./mobile-prototype/PlayerActions";
 import { useMobileLayout } from "./use-mobile-layout";
+import { AccountDialogs, AccountHome, AccountMenu, AccountPanel, useAccountSession } from "./AccountArea";
+import "./account.css";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -81,13 +83,15 @@ import {
 
 export default function App({ mobilePrototype: forceMobileLayout }: { mobilePrototype?: boolean } = {}) {
   const mobilePrototype = useMobileLayout(forceMobileLayout);
+  const accountState = useAccountSession();
+  const [accountPanel, setAccountPanel] = useState<AccountPanel>(() => { const panel = new URLSearchParams(window.location.search).get("account"); return ["login", "register", "recover", "reset", "verify", "profile", "membership"].includes(panel || "") ? panel as AccountPanel : null; });
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
   const changeLanguage = (value: string) => {
     if (languages.some(item => item.id === value)) setLanguageSaved(setLanguage(value as Language));
   };
   // 顶层主标签：首页 | 推荐刷剧 | 分类 | 榜单 | 搜索 | 追剧 | 设置
-  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(mobilePrototype ? "recommend" : "home");
+  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(accountPanel ? "favorites" : mobilePrototype ? "recommend" : "home");
 
   // 1. 首页状态
   const [selectedHomeSection, setSelectedHomeSection] = useState<string>("all");
@@ -233,7 +237,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const openSeriesRef = useRef<typeof handleSelectSeries>();
   useEffect(() => () => { detailRequest.current++; streamDetailRequest.current++; navigationGeneration.current++; }, []);
 
-  const [favSubTab, setFavSubTab] = useState<"favorites" | "history" | "settings">("favorites");
+  const [favSubTab, setFavSubTab] = useState<"overview" | "favorites" | "history" | "settings">("overview");
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
   const [syncStatus, setSyncStatus] = useState(getSyncStatus());
   const [remoteUrl, setRemoteUrl] = useState("");
@@ -1559,6 +1563,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       setTab("settings");
     }
   }, [mobilePrototype, tab, favSubTab, activeSeries?.id]);
+  useEffect(() => { if (accountState.session && accountPanel === "profile" && !accountState.session.user) setAccountPanel("login"); }, [accountState.session, accountPanel]);
+  const openPersonalPage = (section: "overview" | "favorites" | "history" | "settings") => { setFavSubTab(section); setActiveSeries(null); setTab(section === "settings" && !mobilePrototype ? "settings" : "favorites"); void refreshHistory(); setFavorites(getFavorites()); };
+  const personalAreaProps = { session: accountState.session, onPanel: setAccountPanel, onOverview: () => openPersonalPage("overview"), onFavorites: () => openPersonalPage("favorites"), onHistory: () => openPersonalPage("history"), onSettings: () => openPersonalPage("settings"), onLanguage: changeLanguage, favoritesCount: favorites.length, historyCount: historyList.length };
 
   return (
     <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}${forceMobileLayout === true ? "mobile-prototype-preview " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
@@ -1660,59 +1667,11 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
             >
               <Search className="w-4 h-4" />{t("搜索")}</button>
 
-            {/* 5. 追剧与历史 */}
-            <button
-              tabIndex={5}
-              onClick={() => { 
-                setTab("favorites"); 
-                setActiveSeries(null); 
-                refreshHistory();
-                setFavorites(getFavorites());
-              }}
-              className={`tv-nav-item flex items-center gap-1.5 md:gap-2 px-3.5 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-semibold transition-all duration-200 outline-none focus:ring-4 focus:ring-rose-500/50 shrink-0 ${
-                tab === "favorites" && !activeSeries
-                  ? "bg-rose-600 text-white shadow-lg shadow-rose-900/40"
-                  : "text-slate-300 hover:text-white hover:bg-slate-800/60"
-              }`}
-            >
-              <Heart className="w-4 h-4" />{t("追剧")}{favorites.length > 0 && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-bold">
-                  {favorites.length}
-                </span>
-              )}
-            </button>
           </nav>
         </div>
 
-        {/* 右侧设置与自建服务状态 */}
-        <div className="flex items-center gap-1.5 md:gap-3 shrink-0 ps-2">
-          <select
-            aria-label={t("界面语言")}
-            value={language}
-            onChange={event => changeLanguage(event.target.value)}
-            className="w-24 md:w-40 min-h-10 px-2 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 outline-none focus:ring-2 focus:ring-rose-500"
-          >
-            {languages.map(item => <option key={item.id} value={item.id} lang={item.locale}>{item.name}</option>)}
-          </select>
-          <button
-            tabIndex={6}
-            aria-label={t("设置")}
-            onClick={() => { setTab("settings"); setActiveSeries(null); }}
-            className={`tv-nav-item flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs md:text-sm font-semibold transition-all duration-200 outline-none focus:ring-4 focus:ring-rose-500/50 ${
-              tab === "settings" && !activeSeries
-                ? "bg-rose-600 text-white shadow-lg shadow-rose-900/40"
-                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
-            }`}
-          >
-            <SettingsIcon className="w-4 h-4" />
-            <span className="hidden sm:inline">{t("设置")}</span>
-          </button>
-
-          <div className="hidden xl:flex items-center gap-2 text-xs bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-full text-slate-400 font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>{t("本地服务")}</span>
-          </div>
-        </div>
+        {/* 右侧用户区统一提供资料、会员、追剧、历史、语言与设置。 */}
+        <AccountMenu {...personalAreaProps} />
       </header>}
       {mobilePrototype && !activeSeries && tab !== "recommend" && <header className="prototype-header">
         <div className="prototype-brand"><span className="prototype-brand-icon"><Play size={17} fill="currentColor" /></span><strong>{t(tab === "category" ? "分类" : tab === "rank" ? "榜单" : tab === "favorites" || tab === "settings" ? "我的" : tab === "search" ? "搜索" : "推荐")}</strong></div>
@@ -3898,8 +3857,10 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         {/* ======================= 6. 我的追剧与观看历史板块 (Favorites & History) ======================= */}
         {!activeSeries && tab === "favorites" && (
           <div className={`max-w-7xl mx-auto pb-14 space-y-6 ${mobilePrototype ? "prototype-my-content" : ""} ${mobilePrototype && favSubTab === "settings" ? "prototype-my-settings-content" : ""}`}>
+            {favSubTab === "overview" && <AccountHome {...personalAreaProps} histories={historyList} error={accountState.error} onRetry={() => void accountState.refresh()} onResume={history => void handleSelectSeries({ id: history.seriesId, title: history.title, cover: history.cover, badge: history.badge, tags: history.tags, description: "", contentType: history.contentType }, history)} />}
             {/* 顶部双选项卡切换栏与操作区 */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+            {favSubTab !== "overview" && <button className="account-text-button" onClick={() => setFavSubTab("overview")}><ArrowLeft size={16} />{t("返回我的")}</button>}
+            {favSubTab !== "overview" && <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4 ${mobilePrototype ? "prototype-my-tabs" : ""}`}>
               {/* 双选项卡: 我的追剧 / 观看历史 */}
               <div className="flex items-center gap-2 bg-[#0a0f1d] p-1.5 rounded-2xl border border-slate-800 w-fit">
                 <button
@@ -3984,8 +3945,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   )}
                 </div>
               )}
-            </div>
-
+            </div>}
             {/* A. 我的追剧列表 */}
             {favSubTab === "favorites" && (
               <div>
@@ -4193,11 +4153,12 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
           </div>
         )}
       </main>
+      <AccountDialogs panel={accountPanel} onPanel={panel => { setAccountPanel(panel); if (!panel) { const url = new URL(window.location.href); url.searchParams.delete("account"); url.searchParams.delete("token"); url.searchParams.delete("error"); window.history.replaceState(null, "", url); } }} session={accountState.session} sessionError={accountState.error} onRefresh={accountState.refresh} />
       {mobilePrototype && <nav className="prototype-bottom-nav" aria-label={t("主导航")}>
         <button className={tab === "recommend" || tab === "search" ? "active" : ""} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><Compass size={22} /><span>{t("推荐")}</span></button>
         <button className={tab === "category" || tab === "home" ? "active" : ""} onClick={() => { setTab("category"); setActiveSeries(null); if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage); }}><Grid size={22} /><span>{t("分类")}</span></button>
         <button className={tab === "rank" ? "active" : ""} onClick={() => { setTab("rank"); setActiveSeries(null); if (!rankItems.length) void fetchRankList(selectedRankSlug, rankPage); }}><Trophy size={22} /><span>{t("榜单")}</span></button>
-        <button className={tab === "favorites" || tab === "settings" ? "active" : ""} onClick={() => { setTab("favorites"); setActiveSeries(null); void refreshHistory(); setFavorites(getFavorites()); }}><UserCheck size={22} /><span>{t("我的")}</span></button>
+        <button className={tab === "favorites" || tab === "settings" ? "active" : ""} onClick={() => openPersonalPage("overview")}><UserCheck size={22} /><span>{t("我的")}</span></button>
       </nav>}
     </div>
   );

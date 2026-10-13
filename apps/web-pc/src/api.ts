@@ -27,10 +27,29 @@ let refreshInFlight:Promise<any>|null=null;
 let migration:Promise<void>|null=null;
 let auxiliaryRecommendationSession = "";
 const migrationOnly=new URLSearchParams(window.location.search).has("__legacy_migration");
-function client(){return axios.create({baseURL:window.location.protocol==="file:"?(getSettings().baseUrl||"http://127.0.0.1:8788").replace(/\/+$/,""):"",timeout:15000});}
+function rawClient(){const instance=axios.create({baseURL:window.location.protocol==="file:"?(getSettings().baseUrl||"http://127.0.0.1:8788").replace(/\/+$/,""):"",timeout:15000,withCredentials:window.location.protocol!=="file:"});instance.interceptors.response.use(response=>response,error=>{if(error.response?.status===409&&error.response?.data?.error==="登录状态已变化，请刷新页面")window.location.reload();return Promise.reject(error);});return instance;}
+let libraryOwner="guest";
+let identityReady:Promise<void>|null=null;
+let identityKnown=false;
+function createJournal(owner:string){return new LibraryJournal(localStorage,owner==="guest"?window.location.origin:`${window.location.origin}:account:${owner}`,async operation=>{await rawClient().post("/api/library/operations",operation,{headers:{"X-Library-Owner":owner}});});}
+async function ensureLibraryIdentity(){
+ if(!identityReady)identityReady=(async()=>{
+  const data=(await rawClient().get("/api/account/session")).data;
+  libraryOwner=data.user?.id||"guest";
+  journal=createJournal(libraryOwner); identityKnown=true;
+  try{localStorage.setItem("hg_account_owner",libraryOwner);}catch{}
+ })().catch(error=>{identityReady=null;throw error;});
+ return identityReady;
+}
+function client(){
+ const instance=rawClient();
+ instance.interceptors.request.use(async request=>{if(/^\/api\/(library|history|recommend)(?:\/|\?|$)/.test(request.url||"")){await ensureLibraryIdentity();request.headers["X-Library-Owner"]=libraryOwner;}return request;});
+ return instance;
+}
+export async function flushPersonalLibrary(){await ensureLibraryIdentity();await journal.flush();}
 function warning(error:any){window.dispatchEvent(new CustomEvent("history-storage-error",{detail:error?.message||"本地记录保存失败，请检查服务和存储空间"}));}
-const journal=new LibraryJournal(localStorage,window.location.origin,async operation=>{await client().post("/api/library/operations",operation);});
-function operation(kind:string,key:string,op:string,value:any=null){try{journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush().catch(warning);return true;}catch(error){warning(error);return false;}}
+let journal=createJournal("guest");
+function operation(kind:string,key:string,op:string,value:any=null){try{if(!identityKnown)throw Error("个人资料正在加载，请稍后重试");journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush().catch(warning);return true;}catch(error){warning(error);return false;}}
 export function getSettings():Settings{try{return JSON.parse(localStorage.getItem(SETTINGS_KEY)||"null")||{baseUrl:"http://127.0.0.1:8788",token:""};}catch{return{baseUrl:"http://127.0.0.1:8788",token:""};}}
 export function saveSettings(value:Settings){localStorage.setItem(SETTINGS_KEY,JSON.stringify(value));}
 export function getFavorites():Series[]{return cache.favorites;}
@@ -56,8 +75,9 @@ export function saveProgress(seriesId:string,episodeId:string,position:number,ex
 }
 async function migrate(){if(migration)return migration;const keys=["hg_favorites_v1","hg_progress_v1","hg_search_history_v1","hg_pref_quality","hg_playback_speed",...Object.keys(localStorage).filter(key=>key.startsWith("hg_history_outbox_v1:")).sort()];const raw=Object.fromEntries(keys.map(key=>[key,localStorage.getItem(key)]));if(!Object.values(raw).some(value=>value!==null))return;
  migration=(async()=>{const operations=legacyOperations(raw);await client().post("/api/library/import",{migrationId:(localStorage.getItem("hg_library_migration_id") || (()=>{const id=journal.uuid();localStorage.setItem("hg_library_migration_id",id);return id;})()),operations});for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);})();try{await migration;}finally{migration=null;}}
-export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
+export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest")await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
 export async function commitRecommendationPreferences(){
+ await ensureLibraryIdentity();
  const deadline=Date.now()+15000;
  while(journal.entries().length){await journal.flush();if(Date.now()>deadline)throw Error("推荐偏好尚未保存，请重试");}
  if(refreshInFlight)await refreshInFlight;
@@ -69,7 +89,7 @@ export async function removeHistoryItem(id:string,_source:HistorySource="all"){o
 export async function clearHistory(_source:HistorySource="all"){operation("history","*","clear");await journal.flush();await refreshLibrary();}
 export function getSyncStatus(){return cache.sync;}
 export async function configureSync(url:string,key:string,enabled=true){const data=(await client().post("/api/library/sync",enabled?{url,key}:{enabled:false})).data;cache.sync=data;await refreshLibrary();return data;}
-if(!migrationOnly){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));}
+if(!migrationOnly){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
 
 export const api = {
   // 1. 官方首页大轮播 Banner
@@ -134,6 +154,7 @@ export const api = {
 
   // 6.1 沉浸式流推荐接口 (GET /api/recommend?page=N)
   async getRecommendStream(page = 1, session: string, signal?: AbortSignal): Promise<{ items: Series[]; page: number; session: string }> {
+    await ensureLibraryIdentity();
     await journal.flush();
     const res = await client().get(`/api/recommend?page=${page}&session=${encodeURIComponent(session)}`, {signal});
     return res.data;

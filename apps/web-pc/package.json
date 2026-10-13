@@ -12,7 +12,7 @@
     "build:desktop": "npm run build && electron-builder"
   },
   "dependencies": {
-    "axios": "^1.7.9",
+    "axios": "1.20.0",
     "lucide-react": "^0.475.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

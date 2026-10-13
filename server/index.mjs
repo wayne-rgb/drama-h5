@@ -12,8 +12,12 @@ import { LibraryStore } from "../shared/library-store.mjs";
 import { LibrarySync } from "./library-sync.mjs";
 import { createLibraryHandler } from "./library-routes.mjs";
 import { RecommendationService, RecommendationError } from "./recommendation-service.mjs";
+import { AccountStore, AccountError } from "./account-store.mjs";
+import { createAccountService } from "./account-routes.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
+if (fs.existsSync(environmentFile)) process.loadEnvFile(environmentFile);
 const DIST_DIR = process.env.HG_WEB_DIR || path.resolve(__dirname, "../apps/web-pc/dist");
 
 const MIME_TYPES = {
@@ -62,6 +66,8 @@ function serveStatic(res, pathname) {
 
 const PORT = Number(process.env.PORT || 8788);
 const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
+const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
+const accounts = createAccountService(accountStore);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore);
@@ -70,7 +76,7 @@ if (!libraryStore.getMeta("legacyBackendMigrated")) {
   for (const item of historyStore.list()) libraryStore.write({kind:"history", key:item.seriesId, op:"set", at:item.updatedAt, value:item});
   libraryStore.setMeta("legacyBackendMigrated", true);
 }
-const legacyHistory = {
+function legacyLibraryHistory(historyStore, libraryStore) { return {
  registerSession: value => historyStore.registerSession(value),
  saveProgress: value => { const result=historyStore.saveProgress(value); if(result.accepted) libraryStore.write({id:`legacy:${value.sessionId}:${value.sequence}`,kind:"history",key:result.item.seriesId,op:"set",at:result.item.updatedAt,value:result.item}); return result; },
  list: () => libraryStore.snapshot().history,
@@ -78,7 +84,8 @@ const legacyHistory = {
  remove: id => { historyStore.remove(id); libraryStore.write({kind:"history",key:id,op:"delete"}); return {ok:true}; },
  clear: () => { historyStore.clear(); libraryStore.write({kind:"history",key:"*",op:"clear"}); return {ok:true}; },
  importLegacy: value => { const result=historyStore.importLegacy(value); for(const item of historyStore.list()) if(!libraryStore.snapshot().history.some(row=>row.seriesId===item.seriesId)) libraryStore.write({id:`legacy-import:${value.clientId}:${item.seriesId}`,kind:"history",key:item.seriesId,op:"set",at:item.updatedAt,value:item}); return result; }
-};
+}; }
+const legacyHistory = legacyLibraryHistory(historyStore, libraryStore);
 const handleHistory = createHistoryHandler(legacyHistory);
 librarySync.start();
 
@@ -167,7 +174,7 @@ const OFFICIAL_TYPES = [
   { id: "ai-drama", name: "AI剧" }
 ];
 
-const recommendations = new RecommendationService({
+function createRecommendations(libraryStore) { return new RecommendationService({
   fetchPool: async ({type,tag,page}) => {
     if(tag){const metadata=await coreProvider.categoryMetadata(type);if(!metadata.tags.some(row=>row.id===tag))return [];}
     return coreProvider.category(type,tag,page);
@@ -175,7 +182,21 @@ const recommendations = new RecommendationService({
   readProfile: () => libraryStore.snapshot(),
   now: () => Math.round(Date.now()+(libraryStore.getMeta('clockOffset')||0)),
   topics: OFFICIAL_TAGS,
-});
+}); }
+const recommendations = createRecommendations(libraryStore);
+const personalLibraries = new Map();
+function personalServices(account) {
+  if (!account) return { handleLibrary, handleHistory, recommendations };
+  if (!personalLibraries.has(account.id)) {
+    const directory = path.join(DATA_DIR, 'accounts', account.id);
+    const library = new LibraryStore(path.join(directory, 'library.sqlite'));
+    const history = new HistoryStore(path.join(directory, 'history.sqlite'));
+    const sync = new LibrarySync(library);
+    sync.start();
+    personalLibraries.set(account.id, { library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
+  }
+  return personalLibraries.get(account.id);
+}
 
 // 官方四大排行榜类别定义
 const OFFICIAL_RANK_TYPES = [
@@ -548,7 +569,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, X-Library-Owner",
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     });
     return res.end();
@@ -567,8 +588,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (await handleLibrary(req, res, u)) return;
-  if (await handleHistory(req, res, u)) return;
+    if (await accounts.handle(req, res, u)) return;
+    const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
+    const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null);
+    if (await services.handleLibrary(req, res, u)) return;
+    if (await services.handleHistory(req, res, u)) return;
     // 2. 官方大轮播 Banner API
     if (pathname === "/api/banners") {
       const data = await fetchOfficialHome();
@@ -625,7 +649,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const page=Number(u.searchParams.get("page")||1);
         const session=u.searchParams.get("session")||crypto.randomUUID();
-        return json(res,await recommendations.page(session,page));
+        return json(res,await services.recommendations.page(session,page));
       } catch(error) {
         return json(res,{error:error.message||'推荐读取失败'},error instanceof RecommendationError?error.status:502);
       }
@@ -964,6 +988,7 @@ const server = http.createServer(async (req, res) => {
 
     return json(res, { error: "404 Not Found" }, 404);
   } catch (err) {
+    if (err instanceof AccountError) return json(res, { error: err.message }, err.status);
     console.error("[API Gateway Error]:", err.message);
     return json(res, { error: err.message }, 500);
   }
@@ -982,7 +1007,8 @@ server.listen(PORT, process.env.HG_HOST || "0.0.0.0", () => {
 let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return; shuttingDown = true; librarySync.stop();
-  server.close(() => { libraryStore.close(); historyStore.close(); process.exit(0); });
+  for (const service of personalLibraries.values()) service.sync.stop();
+  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
   server.closeAllConnections();
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);

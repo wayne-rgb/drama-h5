@@ -42,12 +42,38 @@
 
 - **基础 URL (本地开发)**: `http://localhost:8788`
 - **基础 URL (局域网部署)**: `http://<服务器IP>:8788`
-- **跨域支持**: 全域开放 `Access-Control-Allow-Origin: *`，无需前端配置代理。
+- **跨域支持**: 公开内容接口允许跨域；账号操作通过 `APP_ORIGIN` 指定的站点与安全 Cookie 进行，开发时使用同源代理。
 - **数据格式**: 标准 `UTF-8` 编码的 `application/json`。
 
 ---
 
 ## 全量接口列表速览
+
+### 账号与会员接口
+
+账号数据保存在 `accounts.sqlite`。已登录账号的追剧、历史、偏好与推荐分别使用独立资料库；读取和写入 `/api/library`、`/api/history`、`/api/recommend` 时必须携带与会话一致的 `X-Library-Owner`（账号 ID）。游客保留原本机／家庭资料，登录不会自动将游客资料导入个人账号。切换账号时旧队列保持原归属，过期会话或归属不符返回 `409`。
+
+| 请求 | 接口 | 内容 |
+| :--- | :--- | :--- |
+| GET | `/api/account/session` | 当前用户、会员状态、可用服务、套餐和站点地址；不返回密码或会话令牌 |
+| POST | `/api/auth/register` | 邮箱、昵称、密码注册；密码12至256个字符，服务端哈希保存 |
+| POST | `/api/auth/login` | 邮箱密码登录，设置30天HttpOnly会话Cookie |
+| POST | `/api/auth/logout` | 撤销当前会话并清理Cookie |
+| POST | `/api/account/profile` | 修改昵称与头像；头像为1MB以内JPEG、PNG、WebP的Base64数据 |
+| GET | `/api/account/avatar` | 当前账号的私有头像 |
+| POST | `/api/auth/recover`、`/api/auth/reset` | 发送重置邮件、使用一次性令牌设置新密码并撤销旧会话 |
+| POST | `/api/auth/verification`、`/api/auth/verify` | 发送验证邮件、使用一次性令牌确认邮箱 |
+| GET | `/api/auth/google/start`、`/api/auth/google/callback` | Google授权码登录，校验状态、PKCE、ID令牌和nonce；`link=1`用于登录后的明确绑定 |
+| POST | `/api/billing/checkout` | 按`planId`建立托管订阅结算；套餐金额由服务端确定 |
+| POST | `/api/billing/portal` | 打开当前账号的订阅管理门户 |
+| POST | `/api/billing/confirm` | 校验付款返回的结算记录归属与付款状态 |
+| POST | `/api/billing/webhook` | 校验支付签名后更新订阅，拒绝伪造通知，重复通知不会重复生效 |
+
+套餐为月付USD 29.99（`monthly`）与年付USD 199.99（`annual`）。VIP取决于真实订阅状态和有效期；取消续费但仍有效的会员保留权益，过期、取消或未付款状态不会显示为有效VIP。前端回跳地址或客户端提交的`membership`字段不能开通会员。
+
+通过[环境变量示例](../.env.example)配置站点、Google与SMTP。支付默认关闭；当前提供可选Stripe适配器，配置后才启用托管结算、签名回调与客户门户。未配置的能力返回`503`，不会生成假邮件或假订单。Google与支付尚未配置时，不代表相关外部流程已验证。
+
+接入接口参考[Google授权码流程](https://developers.google.com/identity/protocols/oauth2/web-server)、[Google ID令牌验证](https://developers.google.com/identity/sign-in/web/backend-auth)、[Stripe托管结算](https://docs.stripe.com/api/checkout/sessions/create)与[订阅数据结构](https://docs.stripe.com/api/subscriptions/object)。
 
 | 业务板块 | 请求方式 | 接口路径 | 核心功能 |
 | :--- | :--- | :--- | :--- |
