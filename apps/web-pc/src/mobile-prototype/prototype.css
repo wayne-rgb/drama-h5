@@ -1,5 +1,5 @@
-body { background: #070a12; }
-.mobile-prototype-mode { width: min(100vw, 430px); height: 100dvh; margin: auto; }
+.mobile-prototype-mode { width: 100%; height: 100dvh; margin: auto; }
+.mobile-prototype-preview { width: min(100vw, 430px); }
 .mobile-prototype-mode main { min-height: 0; }
 .prototype-header { display: flex; align-items: center; justify-content: space-between; height: 56px; padding: 0 16px; flex-shrink: 0; background: #0a0f1d; border-bottom: 1px solid #1e293b; }
 .prototype-brand { display: flex; align-items: center; gap: 10px; font-size: 16px; }
@@ -89,6 +89,6 @@ body { background: #070a12; }
 .prototype-panel-body .grid-cols-6 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .prototype-panel-body .prototype-info-toggle { margin-bottom: 10px; }
 @media (min-width: 650px) {
-  body { padding: 24px 0; background: #111827; }
-  .mobile-prototype-mode { height: calc(100dvh - 48px); max-height: 900px; border-radius: 24px; box-shadow: 0 16px 70px #0008; }
+  body:has(.mobile-prototype-preview) { padding: 24px 0; background: #111827; }
+  .mobile-prototype-preview { height: calc(100dvh - 48px); max-height: 900px; border-radius: 24px; box-shadow: 0 16px 70px #0008; }
 }

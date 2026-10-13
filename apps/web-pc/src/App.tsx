@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
 import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from "./mobile-prototype/PlayerActions";
+import { useMobileLayout } from "./use-mobile-layout";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -78,7 +79,8 @@ import {
   Tv
 } from "lucide-react";
 
-export default function App({ mobilePrototype = false }: { mobilePrototype?: boolean } = {}) {
+export default function App({ mobilePrototype: forceMobileLayout }: { mobilePrototype?: boolean } = {}) {
+  const mobilePrototype = useMobileLayout(forceMobileLayout);
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
   const changeLanguage = (value: string) => {
@@ -541,11 +543,12 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
         streamWatchRef.current.leave();streamVideoRef.current?.pause();
         streamDetailRequest.current++;
         setStreamCurrentEpisode(null);setStreamDetail(null);
+        setStreamLoading(true);
         const preferences=await commitRecommendationPreferences();
         if(request!==streamStartRequest.current||generation!==navigationGeneration.current)return;
         await streamFeedRef.current.start(preferences);
       }
-    } catch { setStreamError("推荐暂时不可用，请检查本地服务后重试"); }
+    } catch { setStreamLoading(false); setStreamError("推荐暂时不可用，请检查本地服务后重试"); }
   };
 
   // 加载当前刷剧项的详情与续播集数
@@ -1545,8 +1548,20 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
   // 今日日期格式化
   const todayStr = t("更新日期", { date: formatDate(new Date(), { month: "short", day: "numeric" }) });
 
+  useEffect(() => {
+    if (activeSeries) return;
+    if (mobilePrototype && tab === "home") {
+      setTab("category");
+      if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage);
+    } else if (mobilePrototype && tab === "settings") {
+      setFavSubTab("settings"); setTab("favorites");
+    } else if (!mobilePrototype && tab === "favorites" && favSubTab === "settings") {
+      setTab("settings");
+    }
+  }, [mobilePrototype, tab, favSubTab, activeSeries?.id]);
+
   return (
-    <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
+    <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}${forceMobileLayout === true ? "mobile-prototype-preview " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
       {/* 提示条 Toast */}
       {toast && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800/95 border border-slate-700/80 backdrop-blur px-5 py-2.5 rounded-full text-sm shadow-2xl text-rose-400 font-semibold animate-bounce">
