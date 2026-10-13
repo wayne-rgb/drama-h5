@@ -26,3 +26,30 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* 阅读方向变化时，导航箭头跟随布局，播放图标和视频画面保持原方向。 */
+[dir="rtl"] .lucide-arrow-left,
+[dir="rtl"] .lucide-chevron-left,
+[dir="rtl"] .lucide-chevron-right {
+  transform: scaleX(-1);
+}
+
+/* 时间和拖动进度使用从左向右的坐标，不随阿拉伯语页面翻转。 */
+video,
+input[type="range"],
+kbd,
+.font-mono {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* 长翻译允许换行；内容文本按自身文字方向排版。 */
+main button,
+main label,
+main [role="alert"] {
+  overflow-wrap: break-word;
+}
+
+h4, .line-clamp-1, .line-clamp-2 {
+  unicode-bidi: plaintext;
+}

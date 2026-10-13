@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -76,6 +77,11 @@ import {
 } from "lucide-react";
 
 export default function App() {
+  const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
+  const [languageSaved, setLanguageSaved] = useState(true);
+  const changeLanguage = (value: string) => {
+    if (languages.some(item => item.id === value)) setLanguageSaved(setLanguage(value as Language));
+  };
   // 顶层主标签：首页 | 推荐刷剧 | 分类 | 榜单 | 搜索 | 追剧 | 设置
   const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">("home");
 
@@ -152,6 +158,7 @@ export default function App() {
   const [streamPage, setStreamPage] = useState(1);
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState("");
+  const [streamPlaybackAttempt, setStreamPlaybackAttempt] = useState(0);
   const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>(getPlaybackPreferences().recommendationMode);
   const [showRecommendationResetConfirm, setShowRecommendationResetConfirm] = useState(false);
   const streamFeedRef = useRef<any>(null);
@@ -208,7 +215,7 @@ export default function App() {
   const [remoteKey, setRemoteKey] = useState("");
   const [syncSaving, setSyncSaving] = useState(false);
   const remoteUrlTouched = useRef(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<LocalizedMessage | null>(null);
   const [loading, setLoading] = useState(false);
   if (!detailWatchRef.current) detailWatchRef.current = new RecommendationWatch(saveRecommendationSignal);
   if (!streamWatchRef.current) streamWatchRef.current = new RecommendationWatch(saveRecommendationSignal);
@@ -281,6 +288,7 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1.0);
   const [isMuted, setIsMuted] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoPlayNext, setAutoPlayNext] = useState(true);
   const [showControls, setShowControls] = useState(true);
@@ -292,8 +300,8 @@ export default function App() {
   const qualitySwitchTimeRef = useRef<number | null>(null);
 
 
-  const showToast = (msg: string) => {
-    setToast(msg);
+  const showToast = (key: string, values?: MessageValues) => {
+    setToast({ key, values });
     setTimeout(() => setToast(null), 2500);
   };
 
@@ -575,7 +583,7 @@ export default function App() {
       setStreamCurrentEpisode(nextEp);
       setStreamCurrentTime(0);
       setStreamIsPlaying(true);
-      showToast(`已自动连播：第 ${nextEp.number || nextIdx + 1} 集`);
+      showToast("已自动连播：第{{number}}集", { number: nextEp.number || nextIdx + 1 });
     } else {
       // 当前短剧全集播放完毕，自动切到推荐流下一部短剧
       showToast("本剧已连播完毕，自动为您切换下一部精选短剧");
@@ -600,7 +608,7 @@ export default function App() {
     try {
       savePlaybackPreference("quality", qKey);
     } catch {}
-    showToast(`清晰度已切换至：${qKey}`);
+    showToast("清晰度已切换至：{{quality}}", { quality: qKey });
 
     if (video) {
       const handleRestoreOnReady = () => {
@@ -625,7 +633,7 @@ export default function App() {
     if (streamVideoRef.current) {
       streamVideoRef.current.playbackRate = speed;
     }
-    showToast(`倍速已切换至：${speed}x`);
+    showToast("倍速已切换至：{{speed}}x", { speed });
   };
 
   // Previous remains inside the same session; only explicit next can produce a quick skip.
@@ -1032,7 +1040,7 @@ export default function App() {
     if (String(season.seriesId) === String(activeSeries?.id)) return;
     try {
       setShowSeriesEndModal(false);
-      showToast(`正在切换至《${season.title}》...`);
+      showToast("正在切换至《{{title}}》...", { title: season.title });
       await handleSelectSeries({
         id: season.seriesId,
         title: season.title,
@@ -1124,14 +1132,14 @@ export default function App() {
           e.preventDefault();
           video.currentTime = Math.max(0, video.currentTime - 5);
           setCurrentTime(video.currentTime);
-          showToast(`快退 5 秒 (${formatTime(video.currentTime)})`);
+          showToast("快退5秒", { time: formatTime(video.currentTime) });
           resetControlsTimer();
           break;
         case "ArrowRight":
           e.preventDefault();
           video.currentTime = Math.min(video.duration || 9999, video.currentTime + 5);
           setCurrentTime(video.currentTime);
-          showToast(`快进 5 秒 (${formatTime(video.currentTime)})`);
+          showToast("快进5秒", { time: formatTime(video.currentTime) });
           resetControlsTimer();
           break;
         case "ArrowUp":
@@ -1139,14 +1147,14 @@ export default function App() {
           video.volume = Math.min(1, Math.round((video.volume + 0.1) * 10) / 10);
           setVolume(video.volume);
           setIsMuted(false);
-          showToast(`音量: ${Math.round(video.volume * 100)}%`);
+          showToast("音量：{{value}}%", { value: Math.round(video.volume * 100) });
           resetControlsTimer();
           break;
         case "ArrowDown":
           e.preventDefault();
           video.volume = Math.max(0, Math.round((video.volume - 0.1) * 10) / 10);
           setVolume(video.volume);
-          showToast(`音量: ${Math.round(video.volume * 100)}%`);
+          showToast("音量：{{value}}%", { value: Math.round(video.volume * 100) });
           resetControlsTimer();
           break;
         case "[": {
@@ -1242,7 +1250,7 @@ export default function App() {
       if (prog && !prog.completed && prog.episodeId === currentEpisode.id && prog.position > 0) {
         if (prog.position < (videoRef.current.duration || 9999) - 5) {
           videoRef.current.currentTime = prog.position;
-          showToast(`已为您恢复至上次播放进度 ${formatTime(prog.position)}`);
+          showToast("已恢复播放进度", { time: formatTime(prog.position) });
         }
       }
     }
@@ -1320,7 +1328,7 @@ export default function App() {
     try {
       savePlaybackPreference("quality", qKey);
     } catch {}
-    showToast(`正在切换至官方 ${qKey}...`);
+    showToast("正在切换画质", { quality: qKey });
 
     if (video) {
       const handleRestoreOnReady = () => {
@@ -1349,7 +1357,7 @@ export default function App() {
       savePlaybackPreference("speed", speed);
     } catch {}
     setShowSpeedMenu(false);
-    showToast(`播放倍速已设为 ${speed}x`);
+    showToast("倍速已切换至：{{speed}}x", { speed });
   };
 
   // 全屏切换
@@ -1380,7 +1388,7 @@ export default function App() {
     if (currentEpisodeIndex < activeSeries.episodes.length - 1) {
       if (autoPlayNext) {
         setCurrentEpisodeIndex((prev) => prev + 1);
-        showToast(`第 ${currentEpisodeIndex + 1} 集播放完毕，自动播放下一集`);
+        showToast("本集结束自动下一集", { number: currentEpisodeIndex + 1 });
       } else {
         video.pause();
         setIsPlaying(false);
@@ -1416,7 +1424,7 @@ export default function App() {
         title: nextSeason.title,
         cover: nextSeason.cover || activeSeries.cover,
         badge: nextSeason.badge || "全集",
-        description: `本季已完结！精彩剧情不间断，即将为您无缝连播《${nextSeason.seasonLabel}》第 1 集！`,
+        description: "",
         tags: "同系列下一季"
       };
       isNextSeason = true;
@@ -1440,46 +1448,41 @@ export default function App() {
         showToast(`🎉 恭喜追完当前季！即将自动连播下一季`);
       }
     } else {
-      showToast(`🎉 恭喜追完《${activeSeries.title}》全集！`);
+      showToast("追完全集", { title: activeSeries.title });
     }
   };
 
   const currentBanner = banners[activeBannerIndex];
   const currentRankType = rankTypes.find((r) => r.slug === selectedRankSlug) || rankTypes[0];
 
+  useEffect(() => { setPlaybackError(""); }, [currentEpisode?.id, currentQuality]);
+
   // 今日日期格式化
-  const todayStr = (() => {
-    const now = new Date();
-    return `${now.getMonth() + 1}月${now.getDate()}日已更新`;
-  })();
+  const todayStr = t("更新日期", { date: formatDate(new Date(), { month: "short", day: "numeric" }) });
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none">
       {/* 提示条 Toast */}
       {toast && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800/95 border border-slate-700/80 backdrop-blur px-5 py-2.5 rounded-full text-sm shadow-2xl text-rose-400 font-semibold animate-bounce">
-          {toast}
+          {toast.values ? translate(language, toast.key, toast.values) : localizeError(toast.key)}
         </div>
       )}
 
       {/* 🔝 顶部通用导航栏（TV 遥控器与电脑鼠标通用，导航栏置顶） */}
       <header className="h-16 md:h-20 bg-[#0a0f1d]/95 backdrop-blur border-b border-slate-800/80 px-4 md:px-8 flex items-center justify-between z-30 shrink-0">
-        <div className="flex items-center gap-4 md:gap-8 overflow-x-auto no-scrollbar">
+        <div className="flex-1 min-w-0 flex items-center gap-3 md:gap-8 overflow-x-auto no-scrollbar">
           {/* Logo */}
           <div 
             className="flex items-center gap-3 cursor-pointer shrink-0" 
             onClick={() => { setTab("home"); setActiveSeries(null); }}
           >
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-rose-600 via-rose-500 to-amber-500 flex items-center justify-center shadow-lg shadow-rose-900/40">
-              <Play className="w-5 h-5 fill-white text-white ml-0.5" />
+              <Play className="w-5 h-5 fill-white text-white ms-0.5" />
             </div>
-            <div>
-              <h1 className="font-extrabold text-base md:text-xl tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-                红果短剧
-              </h1>
-              <span className="text-[10px] text-rose-400/90 font-bold tracking-widest uppercase block -mt-1">
-                TV & PC 客户端
-              </span>
+            <div className="hidden md:block">
+              <h1 className="font-extrabold text-base md:text-xl tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">{t("红果短剧")}</h1>
+              <span className="text-[10px] text-rose-400/90 font-bold tracking-widest uppercase block -mt-1">{t("TV & PC 客户端")}</span>
             </div>
           </div>
 
@@ -1495,8 +1498,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Sparkles className="w-4 h-4" /> 首页
-            </button>
+              <Sparkles className="w-4 h-4" />{t("首页")}</button>
 
             {/* 1.5 推荐刷剧 (沉浸式 9:16 短剧流) */}
             <button
@@ -1512,8 +1514,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Compass className="w-4 h-4" /> 推荐
-            </button>
+              <Compass className="w-4 h-4" />{t("推荐")}</button>
 
             {/* 2. 分类 */}
             <button
@@ -1529,8 +1530,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Grid className="w-4 h-4" /> 分类
-            </button>
+              <Grid className="w-4 h-4" />{t("分类")}</button>
 
             {/* 3. 榜单 */}
             <button
@@ -1546,8 +1546,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Trophy className="w-4 h-4 text-amber-400" /> 榜单
-            </button>
+              <Trophy className="w-4 h-4 text-amber-400" />{t("榜单")}</button>
 
             {/* 4. 搜索 */}
             <button
@@ -1559,8 +1558,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Search className="w-4 h-4" /> 搜索
-            </button>
+              <Search className="w-4 h-4" />{t("搜索")}</button>
 
             {/* 5. 追剧与历史 */}
             <button
@@ -1577,8 +1575,7 @@ export default function App() {
                   : "text-slate-300 hover:text-white hover:bg-slate-800/60"
               }`}
             >
-              <Heart className="w-4 h-4" /> 追剧
-              {favorites.length > 0 && (
+              <Heart className="w-4 h-4" />{t("追剧")}{favorites.length > 0 && (
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-bold">
                   {favorites.length}
                 </span>
@@ -1588,9 +1585,18 @@ export default function App() {
         </div>
 
         {/* 右侧设置与自建服务状态 */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-1.5 md:gap-3 shrink-0 ps-2">
+          <select
+            aria-label={t("界面语言")}
+            value={language}
+            onChange={event => changeLanguage(event.target.value)}
+            className="w-24 md:w-40 min-h-10 px-2 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 outline-none focus:ring-2 focus:ring-rose-500"
+          >
+            {languages.map(item => <option key={item.id} value={item.id} lang={item.locale}>{item.name}</option>)}
+          </select>
           <button
             tabIndex={6}
+            aria-label={t("设置")}
             onClick={() => { setTab("settings"); setActiveSeries(null); }}
             className={`tv-nav-item flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs md:text-sm font-semibold transition-all duration-200 outline-none focus:ring-4 focus:ring-rose-500/50 ${
               tab === "settings" && !activeSeries
@@ -1599,17 +1605,18 @@ export default function App() {
             }`}
           >
             <SettingsIcon className="w-4 h-4" />
-            <span className="hidden sm:inline">设置</span>
+            <span className="hidden sm:inline">{t("设置")}</span>
           </button>
 
           <div className="hidden xl:flex items-center gap-2 text-xs bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-full text-slate-400 font-mono">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>本地服务</span>
+            <span>{t("本地服务")}</span>
           </div>
         </div>
       </header>
 
-      {historyStorageWarning && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{historyStorageWarning}</div>}
+      {!languageSaved && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{t("语言偏好无法保存")}</div>}
+      {historyStorageWarning && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{localizeError(historyStorageWarning)}</div>}
       {/* 主界面区域 */}
       <main className={`flex-1 ${!activeSeries && tab === "recommend" ? "overflow-hidden p-0" : "overflow-y-auto px-4 md:px-8 py-6"}`}>
         {/* ======================= 1. 播放与选集详情界面 ======================= */}
@@ -1625,11 +1632,10 @@ export default function App() {
                   onClick={() => setActiveSeries(null)}
                   className="flex items-center gap-2 text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition outline-none focus:ring-2 focus:ring-rose-500"
                 >
-                  <ArrowLeft className="w-4 h-4" /> 返回
-                </button>
+                  <ArrowLeft className="w-4 h-4" />{t("返回")}</button>
                 <div className="flex items-center gap-2">
                   <span className="text-xs px-3 py-1 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium">
-                    正在播放第 {currentEpisode?.number || currentEpisodeIndex + 1} 集
+                    {t("正在播放第{{number}}集", { number: currentEpisode?.number || currentEpisodeIndex + 1 })}
                   </span>
                 </div>
               </div>
@@ -1654,6 +1660,7 @@ export default function App() {
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={handleLoadedMetadata}
                       onEnded={handleVideoEnded}
+                      onError={() => { setPlaybackError("无法播放媒体"); setIsPlaying(false); }}
                       onPlay={() => {
                         setIsPlaying(true);
                         setShowSeriesEndModal(false);
@@ -1668,13 +1675,16 @@ export default function App() {
                       className="w-full h-full object-contain cursor-pointer"
                     />
 
+                    {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)}</div>}
+
                     {/* 暂停时中央呼吸播放大按钮 */}
                     {!isPlaying && (
                       <button
                         onClick={handleTogglePlay}
+                        aria-label={t("播放")}
                         className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white flex items-center justify-center shadow-2xl shadow-rose-950/80 backdrop-blur transition-transform hover:scale-110 z-20"
                       >
-                        <Play className="w-8 h-8 fill-white ml-1" />
+                        <Play className="w-8 h-8 fill-white ms-1" />
                       </button>
                     )}
 
@@ -1688,6 +1698,7 @@ export default function App() {
                         {isFullscreen && (
                           <button
                             onClick={toggleFullscreen}
+                            aria-label={t("全屏切换")}
                             className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white transition"
                           >
                             <ArrowLeft className="w-5 h-5" />
@@ -1697,7 +1708,7 @@ export default function App() {
                           <h3 className="font-bold text-sm md:text-base text-white flex items-center gap-2">
                             {activeSeries.title}
                             <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-600 text-white font-medium">
-                              第 {currentEpisode.number || currentEpisodeIndex + 1} 集
+                              {t("第{{number}}集", { number: currentEpisode.number || currentEpisodeIndex + 1 })}
                             </span>
                           </h3>
                         </div>
@@ -1718,7 +1729,7 @@ export default function App() {
                             e.stopPropagation();
                             setShowShortcutsHelp(!showShortcutsHelp);
                           }}
-                          title="快捷键说明"
+                          title={t("快捷键说明")}
                           className="p-1.5 rounded-xl bg-black/60 hover:bg-slate-800 border border-slate-700/80 text-slate-400 hover:text-white transition"
                         >
                           <HelpCircle className="w-4 h-4" />
@@ -1730,21 +1741,21 @@ export default function App() {
                     {showShortcutsHelp && (
                       <div
                         onClick={(e) => e.stopPropagation()}
-                        className="absolute top-16 right-4 z-40 bg-slate-900/95 border border-slate-700 rounded-2xl p-4 shadow-2xl backdrop-blur text-xs space-y-2.5 w-64"
+                        className="absolute top-16 end-4 z-40 bg-slate-900/95 border border-slate-700 rounded-2xl p-4 shadow-2xl backdrop-blur text-xs space-y-2.5 w-64"
                       >
                         <div className="flex items-center justify-between pb-1.5 border-b border-slate-800 font-bold text-white">
-                          <span>⌨️ 播放器快捷键 (TV / PC)</span>
+                          <span>{t("⌨️ 播放器快捷键 (TV / PC)")}</span>
                           <button onClick={() => setShowShortcutsHelp(false)} className="text-slate-400 hover:text-white">✕</button>
                         </div>
                         <div className="grid grid-cols-2 gap-y-2 text-slate-300">
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">空格</kbd> 播放/暂停</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">F</kbd> 全屏切换</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">← / →</kbd> 快退/快进 5s</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">↑ / ↓</kbd> 音量调节</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">[ / ]</kbd> 减速/加速</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">N / P</kbd> 下集/上集</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">M</kbd> 静音切换</div>
-                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">双击</kbd> 全屏</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">{t("空格")}</kbd>{t("播放/暂停")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">F</kbd>{t("全屏切换")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">← / →</kbd>{t("快退/快进 5s")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">↑ / ↓</kbd>{t("音量调节")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">[ / ]</kbd>{t("减速/加速")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">N / P</kbd>{t("下集/上集")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">M</kbd>{t("静音切换")}</div>
+                          <div><kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-rose-400">{t("双击")}</kbd>{t("全屏")}</div>
                         </div>
                       </div>
                     )}
@@ -1760,6 +1771,7 @@ export default function App() {
                       <div className="relative group/bar flex items-center w-full">
                         <input
                           type="range"
+                          aria-label={t("播放进度")}
                           min={0}
                           max={duration || 100}
                           value={currentTime}
@@ -1770,20 +1782,21 @@ export default function App() {
                       </div>
 
                       {/* 2. 按钮控制栏 */}
-                      <div className="flex items-center justify-between gap-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
                         {/* 左侧控制：播放/暂停、上集、下集、时间 */}
                         <div className="flex items-center gap-3">
                           <button
                             onClick={handleTogglePlay}
+                            aria-label={isPlaying ? t("暂停") : t("播放")}
                             className="w-9 h-9 rounded-xl bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center transition shadow-lg shadow-rose-950/60"
                           >
-                            {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white ml-0.5" />}
+                            {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white ms-0.5" />}
                           </button>
 
                           <button
                             disabled={currentEpisodeIndex <= 0}
                             onClick={() => setCurrentEpisodeIndex((i) => i - 1)}
-                            title="上一集 (P)"
+                            title={t("上一集 (P)")}
                             className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition"
                           >
                             <ChevronLeft className="w-4 h-4" />
@@ -1792,13 +1805,13 @@ export default function App() {
                           <button
                             disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1}
                             onClick={() => setCurrentEpisodeIndex((i) => i + 1)}
-                            title="下一集 (N)"
+                            title={t("下一集 (N)")}
                             className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition"
                           >
                             <ChevronRight className="w-4 h-4" />
                           </button>
 
-                          <div className="text-slate-300 font-mono text-xs pl-1">
+                          <div dir="ltr" className="text-slate-300 font-mono text-xs ps-1 whitespace-nowrap">
                             <span className="text-white font-bold">{formatTime(currentTime)}</span>
                             <span className="text-slate-500 mx-1">/</span>
                             <span>{formatTime(duration)}</span>
@@ -1825,10 +1838,8 @@ export default function App() {
                             </button>
 
                             {showSpeedMenu && (
-                              <div className="absolute bottom-11 right-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur flex flex-col gap-1 w-24 z-40">
-                                <div className="px-2 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800">
-                                  播放倍速
-                                </div>
+                              <div className="absolute bottom-11 end-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur flex flex-col gap-1 w-24 z-40">
+                                <div className="px-2 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800">{t("播放倍速")}</div>
                                 {[0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map((s) => (
                                   <button
                                     key={s}
@@ -1861,9 +1872,9 @@ export default function App() {
                             </button>
 
                             {showQualityMenu && (
-                              <div className="absolute bottom-11 right-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur flex flex-col gap-1 w-36 z-40">
+                              <div className="absolute bottom-11 end-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur flex flex-col gap-1 w-36 z-40">
                                 <div className="px-2.5 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800 flex items-center justify-between">
-                                  <span>官方真实画质</span>
+                                  <span>{t("官方真实画质")}</span>
                                   {qualitiesLoading && <RefreshCw className="w-2.5 h-2.5 animate-spin text-rose-400" />}
                                 </div>
                                 {videoQualities.length > 0 ? (
@@ -1877,13 +1888,13 @@ export default function App() {
                                           : "hover:bg-slate-800 text-slate-300"
                                       }`}
                                     >
-                                      <span>{q.label}</span>
+                                      <span>{localizeLabel(q.label)}</span>
                                       {currentQuality === q.key && <Check className="w-3.5 h-3.5" />}
                                     </button>
                                   ))
                                 ) : (
                                   <div className="px-2.5 py-2 text-xs text-slate-500">
-                                    {qualitiesLoading ? "加载官方画质中..." : "1080P 超清"}
+                                    {qualitiesLoading ? t("加载官方画质中...") : t("1080P 超清")}
                                   </div>
                                 )}
                               </div>
@@ -1902,16 +1913,17 @@ export default function App() {
                                 : "bg-slate-900/80 text-slate-400 border-slate-800"
                             }`}
                           >
-                            <span>连播: {autoPlayNext ? "开" : "关"}</span>
+                            <span>{t("连播:")}{autoPlayNext ? t("开") : t("关")}</span>
                           </button>
 
                           {/* 🔊 音量控制 */}
                           <div className="hidden sm:flex items-center gap-1.5 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-xl">
-                            <button onClick={handleToggleMute} className="text-slate-300 hover:text-white transition">
+                            <button onClick={handleToggleMute} aria-label={t("静音切换")} className="text-slate-300 hover:text-white transition">
                               {isMuted || volume === 0 ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
                             </button>
                             <input
                               type="range"
+                              aria-label={t("音量调节")}
                               min={0}
                               max={1}
                               step={0.05}
@@ -1924,7 +1936,7 @@ export default function App() {
                           {/* ⛶ 全屏按钮 */}
                           <button
                             onClick={toggleFullscreen}
-                            title="全屏 (F)"
+                            title={t("全屏 (F)")}
                             className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white transition"
                           >
                             {isFullscreen ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
@@ -1943,8 +1955,8 @@ export default function App() {
                           {/* 右上角关闭按钮 */}
                           <button
                             onClick={() => setShowSeriesEndModal(false)}
-                            className="absolute top-3.5 right-3.5 p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-800/80 transition"
-                            title="留在本剧"
+                            className="absolute top-3.5 end-3.5 p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-800/80 transition"
+                            title={t("留在本剧")}
                           >
                             <X className="w-5 h-5" />
                           </button>
@@ -1954,21 +1966,21 @@ export default function App() {
                             <Trophy className="w-4 h-4 text-amber-400" />
                             <span>
                               {seriesEndTarget.tags === "同系列下一季"
-                                ? `恭喜追完当前季！即将连播下一季`
-                                : `恭喜追完《${activeSeries.title}》全集！`}
+                                ? t("恭喜追完当前季！即将连播下一季")
+                                : t("追完全集", { title: activeSeries.title })}
                             </span>
                           </div>
 
                           <div className="space-y-1">
                             <h2 className="text-lg md:text-2xl font-black text-white tracking-wide">
                               {seriesEndTarget.tags === "同系列下一季"
-                                ? `为您自动连播同系列下一季`
-                                : `为您精选下一部同类爆款`}
+                                ? t("为您自动连播同系列下一季")
+                                : t("为您精选下一部同类爆款")}
                             </h2>
                             <p className="text-xs md:text-sm text-slate-400">
                               {seriesEndTarget.tags === "同系列下一季"
-                                ? `原班人马精彩剧情不间断，即刻无缝续看下一季！`
-                                : `高分好剧连播不间断，精彩剧情即刻续享`}
+                                ? t("原班人马精彩剧情不间断，即刻无缝续看下一季！")
+                                : t("高分好剧连播不间断，精彩剧情即刻续享")}
                             </p>
                           </div>
 
@@ -1978,7 +1990,7 @@ export default function App() {
                               setShowSeriesEndModal(false);
                               handleSelectSeries(seriesEndTarget);
                             }}
-                            className="flex items-center gap-3.5 md:gap-4 p-3 md:p-4 rounded-2xl bg-slate-800/60 hover:bg-slate-800/90 border border-slate-700/70 hover:border-rose-500/50 transition cursor-pointer text-left group"
+                            className="flex items-center gap-3.5 md:gap-4 p-3 md:p-4 rounded-2xl bg-slate-800/60 hover:bg-slate-800/90 border border-slate-700/70 hover:border-rose-500/50 transition cursor-pointer text-start group"
                           >
                             <div className="relative w-18 md:w-24 aspect-[3/4] rounded-xl overflow-hidden shrink-0 bg-slate-800 shadow-lg">
                               <img
@@ -1987,25 +1999,22 @@ export default function App() {
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               />
                               <div className="absolute inset-0 bg-black/20 group-hover:bg-transparent transition" />
-                              <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/75 text-[10px] text-white font-medium">
-                                {seriesEndTarget.badge || "全集"}
+                              <div className="absolute bottom-1 end-1 px-1.5 py-0.5 rounded bg-black/75 text-[10px] text-white font-medium">
+                                {localizeLabel(seriesEndTarget.badge) || t("全集")}
                               </div>
                             </div>
 
                             <div className="flex-1 min-w-0 space-y-1.5">
                               <div className="flex items-center gap-2">
                                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600/20 text-rose-400 border border-rose-500/30">
-                                  {seriesEndTarget.tags || "同类好剧"}
-                                </span>
-                                <span className="text-xs text-amber-400 font-semibold flex items-center gap-0.5">
-                                  🔥 9.8分
+                                  {localizeLabel(seriesEndTarget.tags) || t("同类好剧")}
                                 </span>
                               </div>
                               <h4 className="font-bold text-sm md:text-base text-white group-hover:text-rose-400 transition truncate">
                                 {seriesEndTarget.title}
                               </h4>
                               <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
-                                {seriesEndTarget.description || "精彩短剧连播，高潮迭起，逆袭反转不停歇！"}
+                                {seriesEndTarget.description || t("精彩短剧连播，高潮迭起，逆袭反转不停歇！")}
                               </p>
                             </div>
                           </div>
@@ -2014,15 +2023,13 @@ export default function App() {
                           <div className="flex items-center justify-between text-xs font-semibold px-1">
                             <span className="text-slate-400 flex items-center gap-1.5">
                               <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-                              ⏱️ <span className="text-rose-400 font-bold">{seriesEndCountdown}s</span> 后自动连播
+                              {t("倒计时连播", { seconds: seriesEndCountdown })}
                             </span>
                             <button
                               onClick={handleSwitchNextSeriesRecommendation}
                               className="text-slate-400 hover:text-slate-200 flex items-center gap-1 transition"
                             >
-                              <RefreshCw className="w-3.5 h-3.5" />
-                              换一部推荐
-                            </button>
+                              <RefreshCw className="w-3.5 h-3.5" />{t("换一部推荐")}</button>
                           </div>
 
                           {/* 倒计时进度条 */}
@@ -2038,9 +2045,7 @@ export default function App() {
                             <button
                               onClick={() => setShowSeriesEndModal(false)}
                               className="flex-1 py-2.5 md:py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs md:text-sm transition"
-                            >
-                              留在本剧
-                            </button>
+                            >{t("留在本剧")}</button>
                             <button
                               onClick={() => {
                                 setShowSeriesEndModal(false);
@@ -2049,7 +2054,7 @@ export default function App() {
                               className="flex-[1.5] py-2.5 md:py-3 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-bold text-xs md:text-sm shadow-lg shadow-rose-900/50 flex items-center justify-center gap-2 transition hover:scale-[1.02]"
                             >
                               <Play className="w-4 h-4 fill-white" />
-                              立即播放 ({seriesEndCountdown}s)
+                              {t("立即播放")} ({seriesEndCountdown}s)
                             </button>
                           </div>
                         </div>
@@ -2057,12 +2062,12 @@ export default function App() {
                     )}
                   </>
                 ) : (
-                  <div className="text-slate-500 text-sm">加载中...</div>
+                  <div className="text-slate-500 text-sm">{t("加载中...")}</div>
                 )}
               </div>
 
               {/* 左侧播放器下方：轻量操作条（上下集切换） */}
-              <div className="flex items-center justify-between pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                 <div className="flex items-center gap-3">
                   <button
                     tabIndex={9}
@@ -2073,8 +2078,7 @@ export default function App() {
                     }}
                     className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold transition outline-none focus:ring-2 focus:ring-rose-500"
                   >
-                    <ChevronLeft className="w-4 h-4" /> 上一集
-                  </button>
+                    <ChevronLeft className="w-4 h-4" />{t("上一集")}</button>
                   <button
                     tabIndex={10}
                     disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1}
@@ -2083,13 +2087,12 @@ export default function App() {
                       setCurrentEpisodeIndex((i) => i + 1);
                     }}
                     className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold transition outline-none focus:ring-4 focus:ring-rose-500/50 shadow-lg shadow-rose-900/40"
-                  >
-                    下一集 <ChevronRight className="w-4 h-4" />
+                  >{t("下一集")}<ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
 
                 <div className="text-xs text-slate-400 font-medium">
-                  正在播放第 <span className="text-rose-400 font-bold">{currentEpisode?.number || currentEpisodeIndex + 1}</span> / {activeSeries.episodes.length} 集
+                  {t("正在播放第{{number}}集", { number: currentEpisode?.number || currentEpisodeIndex + 1 })} · {t("共{{count}}集", { count: activeSeries.episodes.length })}
                 </div>
               </div>
 
@@ -2097,12 +2100,9 @@ export default function App() {
               <div className="w-full pt-6 border-t border-slate-800/80 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                      为你推荐
-                    </h3>
+                    <h3 className="text-xl font-bold text-white flex items-center gap-2">{t("为你推荐")}</h3>
                     {relatedKeyword && (
-                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 font-normal">
-                        关联标签: {relatedKeyword}
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 font-normal">{t("关联标签:")}{localizeLabel(relatedKeyword)}
                       </span>
                     )}
                   </div>
@@ -2113,7 +2113,7 @@ export default function App() {
                     onClick={handleRefreshRecommend}
                     disabled={relatedLoading || relatedRefreshing}
                     className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/90 active:scale-95 text-xs font-semibold text-slate-300 hover:text-white border border-slate-700/60 hover:border-rose-500/50 shadow-sm transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed group outline-none focus:ring-2 focus:ring-rose-500/50"
-                    title="换一批推荐短剧"
+                    title={t("换一批推荐短剧")}
                   >
                     <RefreshCw
                       style={{
@@ -2124,7 +2124,7 @@ export default function App() {
                         relatedRefreshing ? "animate-spin" : ""
                       }`}
                     />
-                    <span>换一批</span>
+                    <span>{t("换一批")}</span>
                   </button>
                 </div>
 
@@ -2166,14 +2166,13 @@ export default function App() {
                             loading="lazy"
                           />
                           {item.badge && (
-                            <span className="absolute top-2 right-2 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                              {item.badge}
+                            <span className="absolute top-2 end-2 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                              {localizeLabel(item.badge)}
                             </span>
                           )}
                           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-rose-300">
-                              <Play className="w-4 h-4 fill-rose-300" /> 点击换剧
-                            </span>
+                              <Play className="w-4 h-4 fill-rose-300" />{t("点击换剧")}</span>
                           </div>
                         </div>
                         <div className="p-3 flex flex-col flex-1 justify-between gap-1">
@@ -2181,16 +2180,14 @@ export default function App() {
                             {item.title}
                           </h4>
                           <p className="text-xs text-slate-500 line-clamp-1">
-                            {item.tags || "同类好剧"}
+                            {localizeLabel(item.tags) || t("同类好剧")}
                           </p>
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="p-8 text-center text-slate-500 text-sm bg-slate-900/30 rounded-2xl border border-slate-800">
-                    暂无同类推荐短剧
-                  </div>
+                  <div className="p-8 text-center text-slate-500 text-sm bg-slate-900/30 rounded-2xl border border-slate-800">{t("暂无同类推荐短剧")}</div>
                 )}
               </div>
             </div>
@@ -2200,9 +2197,7 @@ export default function App() {
               <div>
                 {/* 1. 顶部 Tab 标签栏 */}
                 <div className="flex items-center gap-6 border-b border-slate-800/80 pb-3 mb-4">
-                  <button className="text-base font-bold text-white border-b-2 border-rose-500 pb-1 -mb-3.5">
-                    视频
-                  </button>
+                  <button className="text-base font-bold text-white border-b-2 border-rose-500 pb-1 -mb-3.5">{t("视频")}</button>
                 </div>
 
                 {/* 2. 剧名与题材热度标签 */}
@@ -2227,26 +2222,24 @@ export default function App() {
                             : "text-slate-400"
                         }`}
                       />
-                      {favorites.some((f) => f.id === activeSeries.id) ? "已追剧" : "追剧"}
+                      {favorites.some((f) => f.id === activeSeries.id) ? t("已追剧") : t("追剧")}
                     </button>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                    <span className="text-rose-400 font-semibold flex items-center gap-1">
-                      🔥 连载中
-                    </span>
+                    <span className="text-rose-400 font-semibold flex items-center gap-1">{t("🔥 连载中")}</span>
                     <span>·</span>
-                    <span>共 {activeSeries.episodes.length} 集</span>
+                    <span>{t("共{{count}}集", { count: activeSeries.episodes.length })}</span>
                     {activeSeries.tags && (
                       <>
                         <span>·</span>
-                        <span className="text-slate-300">{activeSeries.tags}</span>
+                        <span className="text-slate-300">{localizeLabel(activeSeries.tags)}</span>
                       </>
                     )}
                   </div>
 
                   <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">
-                    {activeSeries.description || "暂无剧集简介"}
+                    {activeSeries.description || t("暂无剧集简介")}
                   </p>
                 </div>
 
@@ -2255,9 +2248,9 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Film className="w-4 h-4 text-rose-500" />
-                      <span className="font-bold text-sm text-white">选集</span>
+                      <span className="font-bold text-sm text-white">{t("选集")}</span>
                       <span className="text-xs text-slate-400 font-mono">
-                        (共 {activeSeries.episodes.length} 集)
+                        {t("共{{count}}集", { count: activeSeries.episodes.length })}
                       </span>
                     </div>
 
@@ -2266,10 +2259,10 @@ export default function App() {
                       <button
                         onClick={() => setShowRangeDropdown(!showRangeDropdown)}
                         className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-xs font-semibold text-rose-400 hover:text-rose-300 border border-slate-700/60 transition"
-                        title="点击展开选择剧集区间"
+                        title={t("点击展开选择剧集区间")}
                       >
                         <span>
-                          第 {episodeRangeIndex * 30 + 1}-{Math.min((episodeRangeIndex + 1) * 30, activeSeries.episodes.length)} 集
+                          {t("集数范围", { start: episodeRangeIndex * 30 + 1, end: Math.min((episodeRangeIndex + 1) * 30, activeSeries.episodes.length) })}
                         </span>
                         {showRangeDropdown ? (
                           <ChevronUp className="w-3.5 h-3.5 text-rose-400" />
@@ -2287,15 +2280,13 @@ export default function App() {
                 <div className="pt-3 flex-1">
                   <div className="p-3 rounded-xl bg-slate-900/95 border border-slate-700/80 shadow-2xl backdrop-blur">
                     <div className="text-[11px] font-bold text-slate-400 mb-2.5 flex items-center justify-between">
-                      <span className="text-slate-300">快速跳转分段区间 (每组30集)</span>
+                      <span className="text-slate-300">{t("快速跳转分段区间 (每组30集)")}</span>
                       <button
                         onClick={() => setShowRangeDropdown(false)}
                         className="text-xs text-rose-400 hover:text-rose-300 font-semibold"
-                      >
-                        返回选集
-                      </button>
+                      >{t("返回选集")}</button>
                     </div>
-                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5 max-h-[260px] overflow-y-auto pr-1">
+                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5 max-h-[260px] overflow-y-auto pe-1">
                       {Array.from({ length: Math.ceil(activeSeries.episodes.length / 30) }).map((_, rIdx) => {
                         const start = rIdx * 30 + 1;
                         const end = Math.min((rIdx + 1) * 30, activeSeries.episodes.length);
@@ -2335,7 +2326,7 @@ export default function App() {
                             setShowSeriesEndModal(false);
                             setCurrentEpisodeIndex(actualIdx);
                           }}
-                          title={`第 ${ep.number || actualIdx + 1} 集`}
+                          title={t("第{{number}}集", { number: ep.number || actualIdx + 1 })}
                           className={`h-12 rounded-xl text-sm font-extrabold transition-all outline-none focus:ring-2 focus:ring-rose-500/70 flex items-center justify-center relative shadow-sm ${
                             isCurrent
                               ? "bg-rose-600 text-white shadow-md shadow-rose-900/60 scale-105 z-10 ring-2 ring-rose-400"
@@ -2362,13 +2353,13 @@ export default function App() {
                 <div className="flex items-center justify-between px-0.5">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-rose-500" />
-                    <span className="font-extrabold text-sm text-white">同系列</span>
+                    <span className="font-extrabold text-sm text-white">{t("同系列")}</span>
                   </div>
-                  <span className="text-[11px] text-slate-400">点击卡片直接播放</span>
+                  <span className="text-[11px] text-slate-400">{t("点击卡片直接播放")}</span>
                 </div>
 
                 {/* 同系列卡片纵向排布列表（显示区域限制显示6个，其他支持滚动浏览） */}
-                <div className="flex flex-col gap-3 max-h-[855px] overflow-y-auto pr-1.5 select-none">
+                <div className="flex flex-col gap-3 max-h-[855px] overflow-y-auto pe-1.5 select-none">
                   {(seasonsList.length > 0
                     ? seasonsList
                     : [
@@ -2379,7 +2370,7 @@ export default function App() {
                           seasonNumber: 1,
                           seasonLabel: "第1季",
                           cover: activeSeries.cover,
-                          badge: activeSeries.badge || "全集",
+                          badge: activeSeries.badge || t("全集"),
                           episodeCount: activeSeries.episodes.length,
                         },
                       ]
@@ -2420,13 +2411,11 @@ export default function App() {
                           {/* 顶部标签行：全集标签 + 正在播放状态 */}
                           <div className="flex items-center justify-between">
                             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#1a233a] text-slate-300 border border-slate-700/50">
-                              全{season.episodeCount || (isPlayingThis ? activeSeries.episodes.length : 80)}集
+                              {(season.episodeCount || isPlayingThis) ? t("共{{count}}集", { count: season.episodeCount || activeSeries.episodes.length }) : t("选集")}
                             </span>
                             {isPlayingThis && (
                               <span className="text-[10px] text-rose-400 font-bold flex items-center gap-1 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/30">
-                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-                                正在播放
-                              </span>
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />{t("正在播放")}</span>
                             )}
                           </div>
 
@@ -2443,18 +2432,14 @@ export default function App() {
                           {/* 剧情简介：2 行自然截断 */}
                           <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
                             {isPlayingThis
-                              ? activeSeries.description || "全网高分热门力作，逆袭反转不停歇！"
-                              : `${season.title}精彩连载，全剧高能反转逆袭，不容错过！`}
+                              ? activeSeries.description || t("全网高分热门力作，逆袭反转不停歇！")
+                              : t("暂无剧集简介")}
                           </p>
 
-                          {/* 底部信息行：🔥 7173万热度 */}
+                          {/* 底部操作区域 */}
                           <div className="flex items-center justify-between pt-1">
-                            <span className="text-xs text-rose-400 font-bold flex items-center gap-1">
-                              🔥 7173万热度
-                            </span>
                             {!isPlayingThis && (
-                              <span className="text-[11px] text-slate-500 group-hover:text-rose-400 font-medium transition flex items-center gap-0.5">
-                                点击播放 <ChevronRight className="w-3 h-3" />
+                              <span className="text-[11px] text-slate-500 group-hover:text-rose-400 font-medium transition flex items-center gap-0.5">{t("点击播放")}<ChevronRight className="w-3 h-3" />
                               </span>
                             )}
                           </div>
@@ -2491,7 +2476,7 @@ export default function App() {
                   )}
 
                   <div className="flex items-center gap-2 text-xs font-semibold text-rose-400">
-                    <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/30">官方主打推荐</span>
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/30">{t("官方主打推荐")}</span>
                     <span>{currentBanner.tags}</span>
                   </div>
 
@@ -2504,18 +2489,16 @@ export default function App() {
                       onClick={() => handleSelectSeries(currentBanner)}
                       className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-sm font-bold shadow-xl shadow-rose-900/50 transition-all scale-100 hover:scale-105 outline-none focus:ring-4 focus:ring-rose-500/60"
                     >
-                      <Play className="w-4 h-4 fill-white" /> 立即观看
-                    </button>
+                      <Play className="w-4 h-4 fill-white" />{t("立即观看")}</button>
                     <button
                       onClick={() => handleToggleFav(currentBanner)}
                       className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-slate-900/80 hover:bg-slate-800 text-sm font-semibold border border-slate-700/80 transition outline-none focus:ring-2 focus:ring-rose-500"
                     >
-                      <Heart className="w-4 h-4 text-rose-500" /> 加入追剧
-                    </button>
+                      <Heart className="w-4 h-4 text-rose-500" />{t("加入追剧")}</button>
                   </div>
                 </div>
 
-                <div className="absolute bottom-6 right-8 z-10 flex gap-2">
+                <div className="absolute bottom-6 end-8 z-10 flex gap-2">
                   {banners.map((_, idx) => (
                     <button
                       key={idx}
@@ -2549,7 +2532,7 @@ export default function App() {
                         : "text-slate-400 hover:text-white hover:bg-slate-800/40"
                     }`}
                   >
-                    <Icon className="w-4 h-4" /> {tabItem.name}
+                    <Icon className="w-4 h-4" /> {localizeLabel(tabItem.name)}
                   </button>
                 );
               })}
@@ -2563,7 +2546,7 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg md:text-xl font-bold flex items-center gap-2">
                       <span className="w-1.5 h-5 rounded-full bg-rose-500 inline-block" />
-                      {section.name}
+                      {localizeLabel(section.name)}
                     </h3>
                   </div>
 
@@ -2584,21 +2567,20 @@ export default function App() {
                             loading="lazy"
                           />
                           {item.badge && (
-                            <span className="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                              {item.badge}
+                            <span className="absolute top-2.5 end-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                              {localizeLabel(item.badge)}
                             </span>
                           )}
                           <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3.5">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-rose-300">
-                              <Play className="w-4 h-4 fill-rose-300" /> 点击播放
-                            </span>
+                              <Play className="w-4 h-4 fill-rose-300" />{t("点击播放")}</span>
                           </div>
                         </div>
                         <div className="p-3.5 flex flex-col flex-1 justify-between gap-1.5">
                           <h4 className="font-bold text-sm leading-snug line-clamp-1 group-hover:text-rose-400 transition">
                             {item.title}
                           </h4>
-                          <p className="text-xs text-slate-500 line-clamp-1">{item.tags || "官方推荐"}</p>
+                          <p className="text-xs text-slate-500 line-clamp-1">{localizeLabel(item.tags) || t("官方推荐")}</p>
                         </div>
                       </div>
                     ))}
@@ -2630,12 +2612,12 @@ export default function App() {
             {streamLoading && streamList.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-32 text-slate-500 space-y-3">
                 <RefreshCw className="w-8 h-8 text-rose-500 animate-spin" />
-                <span className="text-sm">正在加载沉浸式短剧推荐流...</span>
+                <span className="text-sm">{t("正在加载沉浸式短剧推荐流...")}</span>
               </div>
             ) : streamList.length === 0 ? (
               <div className="text-center py-32 text-slate-500 text-sm">
-                <p>{streamError || "暂无推荐短剧"}</p>
-                <button className="mt-4 px-5 py-2 rounded-xl bg-rose-600 text-white" onClick={() => void streamFeedRef.current.retry().catch(() => {})}>重试</button>
+                <p>{streamError ? localizeError(streamError) : t("暂无推荐短剧")}</p>
+                <button className="mt-4 px-5 py-2 rounded-xl bg-rose-600 text-white" onClick={() => void streamFeedRef.current.retry().catch(() => {})}>{t("重试")}</button>
               </div>
             ) : (() => {
               const currentItem = streamList[streamIndex] || streamList[0];
@@ -2646,7 +2628,14 @@ export default function App() {
 
               return (
                 <div className="relative w-full h-full overflow-hidden bg-black flex flex-col justify-between group">
-                  {streamError && <div role="alert" className="absolute top-3 left-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{streamError} <button className="underline ml-3" onClick={() => {setStreamError(""); if(!streamCurrentEpisode)void loadStreamDetail(currentItem);else void streamFeedRef.current.retry().catch(()=>{});}}>重试</button></div>}
+                  {streamError && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
+                    if (streamError === "无法播放媒体") {
+                      streamQualitySwitchTimeRef.current = streamCurrentTime;
+                      setStreamPlaybackAttempt(attempt => attempt + 1);
+                    } else if (!streamCurrentEpisode) void loadStreamDetail(currentItem);
+                    else void streamFeedRef.current.retry().catch(() => {});
+                    setStreamError("");
+                  }}>{t("重试")}</button></div>}
                   {/* 背景氛围虚化图 (彻底填充屏幕，消除任何黑边死角) */}
                   <div
                     className="absolute inset-0 bg-cover bg-center blur-3xl opacity-25 scale-110 pointer-events-none transition-all duration-700"
@@ -2671,8 +2660,9 @@ export default function App() {
                     {videoStreamUrl ? (
                       <video
                         ref={streamVideoRef}
-                        key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}`}
+                        key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}-${streamPlaybackAttempt}`}
                         src={api.getVideoStreamUrl(streamCurrentEpisode?.id || "", streamQuality, currentItem.id)}
+                        onError={() => { setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
                         autoPlay
                         playsInline
                         className="w-full h-full object-contain transition-all duration-300"
@@ -2756,7 +2746,7 @@ export default function App() {
                     {!streamIsPlaying && (
                       <div className="absolute inset-0 bg-black/35 backdrop-blur-[2px] flex items-center justify-center z-10">
                         <div className="w-20 h-20 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 text-white flex items-center justify-center shadow-2xl scale-105 transition-transform">
-                          <Play className="w-10 h-10 fill-white ml-1 text-white opacity-95" />
+                          <Play className="w-10 h-10 fill-white ms-1 text-white opacity-95" />
                         </div>
                       </div>
                     )}
@@ -2770,12 +2760,10 @@ export default function App() {
                   <div className="relative z-10 px-6 pt-5 flex items-center justify-between text-xs text-white/90 pointer-events-none">
                     <div className="flex items-center gap-2 pointer-events-auto">
                       <span className="px-3.5 py-1.5 rounded-full bg-rose-600/30 text-rose-300 border border-rose-500/40 font-bold text-xs backdrop-blur-md shadow-lg">
-                        第 {streamCurrentEpisode?.number || streamEpisodeIndex + 1} 集
+                        {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })}
                       </span>
                       {streamIsLandscape && (
-                        <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">
-                          🖥️ 横屏剧
-                        </span>
+                        <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">{t("🖥️ 横屏剧")}</span>
                       )}
                     </div>
 
@@ -2802,11 +2790,9 @@ export default function App() {
                         {streamShowSpeedMenu && (
                           <div 
                             onClick={(e) => e.stopPropagation()}
-                            className="absolute top-10 right-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur-md flex flex-col gap-1 w-24 z-40"
+                            className="absolute top-10 end-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur-md flex flex-col gap-1 w-24 z-40"
                           >
-                            <div className="px-2 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800">
-                              播放倍速
-                            </div>
+                            <div className="px-2 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800">{t("播放倍速")}</div>
                             {[0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map((s) => (
                               <button
                                 key={s}
@@ -2844,10 +2830,10 @@ export default function App() {
                         {streamShowQualityMenu && (
                           <div 
                             onClick={(e) => e.stopPropagation()}
-                            className="absolute top-10 right-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur-md flex flex-col gap-1 w-32 z-40"
+                            className="absolute top-10 end-0 bg-slate-900/95 border border-slate-700 rounded-2xl p-1.5 shadow-2xl backdrop-blur-md flex flex-col gap-1 w-32 z-40"
                           >
                             <div className="px-2.5 py-1 text-[10px] text-slate-400 font-bold border-b border-slate-800 flex items-center justify-between">
-                              <span>清晰度画质</span>
+                              <span>{t("清晰度画质")}</span>
                               {streamQualitiesLoading && <RefreshCw className="w-2.5 h-2.5 animate-spin text-rose-400" />}
                             </div>
                             {streamQualities.length > 0 ? (
@@ -2862,7 +2848,7 @@ export default function App() {
                                       : "hover:bg-slate-800 text-slate-300"
                                   }`}
                                 >
-                                  <span>{q.label}</span>
+                                  <span>{localizeLabel(q.label)}</span>
                                   {streamQuality === q.key && <Check className="w-3.5 h-3.5" />}
                                 </button>
                               ))
@@ -2878,7 +2864,7 @@ export default function App() {
                                       : "hover:bg-slate-800 text-slate-300"
                                   }`}
                                 >
-                                  <span>{q} 超清</span>
+                                  <span>{q}{t("超清")}</span>
                                   {streamQuality === q && <Check className="w-3.5 h-3.5" />}
                                 </button>
                               ))
@@ -2887,14 +2873,12 @@ export default function App() {
                         )}
                       </div>
 
-                      <span className="text-[11px] text-white/70 bg-black/50 px-3 py-1.5 rounded-full backdrop-blur-md border border-white/15 shadow-lg">
-                        滚轮 / ↑↓ 键切剧
-                      </span>
+                      <span className="text-[11px] text-white/70 bg-black/50 px-3 py-1.5 rounded-full backdrop-blur-md border border-white/15 shadow-lg">{t("滚轮 / ↑↓ 键切剧")}</span>
                     </div>
                   </div>
 
                   {/* 👉 右侧纵向操作栏（严格参考图二排布：头像/追剧、爱心、评论、收藏、分享、切剧） */}
-                  <div className="absolute right-6 bottom-20 z-20 flex flex-col items-center gap-4">
+                  <div className="absolute end-6 bottom-20 z-20 flex flex-col items-center gap-4">
                     {/* 1. 作者/剧集头像 + 追剧加号小标 */}
                     <div 
                       onClick={(e) => {
@@ -2902,7 +2886,7 @@ export default function App() {
                         handleToggleFav(currentItem);
                       }}
                       className="relative cursor-pointer group/avatar flex flex-col items-center mb-1"
-                      title={isFav ? "已追剧" : "点击追剧"}
+                      title={isFav ? t("已追剧") : t("点击追剧")}
                     >
                       <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white/90 shadow-2xl bg-slate-900 group-hover/avatar:scale-105 transition-transform">
                         <img src={currentItem.cover} alt={currentItem.title} className="w-full h-full object-cover" />
@@ -2929,7 +2913,7 @@ export default function App() {
                         <Heart className={`w-7 h-7 drop-shadow-lg ${isFav ? "fill-rose-500 text-rose-500" : ""}`} />
                       </div>
                       <span className="text-[11px] font-bold text-white/90 drop-shadow">
-                        {isFav ? "已追" : "追剧"}
+                        {isFav ? t("已追") : t("追剧")}
                       </span>
                     </button>
 
@@ -2943,7 +2927,7 @@ export default function App() {
                           handleSwitchStream("prev");
                         }}
                         className="w-9 h-9 rounded-full bg-black/45 hover:bg-black/75 disabled:opacity-20 disabled:cursor-not-allowed border border-white/15 flex items-center justify-center text-white transition cursor-pointer"
-                        title="上一部短剧 (键盘↑)"
+                        title={t("上一部短剧 (键盘↑)")}
                       >
                         <ChevronUp className="w-5 h-5" />
                       </button>
@@ -2954,7 +2938,7 @@ export default function App() {
                           handleSwitchStream("next");
                         }}
                         className="w-9 h-9 rounded-full bg-black/45 hover:bg-black/75 border border-white/15 flex items-center justify-center text-white transition cursor-pointer"
-                        title="下一部短剧 (键盘↓)"
+                        title={t("下一部短剧 (键盘↓)")}
                       >
                         <ChevronDown className="w-5 h-5" />
                       </button>
@@ -2971,20 +2955,20 @@ export default function App() {
                         </h3>
                         {currentItem.badge && (
                           <span className="text-xs text-white/70 font-medium">
-                            {currentItem.badge}
+                            {localizeLabel(currentItem.badge)}
                           </span>
                         )}
                       </div>
                       <p className="text-sm font-semibold text-white/90 drop-shadow">
-                        第 {streamCurrentEpisode?.number || streamEpisodeIndex + 1} 集 · 《{currentItem.title}》 {streamCurrentEpisode?.title || `第${streamEpisodeIndex + 1}集`}
+                        {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })} · <bdi>{currentItem.title}</bdi>
                       </p>
                       {/* #标签 (参考图二黄色/主题高亮标签) */}
                       <div className="flex items-center gap-2 pt-0.5">
-                        <span className="text-xs font-bold text-amber-400 drop-shadow">#短剧</span>
-                        <span className="text-xs font-bold text-amber-400 drop-shadow">#{currentItem.tags || "爆款推荐"}</span>
-                        {currentItem.tags?.split("/").map((t, idx) => (
+                        <span className="text-xs font-bold text-amber-400 drop-shadow">{t("#短剧")}</span>
+                        <span className="text-xs font-bold text-amber-400 drop-shadow">#{localizeLabel(currentItem.tags) || t("爆款推荐")}</span>
+                        {currentItem.tags?.split("/").map((tag, idx) => (
                           <span key={idx} className="text-xs font-bold text-amber-300 drop-shadow">
-                            #{t.trim()}
+                            #{localizeLabel(tag.trim())}
                           </span>
                         ))}
                       </div>
@@ -2998,7 +2982,7 @@ export default function App() {
                           streamDescriptionExpanded ? "" : "line-clamp-2"
                         }`}
                       >
-                        {currentItem.description || "精彩短剧连播，高潮迭起，逆袭反转不停歇！"}
+                        {currentItem.description || t("精彩短剧连播，高潮迭起，逆袭反转不停歇！")}
                       </p>
                     </div>
 
@@ -3010,9 +2994,9 @@ export default function App() {
                         className="px-4 py-2 rounded-xl bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-bold flex items-center gap-2 shadow-xl hover:border-rose-500/60 transition group/col cursor-pointer"
                       >
                         <Layers className="w-3.5 h-3.5 text-rose-400" />
-                        <span>合集：{currentItem.title}</span>
-                        <span className="text-slate-400 text-[11px] font-normal border-l border-white/20 pl-2 ml-1">
-                          {currentItem.badge || "连载热播"}
+                        <span>{t("合集：")}{currentItem.title}</span>
+                        <span className="text-slate-400 text-[11px] font-normal border-l border-white/20 ps-2 ms-1">
+                          {localizeLabel(currentItem.badge) || t("连载热播")}
                         </span>
                         <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover/col:translate-x-0.5 transition-transform" />
                       </button>
@@ -3025,7 +3009,7 @@ export default function App() {
                           className="px-3.5 py-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 backdrop-blur-md border border-white/15 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg transition cursor-pointer"
                         >
                           <ChevronRight className="w-4 h-4 text-rose-400" />
-                          <span>下一集</span>
+                          <span>{t("下一集")}</span>
                         </button>
                       )}
                     </div>
@@ -3040,9 +3024,7 @@ export default function App() {
                         <span className="text-slate-500">/</span>
                         <span>{formatTime(streamDuration)}</span>
                       </div>
-                      <span className="text-[10px] text-white/50 group-hover/fullbar:text-white/80 transition-colors">
-                        可拖动或点击进度条快进快退
-                      </span>
+                      <span className="text-[10px] text-white/50 group-hover/fullbar:text-white/80 transition-colors">{t("可拖动或点击进度条快进快退")}</span>
                     </div>
 
                     {/* 满屏横跨可点击/拖拽进度条 */}
@@ -3072,6 +3054,7 @@ export default function App() {
                     >
                       <input
                         type="range"
+                        aria-label={t("播放进度")}
                         min={0}
                         max={streamDuration || 100}
                         step={0.1}
@@ -3135,41 +3118,39 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
               <div>
                 <h2 className="text-xl md:text-2xl font-extrabold flex items-center gap-2">
-                  <Grid className="w-6 h-6 text-rose-500" /> 官方题材全部分类
-                </h2>
+                  <Grid className="w-6 h-6 text-rose-500" />{t("官方题材全部分类")}</h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  {categoryTagsLoading?"正在读取官网题材…":`官网当前 ${categoryTags.length} 种题材 · 真人剧 / 漫剧 / AI 剧`}
+                  {categoryTagsLoading ? t("正在读取官网题材…") : t("分类说明", { count: categoryTags.length })}
                 </p>
               </div>
 
               {/* 一级内容类型选择器 (真人剧 / 漫剧 / AI剧) */}
               <div className="flex items-center gap-2 bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800">
-                {categoryTypes.map((t) => (
+                {categoryTypes.map((type) => (
                   <button
-                    key={t.id}
+                    key={type.id}
                     onClick={() => {
-                      setSelectedCatType(t.id);
+                      setSelectedCatType(type.id);
                       setSelectedCatTag("");
                       setCatPage(1);
                     }}
-                    className={`px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all outline-none focus:ring-4 focus:ring-rose-500/50 ${
-                      selectedCatType === t.id
+                    className={`flex-1 min-w-0 px-2 md:px-4 py-2 rounded-xl text-xs md:text-sm font-bold transition-all outline-none focus:ring-4 focus:ring-rose-500/50 ${
+                      selectedCatType === type.id
                         ? "bg-rose-600 text-white shadow-md shadow-rose-900/40"
                         : "text-slate-400 hover:text-white"
                     }`}
                   >
-                    {t.name}
+                    {localizeLabel(type.name)}
                   </button>
                 ))}
               </div>
             </div>
 
-            {categoryError&&<div role="alert" className="text-sm text-rose-300">{categoryError}<button className="ml-3 underline" onClick={()=>{void loadCategoryTags(selectedCatType);void fetchCategoryList(selectedCatType,selectedCatTag,catPage);}}>重试</button></div>}
+            {categoryError&&<div role="alert" className="text-sm text-rose-300">{localizeError(categoryError)}<button className="ms-3 underline" onClick={()=>{void loadCategoryTags(selectedCatType);void fetchCategoryList(selectedCatType,selectedCatTag,catPage);}}>{t("重试")}</button></div>}
             {/* 题材以当前官网分类页面为准 */}
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                <Compass className="w-4 h-4 text-rose-500" /> 题材筛选：
-              </div>
+                <Compass className="w-4 h-4 text-rose-500" />{t("题材筛选：")}</div>
               <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar flex-wrap">
                 <button
                   onClick={() => {
@@ -3181,9 +3162,7 @@ export default function App() {
                       ? "bg-rose-600 text-white shadow-md shadow-rose-900/40"
                       : "bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-700"
                   }`}
-                >
-                  全部题材
-                </button>
+                >{t("全部题材")}</button>
                 {categoryTags.map((tag) => (
                   <button
                     key={tag.id}
@@ -3197,7 +3176,7 @@ export default function App() {
                         : "bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:border-slate-700"
                     }`}
                   >
-                    {tag.name}
+                    {localizeLabel(tag.name)}
                   </button>
                 ))}
               </div>
@@ -3207,12 +3186,10 @@ export default function App() {
             {catLoading ? (
               <div className="flex flex-col items-center justify-center py-28 text-slate-500 space-y-3">
                 <RefreshCw className="w-8 h-8 text-rose-500 animate-spin" />
-                <span className="text-sm">正在加载官方分类片库...</span>
+                <span className="text-sm">{t("正在加载官方分类片库...")}</span>
               </div>
             ) : categoryItems.length === 0 ? (
-              <div className="text-center py-28 text-slate-500 text-sm">
-                当前筛选分类暂无收录短剧
-              </div>
+              <div className="text-center py-28 text-slate-500 text-sm">{t("当前筛选分类暂无收录短剧")}</div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
                 {categoryItems.map((item) => (
@@ -3231,21 +3208,20 @@ export default function App() {
                         loading="lazy"
                       />
                       {item.badge && (
-                        <span className="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                          {item.badge}
+                        <span className="absolute top-2.5 end-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                          {localizeLabel(item.badge)}
                         </span>
                       )}
                       <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3.5">
                         <span className="flex items-center gap-1.5 text-xs font-bold text-rose-300">
-                          <Play className="w-4 h-4 fill-rose-300" /> 点击播放
-                        </span>
+                          <Play className="w-4 h-4 fill-rose-300" />{t("点击播放")}</span>
                       </div>
                     </div>
                     <div className="p-3.5 flex flex-col flex-1 justify-between gap-1.5">
                       <h4 className="font-bold text-sm leading-snug line-clamp-1 group-hover:text-rose-400 transition">
                         {item.title}
                       </h4>
-                      <p className="text-xs text-slate-500 line-clamp-1">{item.tags || "官方分类"}</p>
+                      <p className="text-xs text-slate-500 line-clamp-1">{localizeLabel(item.tags) || t("官方分类")}</p>
                     </div>
                   </div>
                 ))}
@@ -3259,17 +3235,15 @@ export default function App() {
                 onClick={() => setCatPage((p) => Math.max(1, p - 1))}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold transition outline-none focus:ring-2 focus:ring-rose-500"
               >
-                <ChevronLeft className="w-4 h-4" /> 上一页
-              </button>
+                <ChevronLeft className="w-4 h-4" />{t("上一页")}</button>
               <span className="text-xs font-bold font-mono px-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-slate-300">
-                第 {catPage} 页
+                {t("第{{number}}页", { number: catPage })}
               </span>
               <button
                 disabled={catLoading || (categoryTotalPages>0?catPage>=categoryTotalPages:categoryItems.length<24)}
                 onClick={() => setCatPage((p) => p + 1)}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold transition outline-none focus:ring-4 focus:ring-rose-500/50 shadow-md shadow-rose-900/40"
-              >
-                下一页 <ChevronRight className="w-4 h-4" />
+              >{t("下一页")}<ChevronRight className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -3281,9 +3255,9 @@ export default function App() {
             {/* 🌟 4.1 官方级热播榜顶部红色/金色神鸟国风 Banner (对应图一官网) */}
             <div className="relative rounded-3xl overflow-hidden border border-rose-900/40 shadow-2xl bg-gradient-to-r from-[#420d11] via-[#5c131a] to-[#2b080b] p-6 md:p-10 flex flex-col justify-between min-h-[170px] md:min-h-[210px]">
               {/* 背景装饰：右侧发光艺术飞鸟与云霞光效 */}
-              <div className="absolute right-0 top-0 bottom-0 w-1/2 pointer-events-none overflow-hidden opacity-60 md:opacity-80">
-                <div className="absolute right-12 top-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-gradient-to-tr from-amber-500/40 to-rose-500/20 blur-3xl" />
-                <svg className="absolute right-6 md:right-16 top-1/2 -translate-y-1/2 w-60 h-40 text-amber-200/50 drop-shadow-[0_0_20px_rgba(251,191,36,0.6)]" viewBox="0 0 200 120" fill="currentColor">
+              <div className="absolute end-0 top-0 bottom-0 w-1/2 pointer-events-none overflow-hidden opacity-60 md:opacity-80">
+                <div className="absolute end-12 top-1/2 -translate-y-1/2 w-64 h-64 rounded-full bg-gradient-to-tr from-amber-500/40 to-rose-500/20 blur-3xl" />
+                <svg className="absolute end-6 md:end-16 top-1/2 -translate-y-1/2 w-60 h-40 text-amber-200/50 drop-shadow-[0_0_20px_rgba(251,191,36,0.6)]" viewBox="0 0 200 120" fill="currentColor">
                   <path d="M10 60 Q 50 10, 110 30 Q 150 45, 190 20 Q 160 70, 110 65 Q 60 60, 10 60 Z" opacity="0.4" />
                   <path d="M40 70 Q 90 20, 140 40 Q 170 55, 195 35 Q 160 85, 120 75 Q 70 70, 40 70 Z" opacity="0.7" />
                   <circle cx="180" cy="25" r="4" fill="#fef08a" />
@@ -3293,19 +3267,18 @@ export default function App() {
               {/* 面包屑导航与副标题 */}
               <div className="relative z-10 space-y-2">
                 <div className="text-xs text-rose-300/80 font-medium flex items-center gap-1.5">
-                  <span className="hover:text-white cursor-pointer" onClick={() => setTab("home")}>首页</span>
+                  <span className="hover:text-white cursor-pointer" onClick={() => setTab("home")}>{t("首页")}</span>
                   <span>/</span>
-                  <span className="text-rose-200 font-semibold">{currentRankType.name}</span>
+                  <span className="text-rose-200 font-semibold">{localizeLabel(currentRankType.name)}</span>
                 </div>
 
                 {/* 类似图一官网的大书名号标题 */}
                 <h2 className="text-2xl md:text-4xl font-black tracking-tight text-white drop-shadow-md">
-                  《 {currentRankType.name} 》
+                  {localizeLabel(currentRankType.name)}
                 </h2>
 
                 <p className="text-xs md:text-sm text-rose-200/80 font-medium pt-0.5">
-                  {todayStr} · 基于红果内观看/互动等综合热度排序 · 官方 Top 100
-                </p>
+                  {todayStr}{t("· 基于红果内观看/互动等综合热度排序 · 官方 Top 100")}</p>
               </div>
             </div>
 
@@ -3326,7 +3299,7 @@ export default function App() {
                         : "text-slate-400 hover:text-white hover:bg-slate-800/50"
                     }`}
                   >
-                    {rt.name}
+                    {localizeLabel(rt.name)}
                   </button>
                 );
               })}
@@ -3336,12 +3309,10 @@ export default function App() {
             {rankLoading ? (
               <div className="flex flex-col items-center justify-center py-28 text-slate-500 space-y-3">
                 <RefreshCw className="w-8 h-8 text-rose-500 animate-spin" />
-                <span className="text-sm">正在加载官方前 100 名热播短剧...</span>
+                <span className="text-sm">{t("正在加载官方前 100 名热播短剧...")}</span>
               </div>
             ) : rankItems.length === 0 ? (
-              <div className="text-center py-28 text-slate-500 text-sm">
-                当前榜单暂无数据
-              </div>
+              <div className="text-center py-28 text-slate-500 text-sm">{t("当前榜单暂无数据")}</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4.5">
                 {rankItems.map((item, index) => {
@@ -3376,7 +3347,7 @@ export default function App() {
                           loading="lazy"
                         />
                         <div
-                          className={`absolute top-0 left-0 min-w-6 h-6 px-1.5 flex items-center justify-center rounded-br-xl text-xs ${rankBadgeBg}`}
+                          className={`absolute top-0 start-0 min-w-6 h-6 px-1.5 flex items-center justify-center rounded-br-xl text-xs ${rankBadgeBg}`}
                         >
                           {rankNum}
                         </div>
@@ -3393,7 +3364,7 @@ export default function App() {
                             </span>
                             {item.badge && (
                               <span className="text-[10px] text-slate-400 font-medium bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                                {item.badge}
+                                {localizeLabel(item.badge)}
                               </span>
                             )}
                           </div>
@@ -3401,18 +3372,16 @@ export default function App() {
                             {item.title}
                           </h4>
                           <p className="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                            {item.description || item.tags || "官方推荐榜首热剧"}
+                            {item.description || item.tags || t("官方推荐榜首热剧")}
                           </p>
                         </div>
 
                         <div className="mt-3 flex items-center justify-between">
                           <span className="text-[11px] text-rose-400/90 font-semibold flex items-center gap-1">
                             <Flame className="w-3.5 h-3.5 fill-rose-500 text-rose-500 shrink-0" />
-                            {item.heatText || "热播指数高"}
+                            {item.heatText || t("热播指数高")}
                           </span>
-                          <span className="text-xs px-3 py-1 rounded-lg bg-rose-600/90 text-white font-bold group-hover:bg-rose-500 transition shadow">
-                            立即播放
-                          </span>
+                          <span className="text-xs px-3 py-1 rounded-lg bg-rose-600/90 text-white font-bold group-hover:bg-rose-500 transition shadow">{t("立即播放")}</span>
                         </div>
                       </div>
                     </div>
@@ -3424,7 +3393,7 @@ export default function App() {
             {/* 🌟 4.4 底部官方前 100 名分页翻页控制器 (1~5 页，共 100 名) */}
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-slate-800/80">
               <div className="text-xs text-slate-400">
-                展示官方前 <span className="text-rose-400 font-bold">100</span> 名 · 当前为第 <span className="text-white font-bold font-mono">{(rankPage - 1) * 20 + 1} ~ {Math.min(100, rankPage * 20)}</span> 名
+                {t("榜单范围", { start: (rankPage - 1) * 20 + 1, end: Math.min(100, rankPage * 20) })}
               </div>
 
               <div className="flex items-center gap-2">
@@ -3433,8 +3402,7 @@ export default function App() {
                   onClick={() => setRankPage((p) => Math.max(1, p - 1))}
                   className="flex items-center gap-1 px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold transition outline-none focus:ring-2 focus:ring-rose-500"
                 >
-                  <ChevronLeft className="w-4 h-4" /> 上一页
-                </button>
+                  <ChevronLeft className="w-4 h-4" />{t("上一页")}</button>
 
                 {[1, 2, 3, 4, 5].map((pageNum) => (
                   <button
@@ -3455,8 +3423,7 @@ export default function App() {
                   disabled={rankPage >= rankTotalPages || rankLoading}
                   onClick={() => setRankPage((p) => Math.min(rankTotalPages, p + 1))}
                   className="flex items-center gap-1 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold transition outline-none focus:ring-4 focus:ring-rose-500/50 shadow-md shadow-rose-900/40"
-                >
-                  下一页 <ChevronRight className="w-4 h-4" />
+                >{t("下一页")}<ChevronRight className="w-4 h-4" />
                 </button>
               </div>
             </div>
@@ -3470,7 +3437,7 @@ export default function App() {
             <div className="relative max-w-3xl mx-auto">
               <form onSubmit={handleSearch} className="flex gap-3">
                 <div className="relative flex-1">
-                  <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Search className="w-5 h-5 absolute start-4 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     ref={searchInputRef}
                     type="text"
@@ -3481,8 +3448,8 @@ export default function App() {
                         handleSearchInputChange(searchQuery);
                       }
                     }}
-                    placeholder="搜索短剧名、主角或关键词（如：太奶奶、反向拿捏、神豪、逆袭...）"
-                    className="w-full pl-12 pr-10 py-3.5 rounded-2xl bg-[#0a0f1d] border border-slate-800 focus:outline-none focus:border-rose-500 focus:ring-4 focus:ring-rose-500/20 text-sm font-medium transition placeholder:text-slate-500"
+                    placeholder={t("搜索短剧名、主角或关键词（如：太奶奶、反向拿捏、神豪、逆袭...）")}
+                    className="w-full ps-12 pe-10 py-3.5 rounded-2xl bg-[#0a0f1d] border border-slate-800 focus:outline-none focus:border-rose-500 focus:ring-4 focus:ring-rose-500/20 text-sm font-medium transition placeholder:text-slate-500"
                   />
                   {searchQuery && (
                     <button
@@ -3496,8 +3463,8 @@ export default function App() {
                         refreshSearchHistory();
                         searchInputRef.current?.focus();
                       }}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 rounded-lg transition cursor-pointer"
-                      title="清除输入"
+                      className="absolute end-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 rounded-lg transition cursor-pointer"
+                      title={t("清除输入")}
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -3513,15 +3480,15 @@ export default function App() {
                   ) : (
                     <Search className="w-4 h-4" />
                   )}
-                  <span>搜索</span>
+                  <span>{t("搜索")}</span>
                 </button>
               </form>
 
               {/* 实时输入联想下拉浮层 (Autocomplete Dropdown) */}
               {showSuggestions && searchQuery.trim() && (searchSuggestions.length > 0 || isSuggesting) && (
-                <div className="absolute left-0 right-0 top-full mt-2 bg-[#0d1326] border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden z-40 backdrop-blur">
+                <div className="absolute start-0 end-0 top-full mt-2 bg-[#0d1326] border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden z-40 backdrop-blur">
                   <div className="p-2 border-b border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-semibold px-3">
-                    <span>💡 相关剧集实时联想</span>
+                    <span>{t("💡 相关剧集实时联想")}</span>
                     {isSuggesting && <RefreshCw className="w-3 h-3 animate-spin text-rose-400" />}
                   </div>
                   <div className="max-h-[320px] overflow-y-auto divide-y divide-slate-800/40">
@@ -3541,11 +3508,10 @@ export default function App() {
                             {item.title}
                           </h5>
                           <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                            {item.tags || item.badge || "热门短剧"}
+                            {item.tags || item.badge || t("热门短剧")}
                           </p>
                         </div>
-                        <span className="text-[10px] text-slate-500 group-hover:text-rose-400 font-semibold shrink-0 flex items-center gap-0.5">
-                          即点即看 <ChevronRight className="w-3 h-3" />
+                        <span className="text-[10px] text-slate-500 group-hover:text-rose-400 font-semibold shrink-0 flex items-center gap-0.5">{t("即点即看")}<ChevronRight className="w-3 h-3" />
                         </span>
                       </div>
                     ))}
@@ -3561,7 +3527,7 @@ export default function App() {
                 <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-5 space-y-3.5">
                   <div className="flex items-center gap-2 text-sm font-extrabold text-white">
                     <Flame className="w-4 h-4 text-rose-500 fill-rose-500" />
-                    <span>热门搜索推荐</span>
+                    <span>{t("热门搜索推荐")}</span>
                   </div>
                   <div className="flex flex-wrap gap-2.5">
                     {hotSearchKeywords.map((kw, idx) => (
@@ -3578,7 +3544,7 @@ export default function App() {
                         >
                           {idx + 1}
                         </span>
-                        <span>{kw}</span>
+                        <span>{localizeLabel(kw)}</span>
                       </button>
                     ))}
                   </div>
@@ -3590,7 +3556,7 @@ export default function App() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-sm font-extrabold text-white">
                         <Clock className="w-4 h-4 text-slate-400" />
-                        <span>搜索历史</span>
+                        <span>{t("搜索历史")}</span>
                       </div>
                       <button
                         type="button"
@@ -3601,8 +3567,7 @@ export default function App() {
                         }}
                         className="text-xs text-slate-500 hover:text-rose-400 flex items-center gap-1 transition cursor-pointer"
                       >
-                        <Trash2 className="w-3.5 h-3.5" /> 清空历史
-                      </button>
+                        <Trash2 className="w-3.5 h-3.5" />{t("清空历史")}</button>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {searchHistoryList.map((hist) => (
@@ -3623,8 +3588,8 @@ export default function App() {
                               const updated = removeSearchHistory(hist);
                               setSearchHistoryList(updated);
                             }}
-                            className="text-slate-600 hover:text-slate-300 transition cursor-pointer ml-0.5"
-                            title="删除"
+                            className="text-slate-600 hover:text-slate-300 transition cursor-pointer ms-0.5"
+                            title={t("删除")}
                           >
                             <X className="w-3 h-3" />
                           </button>
@@ -3643,10 +3608,10 @@ export default function App() {
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
                   <div className="flex items-center gap-2">
                     <h3 className="text-base font-extrabold text-white">
-                      搜索「<span className="text-rose-400">{searchQuery}</span>」的结果
+                      {t("搜索结果", { query: searchQuery })}
                     </h3>
                     <span className="text-xs text-slate-400 font-mono">
-                      (共 {searchResults.length} 部)
+                      {t("搜索结果数量", { count: searchResults.length })}
                     </span>
                   </div>
 
@@ -3665,7 +3630,7 @@ export default function App() {
                               : "bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
                           }`}
                         >
-                          {tag}
+                          {localizeLabel(tag)}
                         </button>
                       );
                     })}
@@ -3676,7 +3641,7 @@ export default function App() {
                 {searchLoading ? (
                   <div className="flex flex-col items-center justify-center py-28 text-slate-500 space-y-3">
                     <RefreshCw className="w-8 h-8 text-rose-500 animate-spin" />
-                    <span className="text-sm">正在检索片库，请稍候...</span>
+                    <span className="text-sm">{t("正在检索片库，请稍候...")}</span>
                   </div>
                 ) : (
                   (() => {
@@ -3691,12 +3656,10 @@ export default function App() {
                         <div className="text-center py-24 text-slate-500 text-sm space-y-2 bg-[#0a0f1d] border border-slate-800 rounded-2xl">
                           <p>
                             {searchFilterTag === "全部"
-                              ? `未找到与「${searchQuery}」相关的短剧`
-                              : `在「${searchFilterTag}」分类下未找到匹配短剧`}
+                              ? t("搜索无结果", { query: searchQuery })
+                              : t("筛选无结果", { genre: localizeLabel(searchFilterTag) })}
                           </p>
-                          <p className="text-xs text-slate-600">
-                            请尝试更换关键词（如：都市、逆袭、甜宠）或切换全部题材
-                          </p>
+                          <p className="text-xs text-slate-600">{t("请尝试更换关键词（如：都市、逆袭、甜宠）或切换全部题材")}</p>
                         </div>
                       );
                     }
@@ -3721,14 +3684,13 @@ export default function App() {
                                 loading="lazy"
                               />
                               {item.badge && (
-                                <span className="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                                  {item.badge}
+                                <span className="absolute top-2.5 end-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                                  {localizeLabel(item.badge)}
                                 </span>
                               )}
                               <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
                                 <span className="flex items-center gap-1.5 text-xs font-bold text-white">
-                                  <Play className="w-4 h-4 fill-white text-white" /> 点击播放
-                                </span>
+                                  <Play className="w-4 h-4 fill-white text-white" />{t("点击播放")}</span>
                               </div>
                             </div>
                             <div className="p-3.5 flex flex-col flex-1 justify-between gap-1.5">
@@ -3736,7 +3698,7 @@ export default function App() {
                                 {item.title}
                               </h4>
                               <p className="text-xs text-slate-500 line-clamp-1">
-                                {item.tags || "全网高分短剧"}
+                                {localizeLabel(item.tags) || t("全网高分短剧")}
                               </p>
                             </div>
                           </div>
@@ -3767,7 +3729,7 @@ export default function App() {
                   }`}
                 >
                   <Heart className={`w-4 h-4 ${favSubTab === "favorites" ? "fill-white" : ""}`} />
-                  <span>我的追剧</span>
+                  <span>{t("我的追剧")}</span>
                   {favorites.length > 0 && (
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
@@ -3792,7 +3754,7 @@ export default function App() {
                   }`}
                 >
                   <Clock className="w-4 h-4" />
-                  <span>观看历史</span>
+                  <span>{t("观看历史")}</span>
                   {historyList.length > 0 && (
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
@@ -3810,7 +3772,7 @@ export default function App() {
                 <div className="flex items-center gap-3">
                   {showClearHistoryConfirm ? (
                     <div className="flex items-center gap-2 bg-slate-900 border border-rose-500/40 p-1.5 rounded-xl text-xs">
-                      <span className="text-rose-400 font-semibold px-2">确定清空观看历史?</span>
+                      <span className="text-rose-400 font-semibold px-2">{t("确定清空观看历史?")}</span>
                       <button
                         type="button"
                         onClick={() => {
@@ -3819,16 +3781,12 @@ export default function App() {
                           }).catch(() => showToast("清空失败，请检查后端连接后重试"));
                         }}
                         className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold transition cursor-pointer"
-                      >
-                        确认清空
-                      </button>
+                      >{t("确认清空")}</button>
                       <button
                         type="button"
                         onClick={() => setShowClearHistoryConfirm(false)}
                         className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-                      >
-                        取消
-                      </button>
+                      >{t("取消")}</button>
                     </div>
                   ) : (
                     <button
@@ -3837,7 +3795,7 @@ export default function App() {
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-400 text-xs font-semibold transition cursor-pointer outline-none focus:ring-2 focus:ring-rose-500/50"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      <span>清空观看历史</span>
+                      <span>{t("清空观看历史")}</span>
                     </button>
                   )}
                 </div>
@@ -3850,7 +3808,7 @@ export default function App() {
                 {favorites.length === 0 ? (
                   <div className="text-center py-28 text-slate-500 text-sm space-y-3">
                     <Heart className="w-10 h-10 mx-auto text-slate-700 stroke-[1.5]" />
-                    <p>暂无收藏短剧，快去官方首页、分类或热播榜单看看吧！</p>
+                    <p>{t("暂无收藏短剧，快去官方首页、分类或热播榜单看看吧！")}</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
@@ -3870,21 +3828,20 @@ export default function App() {
                             loading="lazy"
                           />
                           {item.badge && (
-                            <span className="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                              {item.badge}
+                            <span className="absolute top-2.5 end-2.5 px-2.5 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                              {localizeLabel(item.badge)}
                             </span>
                           )}
                           <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
                             <span className="flex items-center gap-1.5 text-xs font-bold text-white">
-                              <Play className="w-4 h-4 fill-white text-white" /> 点击播放
-                            </span>
+                              <Play className="w-4 h-4 fill-white text-white" />{t("点击播放")}</span>
                           </div>
                         </div>
                         <div className="p-3.5 flex flex-col flex-1 justify-between gap-1.5">
                           <h4 className="font-bold text-sm leading-snug line-clamp-1 group-hover:text-rose-400 transition">
                             {item.title}
                           </h4>
-                          <p className="text-xs text-slate-500 line-clamp-1">{item.tags || "全网高分短剧"}</p>
+                          <p className="text-xs text-slate-500 line-clamp-1">{localizeLabel(item.tags) || t("全网高分短剧")}</p>
                         </div>
                       </div>
                     ))}
@@ -3896,12 +3853,12 @@ export default function App() {
             {/* B. 观看历史列表 (带进度条、集数、时间百分比、一键续播、悬浮单条删除) */}
             {favSubTab === "history" && (
               <div>
-                <p className="mb-5 text-sm text-slate-400">从最近观看的位置继续，记录保存在本地并按远程配置自动同步。</p>
-                {historyError && <div className="mb-5 text-rose-300">{historyError} <button className="underline" onClick={() => void refreshHistory()}>重试</button></div>}
+                <p className="mb-5 text-sm text-slate-400">{t("从最近观看的位置继续，记录保存在本地并按远程配置自动同步。")}</p>
+                {historyError && <div className="mb-5 text-rose-300">{localizeError(historyError)} <button className="underline" onClick={() => void refreshHistory()}>{t("重试")}</button></div>}
                 {historyList.length === 0 ? (
                   <div className="text-center py-28 text-slate-500 text-sm space-y-3">
                     <Clock className="w-10 h-10 mx-auto text-slate-700 stroke-[1.5]" />
-                    <p>暂无观看历史记录，点击任意短剧即可自动保存您的播放足迹！</p>
+                    <p>{t("暂无观看历史记录，点击任意短剧即可自动保存您的播放足迹！")}</p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
@@ -3909,7 +3866,7 @@ export default function App() {
                       const seriesObj: Series = {
                         id: hist.seriesId,
                         contentType: hist.contentType,
-                        title: hist.title || "未知短剧",
+                        title: hist.title || t("未知短剧"),
                         cover: hist.cover || "",
                         badge: hist.badge || "",
                         description: "",
@@ -3944,31 +3901,30 @@ export default function App() {
                               type="button"
                               onClick={async (e) => {
                                 e.stopPropagation();
-                                try { await removeHistoryItem(hist.seriesId); await refreshHistory(); showToast(`已删除《${hist.title}》的播放记录`); }
+                                try { await removeHistoryItem(hist.seriesId); await refreshHistory(); showToast("已删除播放记录", { title: hist.title }); }
                                 catch { showToast("删除失败，请检查后端连接后重试"); }
                               }}
-                              className="absolute top-2.5 right-2.5 w-7 h-7 rounded-lg bg-black/60 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 z-20 cursor-pointer shadow-md"
-                              title="删除此记录"
+                              className="absolute top-2.5 end-2.5 w-7 h-7 rounded-lg bg-black/60 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 z-20 cursor-pointer shadow-md"
+                              title={t("删除此记录")}
                             >
                               <X className="w-4 h-4" />
                             </button>
 
                             {/* 角标 */}
                             {hist.badge && (
-                              <span className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
-                                {hist.badge}
+                              <span className="absolute top-2.5 start-2.5 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-600/90 text-white shadow-md">
+                                {localizeLabel(hist.badge)}
                               </span>
                             )}
 
                             {/* 悬浮播放微浮层 */}
                             <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                               <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-rose-600 text-white text-xs font-bold shadow-lg shadow-rose-950/50">
-                                <Play className="w-3.5 h-3.5 fill-white text-white" /> 继续观看
-                              </span>
+                                <Play className="w-3.5 h-3.5 fill-white text-white" />{t("继续观看")}</span>
                             </div>
 
                             {/* 底部红色进度条底衬 */}
-                            <div className="absolute bottom-0 left-0 right-0 h-1.5 bg-slate-800/80">
+                            <div className="absolute bottom-0 start-0 end-0 h-1.5 bg-slate-800/80">
                               <div
                                 className="h-full bg-rose-500"
                                 style={{ width: `${percent}%` }}
@@ -3980,11 +3936,11 @@ export default function App() {
                           <div className="p-3.5 flex flex-col flex-1 justify-between gap-1.5">
                             <div>
                               <h4 className="font-bold text-sm leading-snug line-clamp-1 group-hover:text-rose-400 transition">
-                                {hist.title || "未知剧集"}
+                                {hist.title || t("未知剧集")}
                               </h4>
                               {/* 观看进度与百分比标注 */}
                               <div className="flex items-center justify-between text-xs text-rose-400/90 font-medium mt-1">
-                                <span>看到第 {hist.episodeNumber || 1} 集</span>
+                                <span>{t("看到第{{number}}集", { number: hist.episodeNumber || 1 })}</span>
                                 <span className="font-mono text-[11px] text-slate-400">
                                   {formatTime(hist.position)}
                                   {percent > 0 ? ` (${percent}%)` : ""}
@@ -3995,15 +3951,13 @@ export default function App() {
                             <div className="text-[10px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-800/60">
                               <span>
                                 {hist.updatedAt
-                                  ? new Date(hist.updatedAt).toLocaleString("zh-CN", {
+                                  ? formatDate(hist.updatedAt, {
                                       month: "numeric",
                                       day: "numeric", hour: "2-digit", minute: "2-digit",
                                     })
-                                  : "最近"}
+                                  : t("最近")}
                               </span>
-                              <span className="text-slate-400 group-hover:text-rose-400 font-semibold transition">
-                                一键续播 &gt;
-                              </span>
+                              <span className="text-slate-400 group-hover:text-rose-400 font-semibold transition">{t("一键续播 &gt;")}</span>
                             </div>
                           </div>
                         </div>
@@ -4018,31 +3972,39 @@ export default function App() {
 
         {!activeSeries && tab === "settings" && (
           <div className="max-w-xl mx-auto space-y-6 pt-6">
-            <h2 className="text-xl font-bold flex items-center gap-2"><SettingsIcon className="w-5 h-5 text-rose-500" /> 本地服务与远程同步</h2>
-            <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
-              <h3 className="font-semibold">推荐偏好</h3>
-              <label className="block text-sm text-slate-300">推荐内容
-                <select aria-label="推荐内容" value={recommendationMode} onChange={e => {const mode=e.target.value as RecommendationMode;setRecommendationMode(mode);savePlaybackPreference("recommendationMode", mode);showToast("推荐模式已保存，下次进入推荐页生效");}} className="block mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none">
-                  <option value="mixed">混合推荐</option><option value="real-drama">仅真人剧</option><option value="comic-drama">仅漫剧</option><option value="ai-drama">仅 AI 剧</option>
+            <h2 className="text-xl font-bold flex items-center gap-2"><SettingsIcon className="w-5 h-5 text-rose-500" />{t("本地服务与远程同步")}</h2>
+            <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-3">
+              <label className="block text-sm font-semibold">
+                {t("界面语言")}
+                <select aria-label={t("界面语言")} value={language} onChange={event => changeLanguage(event.target.value)} className="block mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 outline-none focus:ring-2 focus:ring-rose-500">
+                  {languages.map(item => <option key={item.id} value={item.id} lang={item.locale}>{item.name}</option>)}
                 </select>
               </label>
-              <p className="text-xs text-slate-400">混合推荐包含真人剧、漫剧与 AI 剧，根据观看兴趣调整，并保留新内容探索。</p>
-              {showRecommendationResetConfirm ? <div className="space-y-3 text-sm"><p>确定重新学习推荐偏好？收藏和观看历史会保留。</p><div className="flex gap-3"><button className="px-4 py-2 rounded-xl bg-rose-600" onClick={() => {streamWatchRef.current.leave();resetRecommendationPreferences();setShowRecommendationResetConfirm(false);showToast("推荐偏好已重置，下次进入推荐页生效");}}>确认重置</button><button className="px-4 py-2 rounded-xl bg-slate-800" onClick={() => setShowRecommendationResetConfirm(false)}>取消</button></div></div> : <button className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={() => setShowRecommendationResetConfirm(true)}>重置推荐偏好</button>}
+              <p className="text-xs text-slate-400 leading-relaxed">{t("语言说明")}</p>
             </div>
             <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
-              <p className="text-sm text-slate-400">收藏、历史、搜索记录与播放偏好先保存在本地。配置远程服务后，连接同一家庭的设备可互相续播。</p>
+              <h3 className="font-semibold">{t("推荐偏好")}</h3>
+              <label className="block text-sm text-slate-300">{t("推荐内容")}<select aria-label={t("推荐内容")} value={recommendationMode} onChange={e => {const mode=e.target.value as RecommendationMode;setRecommendationMode(mode);savePlaybackPreference("recommendationMode", mode);showToast("推荐模式已保存，下次进入推荐页生效");}} className="block mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none">
+                  <option value="mixed">{t("混合推荐")}</option><option value="real-drama">{t("仅真人剧")}</option><option value="comic-drama">{t("仅漫剧")}</option><option value="ai-drama">{t("仅 AI 剧")}</option>
+                </select>
+              </label>
+              <p className="text-xs text-slate-400">{t("混合推荐包含真人剧、漫剧与 AI 剧，根据观看兴趣调整，并保留新内容探索。")}</p>
+              {showRecommendationResetConfirm ? <div className="space-y-3 text-sm"><p>{t("确定重新学习推荐偏好？收藏和观看历史会保留。")}</p><div className="flex gap-3"><button className="px-4 py-2 rounded-xl bg-rose-600" onClick={() => {streamWatchRef.current.leave();resetRecommendationPreferences();setShowRecommendationResetConfirm(false);showToast("推荐偏好已重置，下次进入推荐页生效");}}>{t("确认重置")}</button><button className="px-4 py-2 rounded-xl bg-slate-800" onClick={() => setShowRecommendationResetConfirm(false)}>{t("取消")}</button></div></div> : <button className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={() => setShowRecommendationResetConfirm(true)}>{t("重置推荐偏好")}</button>}
+            </div>
+            <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
+              <p className="text-sm text-slate-400">{t("收藏、历史、搜索记录与播放偏好先保存在本地。配置远程服务后，连接同一家庭的设备可互相续播。")}</p>
               <div role="status" className="p-4 rounded-xl bg-slate-950 text-sm">
-                <span className="text-rose-400 font-semibold">{{unconfigured:"未配置远程",pending:"待同步",syncing:"同步中",synced:"已同步",offline:"离线待同步"}[syncStatus.state] || "连接失败"}</span>
-                {syncStatus.pending > 0 && <span className="ml-3 text-slate-400">待同步 {syncStatus.pending} 条</span>}
-                {syncStatus.error && <p className="mt-2 text-amber-300">{syncStatus.error}</p>}
+                <span className="text-rose-400 font-semibold">{localizeLabel({unconfigured:"未配置远程",pending:"待同步",syncing:"同步中",synced:"已同步",offline:"离线待同步"}[syncStatus.state] || "连接失败")}</span>
+                {syncStatus.pending > 0 && <span className="ms-3 text-slate-400">{t("待同步数量", { count: syncStatus.pending })}</span>}
+                {syncStatus.error && <p className="mt-2 text-amber-300">{localizeError(syncStatus.error)}</p>}
               </div>
-              <label className="block text-sm text-slate-300">远程服务地址<input aria-label="远程服务地址" value={remoteUrl} onChange={e=>{remoteUrlTouched.current=true;setRemoteUrl(e.target.value)}} placeholder="https://sync.example.com" className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
-              <label className="block text-sm text-slate-300">家庭共享密钥<input aria-label="家庭共享密钥" type="password" autoComplete="new-password" value={remoteKey} onChange={e=>setRemoteKey(e.target.value)} placeholder={syncStatus.enabled?"留空沿用当前地址已保存的密钥":"填写远程服务生成的共享密钥"} className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
+              <label className="block text-sm text-slate-300">{t("远程服务地址")}<input dir="ltr" aria-label={t("远程服务地址")} value={remoteUrl} onChange={e=>{remoteUrlTouched.current=true;setRemoteUrl(e.target.value)}} placeholder="https://sync.example.com" className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
+              <label className="block text-sm text-slate-300">{t("家庭共享密钥")}<input aria-label={t("家庭共享密钥")} type="password" autoComplete="new-password" value={remoteKey} onChange={e=>setRemoteKey(e.target.value)} placeholder={syncStatus.enabled?t("留空沿用当前地址已保存的密钥"):t("填写远程服务生成的共享密钥")} className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
               <div className="flex gap-3">
-                <button disabled={syncSaving} onClick={async()=>{setSyncSaving(true);try{await configureSync(remoteUrl,remoteKey);setRemoteKey("");setSyncStatus(getSyncStatus());showToast("远程连接已验证，开始同步")}catch(error:any){showToast(error.response?.data?.error||"连接失败，原配置已保留")}finally{setSyncSaving(false)}}} className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50">验证并启用同步</button>
-                {syncStatus.enabled && <button disabled={syncSaving} onClick={async()=>{try{await configureSync("","",false);setSyncStatus(getSyncStatus());showToast("已关闭远程同步，本地数据保留")}catch{showToast("配置保存失败")}}} className="px-4 py-3 rounded-xl bg-slate-800">关闭同步</button>}
+                <button disabled={syncSaving} onClick={async()=>{setSyncSaving(true);try{await configureSync(remoteUrl,remoteKey);setRemoteKey("");setSyncStatus(getSyncStatus());showToast("远程连接已验证，开始同步")}catch(error:any){showToast(error.response?.data?.error||"连接失败，原配置已保留")}finally{setSyncSaving(false)}}} className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50">{t("验证并启用同步")}</button>
+                {syncStatus.enabled && <button disabled={syncSaving} onClick={async()=>{try{await configureSync("","",false);setSyncStatus(getSyncStatus());showToast("已关闭远程同步，本地数据保留")}catch{showToast("配置保存失败")}}} className="px-4 py-3 rounded-xl bg-slate-800">{t("关闭同步")}</button>}
               </div>
-              <p className="text-xs text-slate-500">关闭同步后继续使用本地数据；更换地址需要重新验证连接。</p>
+              <p className="text-xs text-slate-500">{t("关闭同步后继续使用本地数据；更换地址需要重新验证连接。")}</p>
             </div>
           </div>
         )}
