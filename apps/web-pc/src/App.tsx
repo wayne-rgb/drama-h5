@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
+import { PlayerActions, PlayerPanel } from "./mobile-prototype/PlayerActions";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -192,6 +193,14 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
   const streamGestureRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const suppressStreamClickUntil = useRef(0);
   const [streamInfoOpen, setStreamInfoOpen] = useState(false);
+  const [mobileDetailInfoOpen, setMobileDetailInfoOpen] = useState(false);
+  const [mobileEpisodesOpen, setMobileEpisodesOpen] = useState(false);
+  const [mobileRelatedOpen, setMobileRelatedOpen] = useState(false);
+  const [mobileDetailLandscape, setMobileDetailLandscape] = useState(false);
+  const [streamMuted, setStreamMuted] = useState(false);
+  const [streamVolume, setStreamVolume] = useState(1);
+  const streamPlayerContainerRef = useRef<HTMLDivElement>(null);
+  const mobileSearchOrigin = useRef<{ tab: "recommend" | "category"; series: Detail | null; episodeId?: string }>({ tab: "recommend", series: null });
 
   // 5. 播放器与画质倍速控制状态
   const [activeSeries, setActiveSeriesState] = useState<Detail | null>(null);
@@ -762,6 +771,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
         if (requestedIndex >= 0) initIndex = requestedIndex;
       }
       beginHistory(detail, prog);
+      if (mobilePrototype) { setMobileDetailInfoOpen(false); setMobileEpisodesOpen(false); setMobileRelatedOpen(false); }
       setPlaybackSpeed(getPlaybackPreferences().speed);
       setStreamPlaybackSpeed(getPlaybackPreferences().speed);
       setActiveSeries(detail);
@@ -796,6 +806,28 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
   };
 
   const currentEpisode: Episode | undefined = activeSeries?.episodes?.[currentEpisodeIndex];
+  const openMobileSearch = (origin: "recommend" | "category") => {
+    mobileSearchOrigin.current = { tab: origin, series: activeSeries, episodeId: currentEpisode?.id };
+    setTab("search"); setActiveSeries(null);
+  };
+  const returnMobileSearch = () => {
+    const origin = mobileSearchOrigin.current;
+    setTab(origin.tab); setActiveSeries(null);
+    if (origin.series) void handleSelectSeries(origin.series, undefined, origin.episodeId);
+    else if (origin.tab === "recommend") void loadStreamData(1, false);
+    else if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage);
+  };
+  const toggleMobileFullscreen = async (container: HTMLDivElement | null, video: HTMLVideoElement | null) => {
+    try {
+      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+      if (container?.requestFullscreen) {
+        try { await container.requestFullscreen(); return; } catch {}
+      }
+      const nativeVideo = video as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
+      if (nativeVideo?.webkitEnterFullscreen) nativeVideo.webkitEnterFullscreen();
+      else showToast("操作失败，请稍后重试");
+    } catch { showToast("操作失败，请稍后重试"); }
+  };
   useEffect(() => {
     if (!activeSeries || !currentEpisode) return;
     const location = readPlaybackLocation(window.location.href);
@@ -1283,6 +1315,10 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
 
   const handleLoadedMetadata = () => {
     if (!videoRef.current) return;
+    if (mobilePrototype) {
+      setMobileDetailLandscape(videoRef.current.videoWidth > videoRef.current.videoHeight);
+      videoRef.current.volume = volume; videoRef.current.muted = isMuted;
+    }
     videoRef.current.playbackRate = playbackSpeed;
     setDuration(videoRef.current.duration || 0);
 
@@ -1661,24 +1697,24 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
           </div>
         </div>
       </header>}
-      {mobilePrototype && <header className="prototype-header">
+      {mobilePrototype && !activeSeries && tab !== "recommend" && <header className="prototype-header">
         <div className="prototype-brand"><span className="prototype-brand-icon"><Play size={17} fill="currentColor" /></span><strong>{t(tab === "category" ? "分类" : tab === "rank" ? "榜单" : tab === "favorites" || tab === "settings" ? "我的" : tab === "search" ? "搜索" : "推荐")}</strong></div>
-        {tab === "recommend" && !activeSeries && <button aria-label={t("搜索")} onClick={() => { setTab("search"); setActiveSeries(null); }}><Search size={22} /></button>}
-        {tab === "search" && <button aria-label={t("返回")} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><X size={22} /></button>}
+        {tab === "category" && <button aria-label={t("搜索")} onClick={() => openMobileSearch("category")}><Search size={22} /></button>}
+        {tab === "search" && <button aria-label={t("返回")} onClick={returnMobileSearch}><X size={22} /></button>}
       </header>}
 
       {!languageSaved && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{t("语言偏好无法保存")}</div>}
       {historyStorageWarning && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{localizeError(historyStorageWarning)}</div>}
       {/* 主界面区域 */}
-      <main className={`flex-1 ${!activeSeries && tab === "recommend" ? "overflow-hidden p-0" : "overflow-y-auto px-4 md:px-8 py-6"}`}>
+      <main className={`flex-1 ${mobilePrototype && activeSeries ? "prototype-detail-main" : ""} ${!activeSeries && tab === "recommend" ? "overflow-hidden p-0" : "overflow-y-auto px-4 md:px-8 py-6"}`}>
         {/* ======================= 1. 播放与选集详情界面 ======================= */}
         {activeSeries ? (
-          <div className="max-w-[1720px] mx-auto flex flex-col gap-8 pb-14 px-2 sm:px-4">
+          <div className={`max-w-[1720px] mx-auto flex flex-col gap-8 pb-14 px-2 sm:px-4 ${mobilePrototype ? "prototype-detail-layout" : ""}`}>
             {/* 上半部分：左侧播放器 + 右侧选集栏 */}
-            <div className="flex flex-col lg:flex-row gap-6">
+            <div className={`flex flex-col lg:flex-row gap-6 ${mobilePrototype ? "prototype-detail-upper" : ""}`}>
               {/* 左侧大屏播放器 */}
-              <div className="flex-1 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
+              <div className={`flex-1 flex flex-col gap-4 ${mobilePrototype ? "prototype-detail-player-column" : ""}`}>
+              <div className={`flex items-center justify-between ${mobilePrototype ? "prototype-legacy-player-controls" : ""}`}>
                 <button
                   tabIndex={7}
                   onClick={() => setActiveSeries(null)}
@@ -1698,7 +1734,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                 onMouseMove={resetControlsTimer}
                 onClick={resetControlsTimer}
                 onDoubleClick={toggleFullscreen}
-                className={`relative aspect-[9/16] max-h-[72vh] lg:max-h-none lg:aspect-video w-full bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center group ${
+                className={`relative aspect-[9/16] max-h-[72vh] lg:max-h-none lg:aspect-video w-full bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center group ${mobilePrototype ? "prototype-detail-stage" : ""} ${
                   isFullscreen ? "fixed inset-0 z-50 rounded-none border-none max-h-none aspect-auto w-screen h-screen" : ""
                 }`}
               >
@@ -1728,6 +1764,26 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       className="w-full h-full object-contain cursor-pointer"
                     />
 
+                    {mobilePrototype && <>
+                      <div className="prototype-detail-shade" />
+                      <div className="prototype-detail-top">
+                        <div className="prototype-detail-back"><button aria-label={t("返回")} onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else setActiveSeries(null); }}><ArrowLeft size={21} /></button><span>{t("第{{number}}集", { number: currentEpisode.number })}</span></div>
+                        <PlayerActions key={currentEpisode.id} speed={playbackSpeed} quality={currentQuality} qualities={videoQualities} loading={qualitiesLoading} onSpeed={handleSelectSpeed} onQuality={handleSelectQuality} onSearch={() => openMobileSearch(tab === "category" ? "category" : "recommend")} onFullscreen={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={isMuted} onMute={handleToggleMute} volume={volume} onVolume={value => { if (videoRef.current) { videoRef.current.volume = value; videoRef.current.muted = value === 0; } setVolume(value); setIsMuted(value === 0); }} onPrevious={() => setCurrentEpisodeIndex(value => value - 1)} previousDisabled={currentEpisodeIndex === 0} onRelated={() => setMobileRelatedOpen(true)} />
+                      </div>
+                      {mobileDetailLandscape && <button className="prototype-landscape-fullscreen prototype-detail-landscape" onClick={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)}><Maximize size={14} />{t("横屏全屏")}</button>}
+                      <div className="prototype-detail-side">
+                        <button aria-label={t("追剧")} onClick={() => handleToggleFav(activeSeries)}><Heart size={27} fill={favorites.some(item => item.id === activeSeries.id) ? "currentColor" : "none"} /></button>
+                        <button disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1} onClick={() => { setCurrentEpisodeIndex(value => value + 1); setMobileDetailInfoOpen(false); }}><ChevronRight size={22} /><span>{t("下一集")}</span></button>
+                      </div>
+                      <div className="prototype-detail-info">
+                        <h3><bdi>{activeSeries.title}</bdi></h3>
+                        <button className="prototype-info-toggle" aria-expanded={mobileDetailInfoOpen} onClick={() => setMobileDetailInfoOpen(value => !value)}>{t(mobileDetailInfoOpen ? "收起剧集信息" : "展开剧集信息")}<ChevronDown size={14} /></button>
+                        {mobileDetailInfoOpen && <div className="prototype-detail-synopsis"><p>{localizeLabel(activeSeries.tags)}</p><p dir="auto">{activeSeries.description || t("暂无剧集简介")}</p></div>}
+                        <button className="prototype-episodes-trigger" aria-expanded={mobileEpisodesOpen} onClick={() => setMobileEpisodesOpen(true)}><Layers size={16} /><span>{t("选集")} · {t("第{{number}}集", { number: currentEpisode.number })} / {activeSeries.episodes.length}</span><ChevronDown size={15} /></button>
+                      </div>
+                      <div className="prototype-detail-progress" dir="ltr"><span>{formatTime(currentTime)}</span><input aria-label={t("播放进度")} type="range" min="0" max={duration || 100} step="0.5" value={Math.min(currentTime, duration || 100)} onChange={handleSeek} /><span>{formatTime(duration)}</span></div>
+                    </>}
+
                     {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => {qualitySwitchTimeRef.current = videoRef.current?.currentTime || 0;setQualityRetry(attempt => attempt + 1);}}>{t("重试")}</button></div>}
 
                     {/* 暂停时中央呼吸播放大按钮 */}
@@ -1743,7 +1799,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
 
                     {/* 🔝 顶部控制栏 (标题、集数、画质徽章、快捷键说明) */}
                     <div
-                      className={`absolute top-0 inset-x-0 p-4 md:p-6 bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-30 pointer-events-auto ${
+                      className={`absolute top-0 inset-x-0 p-4 md:p-6 bg-gradient-to-b from-black/85 via-black/40 to-transparent flex items-center justify-between transition-opacity duration-300 z-30 pointer-events-auto ${mobilePrototype ? "prototype-legacy-player-controls" : ""} ${
                         showControls || !isPlaying ? "opacity-100" : "opacity-0 pointer-events-none"
                       }`}
                     >
@@ -1816,7 +1872,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     {/* 🔽 底部控制栏 (时间轴、播放/暂停、选集、倍速、官方画质、音量、全屏) */}
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className={`absolute bottom-0 inset-x-0 p-4 md:p-6 bg-gradient-to-t from-black/95 via-black/60 to-transparent flex flex-col gap-3 transition-opacity duration-300 z-30 pointer-events-auto ${
+                      className={`absolute bottom-0 inset-x-0 p-4 md:p-6 bg-gradient-to-t from-black/95 via-black/60 to-transparent flex flex-col gap-3 transition-opacity duration-300 z-30 pointer-events-auto ${mobilePrototype ? "prototype-legacy-player-controls" : ""} ${
                         showControls || !isPlaying ? "opacity-100" : "opacity-0 pointer-events-none"
                       }`}
                     >
@@ -2122,7 +2178,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
               </div>
 
               {/* 左侧播放器下方：轻量操作条（上下集切换） */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <div className={`flex flex-wrap items-center justify-between gap-3 pt-1 ${mobilePrototype ? "prototype-legacy-player-controls" : ""}`}>
                 <div className="flex items-center gap-3">
                   <button
                     tabIndex={9}
@@ -2152,6 +2208,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
               </div>
 
               {/* 🌟「为你推荐 · 同类好剧」专区 (严格放置在系列季数左侧，播放器正下方) */}
+              <PlayerPanel enabled={mobilePrototype} open={mobileRelatedOpen} label={t("为你推荐")} onClose={() => setMobileRelatedOpen(false)}>
               <div className="w-full pt-6 border-t border-slate-800/80 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -2245,13 +2302,15 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                   <div className="p-8 text-center text-slate-500 text-sm bg-slate-900/30 rounded-2xl border border-slate-800">{t("暂无同类推荐短剧")}</div>
                 )}
               </div>
+              </PlayerPanel>
             </div>
 
             {/* 右侧面板 (1排6个共5排30集，自然紧凑高度，减少两排卡片高度) */}
-            <div className="w-full lg:w-[480px] xl:w-[520px] 2xl:w-[560px] flex flex-col bg-[#0a0f1d] border border-slate-800 rounded-2xl p-5 shrink-0 self-start">
+            <PlayerPanel enabled={mobilePrototype} open={mobileEpisodesOpen} label={t("选集")} onClose={() => setMobileEpisodesOpen(false)}>
+            <div style={mobilePrototype ? { width: "100%" } : undefined} className="w-full lg:w-[480px] xl:w-[520px] 2xl:w-[560px] flex flex-col bg-[#0a0f1d] border border-slate-800 rounded-2xl p-5 shrink-0 self-start">
               <div>
                 {/* 1. 顶部 Tab 标签栏 */}
-                <div className="flex items-center gap-6 border-b border-slate-800/80 pb-3 mb-4">
+                <div className={`flex items-center gap-6 border-b border-slate-800/80 pb-3 mb-4 ${mobilePrototype ? "prototype-legacy-player-controls" : ""}`}>
                   <button className="text-base font-bold text-white border-b-2 border-rose-500 pb-1 -mb-3.5">{t("视频")}</button>
                 </div>
 
@@ -2281,7 +2340,8 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     </button>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                  {mobilePrototype && <button className="prototype-info-toggle" aria-expanded={mobileDetailInfoOpen} onClick={() => setMobileDetailInfoOpen(value => !value)}>{t(mobileDetailInfoOpen ? "收起剧集信息" : "展开剧集信息")}<ChevronDown size={14} /></button>}
+                  <div className={`${mobilePrototype && !mobileDetailInfoOpen ? "hidden" : "flex"} flex-wrap items-center gap-2 text-[11px] text-slate-400`}>
                     <span className="text-rose-400 font-semibold flex items-center gap-1">{t("🔥 连载中")}</span>
                     <span>·</span>
                     <span>{t("共{{count}}集", { count: activeSeries.episodes.length })}</span>
@@ -2293,7 +2353,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     )}
                   </div>
 
-                  <p className="text-xs text-slate-400 leading-relaxed line-clamp-2">
+                  <p className={`text-xs text-slate-400 leading-relaxed line-clamp-2 ${mobilePrototype && !mobileDetailInfoOpen ? "hidden" : ""}`}>
                     {activeSeries.description || t("暂无剧集简介")}
                   </p>
                 </div>
@@ -2380,6 +2440,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                           onClick={() => {
                             setShowSeriesEndModal(false);
                             setCurrentEpisodeIndex(actualIdx);
+                            if (mobilePrototype) setMobileEpisodesOpen(false);
                           }}
                           title={t("第{{number}}集", { number: ep.number || actualIdx + 1 })}
                           className={`h-12 rounded-xl text-sm font-extrabold transition-all outline-none focus:ring-2 focus:ring-rose-500/70 flex items-center justify-center relative shadow-sm ${
@@ -2505,6 +2566,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                 </div>
               </div>
             </div>
+            </PlayerPanel>
           </div>
         </div>
       ) : null}
@@ -2702,7 +2764,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                 : "";
 
               return (
-                <div className="relative w-full h-full overflow-clip bg-black flex flex-col justify-between group">
+                <div ref={mobilePrototype ? streamPlayerContainerRef : undefined} className={`relative w-full h-full overflow-clip bg-black flex flex-col justify-between group ${mobilePrototype ? "prototype-watch-stage" : ""}`}>
                   {streamError && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
                     if (streamCurrentEpisode && (streamError === "无法播放媒体" || streamError === "当前剧集没有可用的视频源，请稍后重试")) {
                       streamQualitySwitchTimeRef.current = streamCurrentTime;
@@ -2739,11 +2801,13 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                         onError={() => { setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
                         autoPlay
                         playsInline
+                        muted={mobilePrototype ? streamMuted : undefined}
                         onPlaying={() => setStreamIsPlaying(true)}
                         className="w-full h-full object-contain transition-all duration-300"
                         onLoadedMetadata={(e) => {
                           const v = e.currentTarget;
                           v.playbackRate = streamPlaybackSpeed;
+                          if (mobilePrototype) { v.volume = streamVolume; v.muted = streamMuted; }
                           if (v.videoWidth && v.videoHeight) {
                             setStreamIsLandscape(v.videoWidth > v.videoHeight);
                           }
@@ -2789,7 +2853,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                             });
                             refreshHistory();
                           }
-                          handleStreamNextEpisode(true);
+                          if (!mobilePrototype || autoPlayNext) handleStreamNextEpisode(true);
                         }}
                         onPlay={() => setStreamIsPlaying(true)}
                         onPause={() => {
@@ -2837,17 +2901,18 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                   </div>
 
                   {/* 顶部状态与控制栏：当前分集、倍速、清晰度 */}
-                  <div className="relative z-10 px-3 md:px-6 pt-5 flex flex-wrap gap-2 items-center justify-between text-xs text-white/90 pointer-events-none">
+                  <div className={`relative z-10 px-3 md:px-6 pt-5 flex flex-wrap gap-2 items-center justify-between text-xs text-white/90 pointer-events-none ${mobilePrototype ? "prototype-stream-top" : ""}`}>
                     <div className="flex items-center gap-2 pointer-events-auto">
                       <span className="px-3.5 py-1.5 rounded-full bg-rose-600/30 text-rose-300 border border-rose-500/40 font-bold text-xs backdrop-blur-md shadow-lg">
                         {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })}
                       </span>
                       {streamIsLandscape && (
-                        <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">{t("🖥️ 横屏剧")}</span>
+                        mobilePrototype ? <button className="prototype-landscape-fullscreen" onClick={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)}><Maximize size={14} />{t("横屏全屏")}</button> : <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">{t("🖥️ 横屏剧")}</span>
                       )}
                     </div>
 
                     <div className="flex items-center gap-2 pointer-events-auto">
+                      {mobilePrototype ? <PlayerActions key={streamCurrentEpisode?.id || "loading"} speed={streamPlaybackSpeed} quality={streamQuality} qualities={streamQualities} loading={streamQualitiesLoading} onSpeed={handleStreamSelectSpeed} onQuality={handleStreamSelectQuality} onSearch={() => openMobileSearch("recommend")} onFullscreen={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={streamMuted} onMute={() => setStreamMuted(value => !value)} volume={streamVolume} onVolume={value => { if (streamVideoRef.current) streamVideoRef.current.volume = value; setStreamVolume(value); setStreamMuted(value === 0); }} /> : <>
                       {/* ⚡ 倍速选择菜单 */}
                       <div className="relative">
                         <button
@@ -2939,6 +3004,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       </div>
 
                       <span className="hidden md:inline text-[11px] text-white/70 bg-black/50 px-3 py-1.5 rounded-full backdrop-blur-md border border-white/15 shadow-lg">{t("滚轮 / ↑↓ 键切剧")}</span>
+                      </>}
                     </div>
                   </div>
 
@@ -2983,7 +3049,10 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     </button>
 
                     {/* 3. 悬浮切剧上/下按钮 (PC端便捷操作) */}
-                    <div className="flex flex-col gap-2 pt-1 border-t border-white/10">
+                    {mobilePrototype ? <button className="prototype-next-episode" disabled={!streamDetail || streamEpisodeIndex >= streamDetail.episodes.length - 1} onClick={() => {
+                      const next = streamDetail?.episodes[streamEpisodeIndex + 1];
+                      if (next) void handleSelectSeries(currentItem, undefined, next.id);
+                    }}><ChevronRight size={22} /><span>{t("下一集")}</span></button> : <div className="flex flex-col gap-2 pt-1 border-t border-white/10">
                       <button
                         type="button"
                         disabled={streamIndex === 0}
@@ -3007,7 +3076,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       >
                         <ChevronDown className="w-5 h-5" />
                       </button>
-                    </div>
+                    </div>}
                   </div>
 
                   {/* 👈 左下角信息层与胶囊条（严格参考图二：@创作者/剧名、第X集、#标签、合集条） */}
@@ -3067,7 +3136,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       </button>
 
                       {/* 快捷下一集按钮 */}
-                      {streamDetail && streamDetail.episodes && streamDetail.episodes.length > 1 && (
+                      {!mobilePrototype && streamDetail && streamDetail.episodes && streamDetail.episodes.length > 1 && (
                         <button
                           type="button"
                           onClick={() => handleStreamNextEpisode()}
