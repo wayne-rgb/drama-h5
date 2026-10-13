@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
-import { PlayerActions, PlayerPanel } from "./mobile-prototype/PlayerActions";
+import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from "./mobile-prototype/PlayerActions";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -192,6 +192,8 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
   const streamWheelLockRef = useRef(false);
   const streamGestureRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const suppressStreamClickUntil = useRef(0);
+  const detailGestureRef = useRef<{ x: number; y: number; at: number; episodeId?: string } | null>(null);
+  const suppressDetailClickUntil = useRef(0);
   const [streamInfoOpen, setStreamInfoOpen] = useState(false);
   const [mobileDetailInfoOpen, setMobileDetailInfoOpen] = useState(false);
   const [mobileEpisodesOpen, setMobileEpisodesOpen] = useState(false);
@@ -1731,6 +1733,30 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
               {/* 🌟 沉浸式专业播放器容器 (全屏/倍速/官方真实画质/连播/快捷键) */}
               <div
                 ref={playerContainerRef}
+                style={mobilePrototype ? { touchAction: "pan-x" } : undefined}
+                onPointerDown={event => {
+                  if (!mobilePrototype || !event.isPrimary || event.button !== 0 || (event.target as HTMLElement).closest("button, input, select, [data-gesture-exclude]")) return;
+                  detailGestureRef.current = { x: event.clientX, y: event.clientY, at: Date.now(), episodeId: currentEpisode?.id };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerUp={event => {
+                  const start = detailGestureRef.current;
+                  detailGestureRef.current = null;
+                  if (!mobilePrototype || !start) return;
+                  const dx = event.clientX - start.x, dy = event.clientY - start.y;
+                  if (Math.abs(dy) < 70 || Math.abs(dy) <= Math.abs(dx) * 1.3 || Date.now() - start.at >= 1200) return;
+                  suppressDetailClickUntil.current = Date.now() + 400;
+                  if (start.episodeId !== currentEpisode?.id) return;
+                  const nextIndex = currentEpisodeIndex + (dy < 0 ? 1 : -1);
+                  if (nextIndex < 0 || nextIndex >= activeSeries.episodes.length) return;
+                  setCurrentEpisodeIndex(nextIndex);
+                  setMobileDetailInfoOpen(false);
+                  setShowSeriesEndModal(false);
+                }}
+                onPointerCancel={() => { detailGestureRef.current = null; }}
+                onClickCapture={event => {
+                  if (mobilePrototype && Date.now() < suppressDetailClickUntil.current && !(event.target as HTMLElement).closest("button, input")) { event.preventDefault(); event.stopPropagation(); }
+                }}
                 onMouseMove={resetControlsTimer}
                 onClick={resetControlsTimer}
                 onDoubleClick={toggleFullscreen}
@@ -1770,12 +1796,12 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                         <div className="prototype-detail-back"><button aria-label={t("返回")} onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else setActiveSeries(null); }}><ArrowLeft size={21} /></button><span>{t("第{{number}}集", { number: currentEpisode.number })}</span></div>
                         <PlayerActions key={currentEpisode.id} speed={playbackSpeed} quality={currentQuality} qualities={videoQualities} loading={qualitiesLoading} onSpeed={handleSelectSpeed} onQuality={handleSelectQuality} onSearch={() => openMobileSearch(tab === "category" ? "category" : "recommend")} onFullscreen={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={isMuted} onMute={handleToggleMute} volume={volume} onVolume={value => { if (videoRef.current) { videoRef.current.volume = value; videoRef.current.muted = value === 0; } setVolume(value); setIsMuted(value === 0); }} onPrevious={() => setCurrentEpisodeIndex(value => value - 1)} previousDisabled={currentEpisodeIndex === 0} onRelated={() => setMobileRelatedOpen(true)} />
                       </div>
-                      {mobileDetailLandscape && <button className="prototype-landscape-fullscreen prototype-detail-landscape" onClick={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)}><Maximize size={14} />{t("横屏全屏")}</button>}
+                      {mobileDetailLandscape && <FullscreenWatch key={currentEpisode.id} videoRef={videoRef} onClick={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} />}
                       <div className="prototype-detail-side">
-                        <button aria-label={t("追剧")} onClick={() => handleToggleFav(activeSeries)}><Heart size={27} fill={favorites.some(item => item.id === activeSeries.id) ? "currentColor" : "none"} /></button>
-                        <button disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1} onClick={() => { setCurrentEpisodeIndex(value => value + 1); setMobileDetailInfoOpen(false); }}><ChevronRight size={22} /><span>{t("下一集")}</span></button>
+                        <PlayerSideAction active={favorites.some(item => item.id === activeSeries.id)} label={t(favorites.some(item => item.id === activeSeries.id) ? "已追" : "追剧")} icon={<Heart size={27} fill={favorites.some(item => item.id === activeSeries.id) ? "currentColor" : "none"} />} onClick={() => handleToggleFav(activeSeries)} />
+                        <PlayerSideAction disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1} label={t("下一集")} icon={<ChevronRight size={27} />} onClick={() => { setCurrentEpisodeIndex(value => value + 1); setMobileDetailInfoOpen(false); }} />
                       </div>
-                      <div className="prototype-detail-info">
+                      <div className="prototype-detail-info" data-gesture-exclude>
                         <h3><bdi>{activeSeries.title}</bdi></h3>
                         <button className="prototype-info-toggle" aria-expanded={mobileDetailInfoOpen} onClick={() => setMobileDetailInfoOpen(value => !value)}>{t(mobileDetailInfoOpen ? "收起剧集信息" : "展开剧集信息")}<ChevronDown size={14} /></button>
                         {mobileDetailInfoOpen && <div className="prototype-detail-synopsis"><p>{localizeLabel(activeSeries.tags)}</p><p dir="auto">{activeSeries.description || t("暂无剧集简介")}</p></div>}
@@ -2906,8 +2932,8 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       <span className="px-3.5 py-1.5 rounded-full bg-rose-600/30 text-rose-300 border border-rose-500/40 font-bold text-xs backdrop-blur-md shadow-lg">
                         {t("第{{number}}集", { number: streamCurrentEpisode?.number || streamEpisodeIndex + 1 })}
                       </span>
-                      {streamIsLandscape && (
-                        mobilePrototype ? <button className="prototype-landscape-fullscreen" onClick={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)}><Maximize size={14} />{t("横屏全屏")}</button> : <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">{t("🖥️ 横屏剧")}</span>
+                      {streamIsLandscape && !mobilePrototype && (
+                        <span className="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold backdrop-blur-md">{t("🖥️ 横屏剧")}</span>
                       )}
                     </div>
 
@@ -3008,6 +3034,8 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     </div>
                   </div>
 
+                  {mobilePrototype && streamIsLandscape && videoStreamUrl && <FullscreenWatch key={streamCurrentEpisode?.id} videoRef={streamVideoRef} onClick={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)} />}
+
                   {/* 👉 右侧纵向操作栏（严格参考图二排布：头像/追剧、爱心、评论、收藏、分享、切剧） */}
                   <div className="absolute end-3 md:end-6 bottom-20 z-20 flex flex-col items-center gap-4">
                     {/* 1. 作者/剧集头像 + 追剧加号小标 */}
@@ -3030,7 +3058,7 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                     </div>
 
                     {/* 2. 点赞 / 追剧心形按钮 */}
-                    <button
+                    {mobilePrototype ? <PlayerSideAction active={isFav} label={t(isFav ? "已追" : "追剧")} icon={<Heart size={27} fill={isFav ? "currentColor" : "none"} />} onClick={() => handleToggleFav(currentItem)} /> : <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -3046,13 +3074,13 @@ export default function App({ mobilePrototype = false }: { mobilePrototype?: boo
                       <span className="text-[11px] font-bold text-white/90 drop-shadow">
                         {isFav ? t("已追") : t("追剧")}
                       </span>
-                    </button>
+                    </button>}
 
                     {/* 3. 悬浮切剧上/下按钮 (PC端便捷操作) */}
-                    {mobilePrototype ? <button className="prototype-next-episode" disabled={!streamDetail || streamEpisodeIndex >= streamDetail.episodes.length - 1} onClick={() => {
+                    {mobilePrototype ? <PlayerSideAction label={t("下一集")} icon={<ChevronRight size={27} />} disabled={!streamDetail || streamEpisodeIndex >= streamDetail.episodes.length - 1} onClick={() => {
                       const next = streamDetail?.episodes[streamEpisodeIndex + 1];
                       if (next) void handleSelectSeries(currentItem, undefined, next.id);
-                    }}><ChevronRight size={22} /><span>{t("下一集")}</span></button> : <div className="flex flex-col gap-2 pt-1 border-t border-white/10">
+                    }} /> : <div className="flex flex-col gap-2 pt-1 border-t border-white/10">
                       <button
                         type="button"
                         disabled={streamIndex === 0}

@@ -55,6 +55,34 @@ export function PlayerActions(props: Props) {
   </div>;
 }
 
+export function PlayerSideAction({ icon, label, active = false, disabled = false, onClick }: { icon: React.ReactNode; label: string; active?: boolean; disabled?: boolean; onClick: () => void }) {
+  return <button className={`prototype-side-action${active ? " is-active" : ""}`} disabled={disabled} onClick={event => { event.stopPropagation(); onClick(); }} onDoubleClick={event => event.stopPropagation()}>
+    <span className="prototype-side-action-icon">{icon}</span><span>{label}</span>
+  </button>;
+}
+
+// 按视频的真实尺寸计算画面下沿，入口随视口变化移动，避开顶部状态栏。
+export function FullscreenWatch({ videoRef, onClick }: { videoRef: React.RefObject<HTMLVideoElement>; onClick: () => void }) {
+  const { t } = useI18n();
+  const [top, setTop] = useState<number | null>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const update = () => {
+      if (!video.videoWidth || !video.videoHeight) return;
+      const pictureHeight = Math.min(video.clientHeight, video.clientWidth * video.videoHeight / video.videoWidth);
+      setTop((video.clientHeight + pictureHeight) / 2 + 8);
+    };
+    const resize = new ResizeObserver(update);
+    resize.observe(video);
+    video.addEventListener("loadedmetadata", update);
+    update();
+    return () => { resize.disconnect(); video.removeEventListener("loadedmetadata", update); };
+  }, [videoRef]);
+  if (top === null) return null;
+  return <button className="prototype-fullscreen-watch" style={{ top }} data-gesture-exclude onClick={event => { event.stopPropagation(); onClick(); }} onDoubleClick={event => event.stopPropagation()}><Maximize size={15} /><span>{t("全屏观看")}</span></button>;
+}
+
 // 使用浏览器原生弹层保留焦点与关闭行为，内部沿用现有选集和同系列内容。
 export function PlayerPanel({ enabled, open, label, onClose, children }: { enabled: boolean; open: boolean; label: string; onClose: () => void; children: React.ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);

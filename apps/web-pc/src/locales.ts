@@ -9,7 +9,7 @@ export const messages = {
   "自动连播": ["Autoplay", "Reproducción automática", "Reprodução automática", "التشغيل التلقائي", "Lecture automatique"],
   "声音开启": ["Sound on", "Sonido activado", "Som ativado", "الصوت مفعّل", "Son activé"],
   "关闭": ["Close", "Cerrar", "Fechar", "إغلاق", "Fermer"],
-  "横屏全屏": ["Landscape · Full screen", "Horizontal · Pantalla completa", "Horizontal · Tela cheia", "أفقي · ملء الشاشة", "Paysage · Plein écran"],
+  "全屏观看": ["Watch full screen", "Ver en pantalla completa", "Assistir em tela cheia", "المشاهدة بملء الشاشة", "Regarder en plein écran"],
   "展开剧集信息": ["Show details", "Ver detalles", "Ver detalhes", "عرض التفاصيل", "Afficher les détails"],
   "收起剧集信息": ["Hide details", "Ocultar detalles", "Ocultar detalhes", "إخفاء التفاصيل", "Masquer les détails"],
   "主导航": ["Main navigation", "Navegación principal", "Navegação principal", "التنقل الرئيسي", "Navigation principale"],
