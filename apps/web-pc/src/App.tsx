@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
 import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from "./mobile-prototype/PlayerActions";
+import { bindPlaybackLifecycle } from './playback-lifecycle.mjs';
+import { toggleMediaFullscreen } from './playback-fullscreen.mjs';
 import { useMobileLayout } from "./use-mobile-layout";
 import { AccountDialogs, AccountHome, AccountMenu, AccountPanel, useAccountSession } from "./AccountArea";
 import "./account.css";
@@ -179,6 +181,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const [streamLoading, setStreamLoading] = useState(false);
   const [streamError, setStreamError] = useState("");
   const [streamPlaybackAttempt, setStreamPlaybackAttempt] = useState(0);
+  const [streamBuffering, setStreamBuffering] = useState(false);
   const [recommendationMode, setRecommendationMode] = useState<RecommendationMode>(getPlaybackPreferences().recommendationMode);
   const [showRecommendationResetConfirm, setShowRecommendationResetConfirm] = useState(false);
   const streamFeedRef = useRef<any>(null);
@@ -343,6 +346,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const [volume, setVolume] = useState(1.0);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
+  const [playbackBuffering, setPlaybackBuffering] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoPlayNext, setAutoPlayNext] = useState(true);
   const [showControls, setShowControls] = useState(true);
@@ -646,6 +650,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     let active = true;
     setStreamQualityEpisodeId(""); setStreamQualities([]); setStreamQualitiesLoading(true);
     setStreamError(""); setStreamIsPlaying(false);
+    setStreamBuffering(false);
     if (streamEpisodeIndex >= 3 && !hasVipAccess) { setStreamQualitiesLoading(false); return; }
     api.getVideoQualities(streamCurrentEpisode.id, streamDetail.id).then(response => {
       if (!active) return;
@@ -877,13 +882,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   };
   const toggleMobileFullscreen = async (container: HTMLDivElement | null, video: HTMLVideoElement | null) => {
     try {
-      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
-      if (container?.requestFullscreen) {
-        try { await container.requestFullscreen(); return; } catch {}
-      }
-      const nativeVideo = video as HTMLVideoElement & { webkitEnterFullscreen?: () => void };
-      if (nativeVideo?.webkitEnterFullscreen) nativeVideo.webkitEnterFullscreen();
-      else showToast("操作失败，请稍后重试");
+      await toggleMediaFullscreen(container, video);
     } catch { showToast("操作失败，请稍后重试"); }
   };
   useEffect(() => {
@@ -924,7 +923,14 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id, qualityEpisodeId, streamQualityEpisodeId]);
 
 
-  // 1. 选集切换时，从官方真实接口拉取该分集的可播放真实清晰度列表
+  // 后台暂停与回到前台续播共用一套生命周期处理。
+  useEffect(() => {
+    if (accountPanel) return;
+    const video = activeSeries ? videoRef.current : tab === 'recommend' ? streamVideoRef.current : null;
+    if (video) return bindPlaybackLifecycle(video);
+  }, [activeSeries?.id, currentEpisode?.id, qualityEpisodeId, currentQuality, streamCurrentEpisode?.id, streamQualityEpisodeId, streamQuality, streamPlaybackAttempt, tab, accountPanel]);
+
+  // 根据当前分集请求真实可用的视频源。
   useEffect(() => {
     if (!currentEpisode) return;
 
@@ -933,6 +939,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     setVideoQualities([]);
     setQualityEpisodeId("");
     setPlaybackError("");
+    setPlaybackBuffering(false);
     setCurrentTime(0); setDuration(0); setIsPlaying(false);
     if (currentEpisodeIndex >= 3 && !hasVipAccess) { setQualitiesLoading(false); return; }
 
@@ -1373,6 +1380,21 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     resetControlsTimer();
   };
 
+  const retryDetailPlayback = () => {
+    if (qualitySwitchTimeRef.current === null) qualitySwitchTimeRef.current = videoRef.current?.currentTime ?? currentTime;
+    setPlaybackBuffering(false);
+    setQualityRetry(attempt => attempt + 1);
+  };
+  const retryStreamPlayback = () => {
+    if (streamCurrentEpisode) {
+      if (streamQualitySwitchTimeRef.current === null) streamQualitySwitchTimeRef.current = streamVideoRef.current?.currentTime ?? streamCurrentTime;
+      setStreamBuffering(false);
+      setStreamPlaybackAttempt(attempt => attempt + 1);
+    } else if (streamList[streamIndex]) void loadStreamDetail(streamList[streamIndex]);
+    else void streamFeedRef.current.retry().catch(() => {});
+    setStreamError("");
+  };
+
   const handleLoadedMetadata = () => {
     if (!videoRef.current) return;
     if (mobilePrototype) {
@@ -1505,12 +1527,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
   // 全屏切换
   const toggleFullscreen = () => {
-    if (!playerContainerRef.current) return;
-    if (!document.fullscreenElement) {
-      playerContainerRef.current.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen().catch(() => {});
-    }
+    void toggleMobileFullscreen(playerContainerRef.current, videoRef.current);
   };
 
   const formatTime = (seconds: number) => {
@@ -1777,6 +1794,11 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   detailGestureRef.current = null;
                   if (!mobilePrototype || !start) return;
                   const dx = event.clientX - start.x, dy = event.clientY - start.y;
+                  if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && Date.now() - start.at < 500) {
+                    suppressDetailClickUntil.current = Date.now() + 400;
+                    handleTogglePlay();
+                    return;
+                  }
                   if (Math.abs(dy) < 70 || Math.abs(dy) <= Math.abs(dx) * 1.3 || Date.now() - start.at >= 1200) return;
                   suppressDetailClickUntil.current = Date.now() + 400;
                   if (start.episodeId !== currentEpisode?.id) return;
@@ -1792,7 +1814,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 }}
                 onMouseMove={resetControlsTimer}
                 onClick={resetControlsTimer}
-                onDoubleClick={toggleFullscreen}
+                onDoubleClick={mobilePrototype ? undefined : toggleFullscreen}
                 className={`relative aspect-[9/16] max-h-[72vh] lg:max-h-none lg:aspect-video w-full bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center group ${mobilePrototype ? "prototype-detail-stage" : ""} ${
                   isFullscreen ? "fixed inset-0 z-50 rounded-none border-none max-h-none aspect-auto w-screen h-screen" : ""
                 }`}
@@ -1808,16 +1830,19 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={handleLoadedMetadata}
                       onEnded={handleVideoEnded}
-                      onError={() => { setPlaybackError("无法播放媒体"); setIsPlaying(false); }}
+                      onError={() => { setPlaybackBuffering(false); setPlaybackError("无法播放媒体"); setIsPlaying(false); }}
+                      onWaiting={event => { if (!event.currentTarget.paused) setPlaybackBuffering(true); }}
+                      onStalled={event => { if (!event.currentTarget.paused) setPlaybackBuffering(true); }}
                       onPlay={() => {
                         setIsPlaying(true);
                         setShowSeriesEndModal(false);
                       }}
                       onPlaying={() => {
+                        setPlaybackBuffering(false);
                         setIsPlaying(true);
                         setShowSeriesEndModal(false);
                       }}
-                      onPause={() => { handleTimeUpdate(); setIsPlaying(false); }}
+                      onPause={() => { handleTimeUpdate(); setPlaybackBuffering(false); setIsPlaying(false); }}
                       onSeeked={handleTimeUpdate}
                       onClick={handleTogglePlay}
                       className="w-full h-full object-contain cursor-pointer"
@@ -1844,7 +1869,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       <div className="prototype-detail-progress" dir="ltr"><span>{formatTime(currentTime)}</span><input aria-label={t("播放进度")} type="range" min="0" max={duration || 100} step="0.5" value={Math.min(currentTime, duration || 100)} onChange={handleSeek} /><span>{formatTime(duration)}</span></div>
                     </>}
 
-                    {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => {qualitySwitchTimeRef.current = videoRef.current?.currentTime || 0;setQualityRetry(attempt => attempt + 1);}}>{t("重试")}</button></div>}
+                    {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)} <button className="underline ms-2" onClick={retryDetailPlayback}>{t("重试")}</button></div>}
+                    {playbackBuffering && !playbackError && <div role="status" className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center gap-3 bg-black/20"><RefreshCw className="w-8 h-8 animate-spin"/><span>{t("加载中...")}</span></div>}
 
                     {/* 暂停时中央呼吸播放大按钮 */}
                     {!isPlaying && (
@@ -2232,7 +2258,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   </>
                 ) : (
                   <div className="text-slate-400 text-sm text-center p-4">
-                    {playbackError ? <div role="alert">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => setQualityRetry(attempt => attempt + 1)}>{t("重试")}</button></div> : t("加载中...")}
+                    {playbackError ? <div role="alert">{localizeError(playbackError)} <button className="underline ms-2" onClick={retryDetailPlayback}>{t("重试")}</button></div> : t("加载中...")}
                   </div>
                 )}
                 {currentEpisode && mobilePrototype && detailLocked && <div className="detail-social-actions"><EpisodeInteractions key={currentEpisode.id} seriesId={activeSeries.id} episodeId={currentEpisode.id} title={activeSeries.title} session={accountState.session} onLogin={() => setAccountPanel('login')} /></div>}
@@ -2776,7 +2802,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
             className="w-full h-full flex items-center justify-center relative select-none overflow-hidden bg-black"
             style={mobilePrototype ? { touchAction: "pan-x" } : undefined}
             onPointerDown={event => {
-              if (!mobilePrototype || (event.target as HTMLElement).closest("button, input, select, [data-gesture-exclude]")) return;
+              if (!mobilePrototype || !event.isPrimary || event.button !== 0 || (event.target as HTMLElement).closest("button, input, select, [data-gesture-exclude]")) return;
               streamGestureRef.current = { x: event.clientX, y: event.clientY, at: Date.now() };
               event.currentTarget.setPointerCapture(event.pointerId);
             }}
@@ -2785,6 +2811,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               streamGestureRef.current = null;
               if (!mobilePrototype || !start) return;
               const dx = event.clientX - start.x, dy = event.clientY - start.y;
+              if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && Date.now() - start.at < 500) {
+                suppressStreamClickUntil.current = Date.now() + 400;
+                const video = streamVideoRef.current;
+                if (video?.paused) void video.play().catch(() => setStreamIsPlaying(false));
+                else video?.pause();
+                return;
+              }
               if (Math.abs(dy) >= 70 && Math.abs(dy) > Math.abs(dx) * 1.3 && Date.now() - start.at < 1200) {
                 suppressStreamClickUntil.current = Date.now() + 400;
                 void handleSwitchStream(dy < 0 ? "next" : "prev");
@@ -2830,14 +2863,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               return (
                 <div ref={mobilePrototype ? streamPlayerContainerRef : undefined} className={`relative w-full h-full overflow-clip bg-black flex flex-col justify-between group ${mobilePrototype ? "prototype-watch-stage" : ""}`}>
                   {streamLocked && <VipGate cover={currentItem.cover} loading={!accountState.session} onSubscribe={() => setAccountPanel('membership')} />}
-                  {streamError && !streamLocked && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
-                    if (streamCurrentEpisode && ["无法播放媒体", "当前剧集没有可用的视频源，请稍后重试", '网络连接中断，请检查网络后重试'].includes(streamError)) {
-                      streamQualitySwitchTimeRef.current = streamCurrentTime;
-                      setStreamPlaybackAttempt(attempt => attempt + 1);
-                    } else if (!streamCurrentEpisode) void loadStreamDetail(currentItem);
-                    else void streamFeedRef.current.retry().catch(() => {});
-                    setStreamError("");
-                  }}>{t("重试")}</button></div>}
+                  {streamError && !streamLocked && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={retryStreamPlayback}>{t("重试")}</button></div>}
                   {/* 背景氛围虚化图 (彻底填充屏幕，消除任何黑边死角) */}
                   <div
                     className="absolute inset-0 bg-cover bg-center blur-3xl opacity-25 scale-110 pointer-events-none transition-all duration-700"
@@ -2863,11 +2889,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         ref={streamVideoRef}
                         key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}-${streamPlaybackAttempt}`}
                         src={api.getVideoStreamUrl(streamCurrentEpisode?.id || "", streamQuality, currentItem.id)}
-                        onError={() => { setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
+                        onError={() => { setStreamBuffering(false); setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
+                        onWaiting={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}
+                        onStalled={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}
                         autoPlay={!accountPanel}
                         playsInline
                         muted={mobilePrototype ? streamMuted : undefined}
-                        onPlaying={() => setStreamIsPlaying(true)}
+                        onPlaying={() => {setStreamBuffering(false);setStreamIsPlaying(true);}}
                         className="w-full h-full object-contain transition-all duration-300"
                         onLoadedMetadata={(e) => {
                           const v = e.currentTarget;
@@ -2922,6 +2950,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         }}
                         onPlay={() => setStreamIsPlaying(true)}
                         onPause={() => {
+                          setStreamBuffering(false);
                           setStreamIsPlaying(false);
                           const v = streamVideoRef.current;
                           if (v && streamCurrentEpisode) {
@@ -2947,7 +2976,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     )}
 
                     {/* 暂停时显示居中播放按钮（参考图二：精致半透明播放三角图标） */}
-                    {(streamDetailLoading || streamQualitiesLoading) && !streamError ? (
+                    {(streamDetailLoading || streamQualitiesLoading || streamBuffering) && !streamError ? (
                       <div role="status" className="absolute inset-0 bg-black/35 flex flex-col gap-3 items-center justify-center pointer-events-none">
                         <RefreshCw className="w-8 h-8 animate-spin text-white" />
                         <span className="text-white">{t("加载中...")}</span>
