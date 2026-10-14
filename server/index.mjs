@@ -15,6 +15,7 @@ import { RecommendationService, RecommendationError } from "./recommendation-ser
 import { AccountStore, AccountError } from "./account-store.mjs";
 import { createAccountService } from "./account-routes.mjs";
 import { createContentService } from "./content-service.mjs";
+import { publicFailure } from "./http-error.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -38,12 +39,14 @@ const MIME_TYPES = {
   ".ttf": "font/ttf",
 };
 
-function serveStatic(res, pathname) {
+function serveStatic(req, res, pathname) {
+  if (!['GET', 'HEAD'].includes(req.method)) return false;
   if (!fs.existsSync(DIST_DIR)) return false;
   let targetFile = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   let filePath = path.join(DIST_DIR, targetFile);
 
-  if (!filePath.startsWith(DIST_DIR)) return false;
+  const relative = path.relative(DIST_DIR, filePath);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
 
   // SPA 回退
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
@@ -61,7 +64,11 @@ function serveStatic(res, pathname) {
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
   });
-  fs.createReadStream(filePath).pipe(res);
+  if (req.method === 'HEAD') { res.end(); return true; }
+  const stream = fs.createReadStream(filePath);
+  res.once('close', () => stream.destroy());
+  stream.once('error', error => { console.error('[静态文件读取失败]:', error.message); res.destroy(); });
+  stream.pipe(res);
   return true;
 }
 
@@ -89,7 +96,8 @@ function legacyLibraryHistory(historyStore, libraryStore) { return {
 }; }
 const legacyHistory = legacyLibraryHistory(historyStore, libraryStore);
 const handleHistory = createHistoryHandler(legacyHistory);
-librarySync.start();
+// H5不再使用共享游客库；旧同步配置只能由桌面本地模式继续运行。
+if (process.env.HG_MANAGED === '1') librarySync.start();
 
 // 初始化官方视频解密与画质引擎
 let hgEngine = null;
@@ -607,14 +615,9 @@ const server = http.createServer(async (req, res) => {
     return json(res, { service: "hongguotv-custom-bridge", version: "2.3.0", ok: true });
   }
 
-  // 1.1 静态托管 Web/PC 产物 (部署后端即自带 Web 前端页面)
-  if (!pathname.startsWith("/api/")) {
-    if (serveStatic(res, pathname)) {
-      return;
-    }
-  }
-
   try {
+    // 静态文件也纳入异常处理，部署期间文件变化不会绕过错误边界。
+    if (!pathname.startsWith('/api/') && serveStatic(req, res, pathname)) return;
     if (await accounts.handle(req, res, u)) return;
     if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
@@ -1025,9 +1028,10 @@ const server = http.createServer(async (req, res) => {
 
     return json(res, { error: "404 Not Found" }, 404);
   } catch (err) {
-    if (err instanceof AccountError) return json(res, { error: err.message }, err.status);
-    console.error("[API Gateway Error]:", err.message);
-    return json(res, { error: err.message }, 500);
+    const failure = publicFailure(err);
+    if (!(err instanceof AccountError)) console.error('[接口处理失败]:', err?.message || String(err));
+    if (res.headersSent) { res.destroy(); return; }
+    return json(res, { error: failure.message }, failure.status);
   }
 });
 
