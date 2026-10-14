@@ -75,7 +75,23 @@ export function saveProgress(seriesId:string,episodeId:string,position:number,ex
  operation("history",seriesId,"set",{...item,positionMs:Math.max(0,Math.round(position*1000)),durationMs:Number.isFinite(item.duration)?Math.max(0,Math.round(item.duration*1000)):0});
 }
 async function migrate(){if(migration)return migration;const keys=["hg_favorites_v1","hg_progress_v1","hg_search_history_v1","hg_pref_quality","hg_playback_speed",...Object.keys(localStorage).filter(key=>key.startsWith("hg_history_outbox_v1:")).sort()];const raw=Object.fromEntries(keys.map(key=>[key,localStorage.getItem(key)]));if(!Object.values(raw).some(value=>value!==null))return;
- migration=(async()=>{const operations=legacyOperations(raw);await client().post("/api/library/import",{migrationId:(localStorage.getItem("hg_library_migration_id") || (()=>{const id=journal.uuid();localStorage.setItem("hg_library_migration_id",id);return id;})()),operations});for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);})();try{await migration;}finally{migration=null;}}
+ migration=(async()=>{
+  const operations=legacyOperations(raw),migrationId=localStorage.getItem("hg_library_migration_id")||journal.uuid();
+  localStorage.setItem("hg_library_migration_id",migrationId);
+  // 每次请求只提交有界批次；全部成功后才清理原始资料，失败可从原批次安全重试。
+  for(let offset=0;;){
+   let end=offset,bytes=1024;
+   while(end<operations.length&&end-offset<256){
+    const size=new TextEncoder().encode(JSON.stringify(operations[end])).byteLength+1;
+    if(end>offset&&bytes+size>1024*1024)break;
+    bytes+=size;end++;
+   }
+   await client().post("/api/library/import",{migrationId,offset,total:operations.length,operations:operations.slice(offset,end)});
+   if(end>=operations.length)break;
+   offset=end;
+  }
+  for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);
+ })();try{await migration;}finally{migration=null;}}
 export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
 export async function commitRecommendationPreferences(){
  await ensureLibraryIdentity();

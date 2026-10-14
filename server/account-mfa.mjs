@@ -18,7 +18,10 @@ export class AccountMfa {
     if(this.config.ACCOUNT_MFA_KEY){if(!/^[a-f0-9]{64}$/i.test(this.config.ACCOUNT_MFA_KEY))throw new AccountError(503,'二次验证服务配置无效');return Buffer.from(this.config.ACCOUNT_MFA_KEY,'hex');}
     if(this.store.filename===':memory:')return this.store.memoryMfaKey ||= crypto.randomBytes(32);
     const file=path.join(path.dirname(this.store.filename),'.mfa-key');
-    if(!fs.existsSync(file)){try{fs.writeFileSync(file,crypto.randomBytes(32),{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;}}
+    if(!fs.existsSync(file)){
+      if(this.store.db.prepare('SELECT 1 FROM account_mfa LIMIT 1').get() || this.store.db.prepare("SELECT 1 FROM account_tokens WHERE purpose='mfa-setup' AND expires_at>? LIMIT 1").get(Date.now()))throw new AccountError(503,'二次验证密钥缺失，请恢复原密钥或联系管理员');
+      try{fs.writeFileSync(file,crypto.randomBytes(32),{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;}
+    }
     fs.chmodSync(file,0o600);const key=fs.readFileSync(file);if(key.length!==32)throw new AccountError(503,'二次验证服务配置无效');return key;
   }
   encrypt(secret) {const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',this.key(),iv),data=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64');}
@@ -59,10 +62,17 @@ export class AccountMfa {
     this.store.transaction(()=>{
       const row=this.store.db.prepare('SELECT * FROM account_mfa WHERE account_id=?').get(account.id);
       if(!row)throw new AccountError(400,'请先设置二次验证');
-      const counter=this.match(this.decrypt(row.secret),code,row.last_counter),recovery=JSON.parse(row.recovery),index=typeof code==='string'&&/^[a-f0-9]{16}$/i.test(code)?recovery.indexOf(digest(code.toLowerCase())):-1;
-      if(counter===null&&index<0)throw new AccountError(400,'动态码无效或已使用');
-      if(counter!==null)this.store.db.prepare('UPDATE account_mfa SET last_counter=? WHERE account_id=?').run(counter,account.id);
-      else{recovery.splice(index,1);this.store.db.prepare('UPDATE account_mfa SET recovery=? WHERE account_id=?').run(JSON.stringify(recovery),account.id);}
+      const recovery=JSON.parse(row.recovery);
+      if(typeof code==='string'&&/^[a-f0-9]{16}$/i.test(code)){
+        const index=recovery.indexOf(digest(code.toLowerCase()));
+        if(index<0)throw new AccountError(400,'动态码无效或已使用');
+        recovery.splice(index,1);this.store.db.prepare('UPDATE account_mfa SET recovery=? WHERE account_id=?').run(JSON.stringify(recovery),account.id);return;
+      }
+      if(typeof code!=='string'||!/^\d{6}$/.test(code))throw new AccountError(400,'动态码无效或已使用');
+      let decoded;try{decoded=this.decrypt(row.secret);}catch(error){if(error instanceof AccountError)throw error;throw new AccountError(503,'二次验证密钥不可用，请使用恢复码或联系管理员');}
+      const counter=this.match(decoded,code,row.last_counter);
+      if(counter===null)throw new AccountError(400,'动态码无效或已使用');
+      this.store.db.prepare('UPDATE account_mfa SET last_counter=? WHERE account_id=?').run(counter,account.id);
     });
   }
 }

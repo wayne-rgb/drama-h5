@@ -138,7 +138,7 @@ export class HistoryStore {
   importLegacy(value) {
     string(value.clientId, 'clientId');
     const platform = source(value.source, false);
-    if (!Array.isArray(value.items) || value.items.length > 10000) invalid('items must be an array with at most 10000 entries');
+    if (!Array.isArray(value.items) || value.items.length > 256) invalid('每批最多导入256条观看记录');
     const items = value.items.map(raw => {
       const metadata = series({ ...raw, id: raw.seriesId });
       const data = playback(raw);

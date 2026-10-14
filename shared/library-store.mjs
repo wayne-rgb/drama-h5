@@ -68,7 +68,9 @@ export class LibraryStore {
   setMeta(key,value){this.db.prepare('INSERT INTO library_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));}
   transaction(fn){this.db.exec('BEGIN IMMEDIATE');try{const result=fn();this.db.exec('COMMIT');return result;}catch(error){try{this.db.exec('ROLLBACK');}catch{/* SQLite满额时可能已自动回滚，保留原始错误供调用方识别。 */}throw error;}}
   write(input) {
-    return this.transaction(()=>{
+    return this.transaction(()=>this.writeInTransaction(input));
+  }
+  writeInTransaction(input) {
       if(input.id){const previous=this.db.prepare('SELECT * FROM library_events WHERE id=?').get(input.id);if(previous){const saved=JSON.parse(previous.event_json);const retry=validateEvent({...input,deviceId:saved.deviceId,seq:saved.seq,at:input.at??saved.at});if(fingerprint(retry)!==previous.fingerprint&&fingerprint(retry)!==fingerprint(saved))throw new LibraryError(409,'operation ID was reused');return saved;}}
       const seq=(this.getMeta('sequence')||0)+1;
       const clock=Math.round(Date.now()+(this.getMeta('clockOffset')||0));
@@ -76,6 +78,29 @@ export class LibraryStore {
       const at=input.at??Math.max(clock,Math.abs(last-clock)>300000?clock:last+1);
       const event=validateEvent({...input,id:input.id||randomUUID(),deviceId:this.getMeta('deviceId'),seq,at});
       this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event,1);return event;
+  }
+  writeBatch(inputs) {
+    if(!Array.isArray(inputs)||inputs.length>256)fail('每批最多导入256条资料');
+    return this.transaction(()=>inputs.map(input=>this.writeInTransaction(input)));
+  }
+  importOperations({migrationId,operations,offset=0,total=operations?.length}) {
+    const id=text(migrationId,'迁移编号');
+    if(!Array.isArray(operations)||operations.length>256)fail('每批最多导入256条资料');
+    number(offset,'迁移位置',0,10000);number(total,'迁移总数',0,10000);
+    if(offset+operations.length>total || !operations.length && offset!==total)fail('迁移批次无效');
+    if(this.getMeta(`migration:${id}`))return {ok:true,next:total,complete:true};
+    const progressKey=`migration-progress:${id}`,progress=this.getMeta(progressKey)||{next:0,total};
+    if(progress.total!==total || offset>progress.next || offset<progress.next && offset+operations.length>progress.next)throw new LibraryError(409,'迁移批次已变化，请重新加载');
+    return this.transaction(()=>{
+      for(let index=0;index<operations.length;index++){
+        // 兼容旧版本已提交的操作编号，长编号改用固定长度摘要。
+        const raw=`migration:${id}:${offset+index}`,eventId=raw.length<=256?raw:`migration:${createHash('sha256').update(id).digest('hex')}:${offset+index}`;
+        this.writeInTransaction({...operations[index],id:eventId});
+      }
+      const next=Math.max(progress.next,offset+operations.length),complete=next===total;
+      if(complete){this.setMeta(`migration:${id}`,true);this.db.prepare('DELETE FROM library_meta WHERE key=?').run(progressKey);}
+      else this.setMeta(progressKey,{next,total});
+      return {ok:true,next,complete};
     });
   }
   insert(event,isLocal,original=event) {

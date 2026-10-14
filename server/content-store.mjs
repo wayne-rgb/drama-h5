@@ -145,9 +145,10 @@ export class ContentStore {
       const own = seriesId && this.row(seriesId);
       let available = !!series;
       if (own) {
-        const current = this.detail(seriesId,true), episode = current.episodes.find(item => item.id === row.episode_id);
-        series = { ...current, episodeNumber: episode?.number || series?.episodeNumber };
-        available = own.status === 'published' && !!episode;
+        const current = this.detail(seriesId), episode = current?.episodes.find(item => item.id === row.episode_id);
+        // 下架后不读取草稿，也不返回可能被管理员预览更新的共享元数据。
+        series = current ? { ...current, episodeNumber: episode?.number || series?.episodeNumber } : null;
+        available = !!current && !!episode;
       }
       // 旧记录缺少内容归属时保留点赞，等待再次访问原分集补全，不能猜测剧名或播放地址。
       return { episodeId: row.episode_id, series: series ? { id:series.id,title:series.title,cover:available ? series.cover : '',badge:series.badge,tags:series.tags,description:series.description,contentType:series.contentType } : null, episodeNumber: series?.episodeNumber || null, available, createdAt: row.created_at };

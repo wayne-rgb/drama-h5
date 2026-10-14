@@ -1,7 +1,8 @@
 import { AccountError } from './account-store.mjs';
 
 export class PlaybackGuard {
-  constructor(config = {}, budget) {
+  constructor(config = {}, budget, mediaPrefix = 'video/') {
+    this.mediaPrefix = mediaPrefix;
     this.maximum = Number(config.CONTENT_MAX_ACTIVE_STREAMS || 64);
     this.perViewer = Number(config.CONTENT_MAX_VIEWER_STREAMS || 6);
     this.timeout = Number(config.CONTENT_STREAM_TIMEOUT_MS || 1800000);
@@ -19,7 +20,7 @@ export class PlaybackGuard {
     const controller = new AbortController(); let released = false;
     if (meter) {
       const consume = (chunk, encoding) => {
-        if (chunk === undefined || chunk === null || !/^video\//i.test(String(res.getHeader('Content-Type') || '')) || ![200, 206].includes(res.statusCode)) return true;
+        if (chunk === undefined || chunk === null || !String(res.getHeader('Content-Type') || '').toLowerCase().startsWith(this.mediaPrefix) || ![200, 206].includes(res.statusCode)) return true;
         try { req.revalidatePlayback?.(); meter.setPrivileged?.(req.playbackPrivileged); meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
         catch { res.destroy(); return false; }
       };

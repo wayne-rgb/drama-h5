@@ -93,6 +93,8 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   const video=await upload(await fs.readFile(videoPath),'video','video/mp4');assert.equal(video.status,'ready');assert.equal(video.metadata.width,160);
   const created=await request('/api/admin/series',{actor:actors.admin,body:{title:'数据库验收短剧',description:'测试用独立内容',tags:'Romance',categoryIds:['romance'],contentType:'real-drama',language:'en',coverId:cover.id}});assert.equal(created.status,200);const id=created.data.id;
   assert.equal((await request(`/api/series/${id}`)).status,404);
+  const privateCover=await request(`/api/content/covers/${cover.id}`,{actor:actors.admin});
+  assert.equal(privateCover.status,200);assert.equal(privateCover.response.headers.get('cache-control'),'private, no-store');assert.equal(privateCover.response.headers.get('etag'),null);
   assert.equal((await request(`/api/admin/series/${id}/publish`,{actor:actors.admin,body:{status:'published'}})).status,400);
   for(let number=1;number<=4;number++)assert.equal((await request(`/api/admin/series/${id}/episodes`,{actor:actors.admin,body:{number,title:`测试第${number}集`,assetId:video.id}})).status,200);
   const draft=(await request(`/api/admin/series/${id}`,{actor:actors.admin})).data;
@@ -208,7 +210,7 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   await request(`/api/admin/series/${id}/publish`,{actor:actors.admin,body:{status:'draft'}});
   assert.equal((await request(`/api/episodes/${free}/stream?seriesId=${id}`)).status,404);
   const unavailable=(await request('/api/me/likes',{actor:actors.first})).data.items[0];
-  assert.equal(unavailable.available,false);assert.equal(unavailable.series.cover,'');
+  assert.equal(unavailable.available,false);assert.equal(unavailable.series,null);
   await request(`/api/me/likes/${free}`,{actor:actors.second,body:{}});
   assert.equal((await request('/api/me/likes?summary=1',{actor:actors.first})).data.count,1);
   await request(`/api/me/likes/${free}`,{actor:actors.first,body:{}});

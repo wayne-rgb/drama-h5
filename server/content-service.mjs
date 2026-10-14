@@ -59,8 +59,15 @@ export function createContentService(directory, accountStore, accounts, provider
   };
   const commentModeration = new CommentModeration(store, detail);
   const contentAudit = new ContentAudit(store,accountStore);
-  const streamFile = (req, res, asset, quality) => {
+  const streamFile = (req, res, asset, quality, cover = false, publicCover = false) => {
     const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
+    if(cover && publicCover){
+      const etag=`"${asset.id}-${stat.size}-${stat.mtimeMs}"`;
+      res.setHeader('ETag',etag);res.setHeader('Cache-Control','private, max-age=300');
+      // 访问资格已在封面入口校验；缓存命中没有响应正文，不预留或扣减媒体字节。
+      if((req.headers['if-none-match']||'').split(',').some(value=>value.trim()===etag||value.trim()===`W/${etag}`||value.trim()==='*')){res.writeHead(304);return res.end();}
+    }
+    if(cover)req.guardPublicAsset?.();
     let start = 0, end = stat.size - 1, status = 200;
     if (req.headers.range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
@@ -69,7 +76,7 @@ export function createContentService(directory, accountStore, accounts, provider
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start < 0 || start >= stat.size) { res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); return res.end(); } status = 206;
     }
     req.revalidatePlayback?.(true);
-    res.writeHead(status, { 'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(quality ? {'X-Video-Quality':quality} : {}), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) });
+    res.writeHead(status, { 'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', 'Cache-Control': publicCover?'private, max-age=300':'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(quality ? {'X-Video-Quality':quality} : {}), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) });
     if (req.method === 'HEAD') return res.end();
     const stream = fs.createReadStream(filename, { start, end }); res.once('close', () => stream.destroy()); stream.once('error', () => res.destroy()); stream.pipe(res);
   };
@@ -116,7 +123,7 @@ export function createContentService(directory, accountStore, accounts, provider
         const asset = store.asset(cover[1]), published = store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
         const user=accounts.viewer(req), creatorCover=user&&accountStore.isCreator(user.id)&&store.db.prepare('SELECT 1 FROM content_series WHERE cover_id=? AND creator_id=?').get(cover[1],user.id);
         if (asset?.kind !== 'image' || asset.status !== 'ready' || !published && !isAdmin(user) && !creatorCover) throw new AccountError(404, '封面不存在');
-        streamFile(req, res, asset); return true;
+        streamFile(req, res, asset, undefined, true, !!published); return true;
       }
       if (adminRoute) {
         const admin = requireAdmin(req);

@@ -96,6 +96,8 @@ const content = createContentService(DATA_DIR, accountStore, accounts, coreProvi
 const catalog = new CatalogCache();
 const trafficBudget = new TrafficBudget(path.join(DATA_DIR, 'resource-usage.sqlite'), process.env);
 const playbackGuard = new PlaybackGuard(process.env, trafficBudget);
+// 封面使用独立并发池，字节与视频共用预算，避免图片下载绕过每日流量上限。
+const coverGuard = new PlaybackGuard({CONTENT_MAX_ACTIVE_STREAMS:64,CONTENT_MAX_VIEWER_STREAMS:16,CONTENT_MAX_IP_STREAMS:64,CONTENT_STREAM_TIMEOUT_MS:60000},trafficBudget,'image/');
 const requestGuard = new RequestGuard(process.env);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
@@ -112,7 +114,11 @@ function legacyLibraryHistory(historyStore, libraryStore) { return {
  get: id => libraryStore.snapshot().history.find(item=>item.seriesId===id)||null,
  remove: id => { historyStore.remove(id); libraryStore.write({kind:"history",key:id,op:"delete"}); return {ok:true}; },
  clear: () => { historyStore.clear(); libraryStore.write({kind:"history",key:"*",op:"clear"}); return {ok:true}; },
- importLegacy: value => { const result=historyStore.importLegacy(value); for(const item of historyStore.list()) if(!libraryStore.snapshot().history.some(row=>row.seriesId===item.seriesId)) libraryStore.write({id:`legacy-import:${value.clientId}:${item.seriesId}`,kind:"history",key:item.seriesId,op:"set",at:item.updatedAt,value:item}); return result; }
+ importLegacy: value => {
+   const result=historyStore.importLegacy(value),existing=new Set(libraryStore.snapshot().history.map(row=>row.seriesId)),requested=new Set(value.items.map(row=>row.seriesId));
+   const operations=historyStore.list(value.source).filter(item=>requested.has(item.seriesId)&&!existing.has(item.seriesId)).map(item=>({id:`legacy-import:${value.clientId}:${item.seriesId}`,kind:"history",key:item.seriesId,op:"set",at:item.updatedAt,value:item}));
+   libraryStore.writeBatch(operations);return result;
+ }
 }; }
 const legacyHistory = legacyLibraryHistory(historyStore, libraryStore);
 const handleHistory = createHistoryHandler(legacyHistory);
@@ -658,6 +664,16 @@ const server = http.createServer(async (req, res) => {
       const audience = accounts.audience(req);
       req.playbackPrivileged = !!audience && !audience.guest && (accounts.canConfigureSync(audience,req) || accountStore.membership(audience.id).active);
       const address = accounts.address(req), viewer = audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${address}`;
+      req.guardPublicAsset = () => {
+        let checkedAt=0;
+        req.revalidatePlayback=(force=false)=>{
+          if(!force&&Date.now()-checkedAt<1000)return;
+          const current=accounts.audience(req);
+          req.playbackPrivileged=!!current&&!current.guest&&(accounts.canConfigureSync(current,req)||accountStore.membership(current.id).active);
+          checkedAt=Date.now();
+        };
+        req.revalidatePlayback(true);return coverGuard.acquire(req,res,viewer,address);
+      };
       if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
         requestGuard.checkVideo(viewer, address);
