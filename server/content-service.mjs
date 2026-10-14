@@ -71,8 +71,12 @@ export function createContentService(directory, accountStore, accounts, provider
       const social = /^\/api\/episodes\/(\d+)\/(interactions|likes|comments)$/.exec(route);
       const comment = /^\/api\/comments\/([a-f0-9-]+)(\/report)?$/.exec(route);
       const cover = /^\/api\/content\/covers\/([a-f0-9-]+)$/.exec(route);
-      if (!adminRoute && !social && !comment && !cover) return false;
+      const myLikes = route === '/api/me/likes', removeLike = /^\/api\/me\/likes\/(\d{1,40})$/.exec(route);
+      if (!adminRoute && !social && !comment && !cover && !myLikes && !removeLike) return false;
       if (!['GET', 'HEAD'].includes(req.method)) accounts.sameOrigin(req);
+      if (myLikes && req.method === 'GET') { const user = accounts.requireViewer(req); reply(res, store.likedEpisodes(user.id,url.searchParams.get('before'),url.searchParams.get('summary') === '1')); return true; }
+      if (removeLike && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req,user); store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(removeLike[1],user.id); reply(res,{count:store.likedEpisodes(user.id,null,true).count}); return true; }
+      if (myLikes || removeLike) throw new AccountError(405,'请求方式无效');
       const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch { throw new AccountError(400, '请求格式无效'); } };
       if (cover && ['GET', 'HEAD'].includes(req.method)) {
         const asset = store.asset(cover[1]), published = store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
@@ -110,9 +114,10 @@ export function createContentService(directory, accountStore, accounts, provider
       }
       const viewer = accounts.viewer(req);
       if (social) {
-        await resolveEpisode(req, url.searchParams.get('seriesId'), social[1], false);
+        const resolved = await resolveEpisode(req, url.searchParams.get('seriesId'), social[1], false);
+        if (store.db.prepare('SELECT 1 FROM episode_likes WHERE episode_id=?').get(social[1])) store.rememberLikedEpisode(resolved.series,resolved.episode);
         if (social[2] === 'interactions' && req.method === 'GET') reply(res, store.interactions(social[1], viewer));
-        else if (social[2] === 'likes' && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req, user); const data = await input(); if (typeof data.liked !== 'boolean') throw new AccountError(400, '点赞状态无效'); if (data.liked) store.db.prepare('INSERT OR IGNORE INTO episode_likes VALUES(?,?,?)').run(social[1], user.id, Date.now()); else store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(social[1], user.id); reply(res, store.interactions(social[1], user)); }
+        else if (social[2] === 'likes' && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req, user); const data = await input(); if (typeof data.liked !== 'boolean') throw new AccountError(400, '点赞状态无效'); if (data.liked) store.transaction(() => { store.rememberLikedEpisode(resolved.series,resolved.episode); store.db.prepare('INSERT OR IGNORE INTO episode_likes VALUES(?,?,?)').run(social[1], user.id, Date.now()); }); else store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(social[1], user.id); reply(res, store.interactions(social[1], user)); }
         else if (social[2] === 'comments' && req.method === 'GET') {
           const cursor = url.searchParams.get('before');
           const match = cursor ? /^(\d{1,16})(?::([a-f0-9-]{36}))?$/.exec(cursor) : null;

@@ -12,6 +12,8 @@ import { createAccountService } from '../server/account-routes.mjs';
 import { createContentService } from '../server/content-service.mjs';
 import { isAdministrator } from '../server/account-role.mjs';
 import { safeAccountReturn } from '../server/account-return.mjs';
+import { ContentStore } from '../server/content-store.mjs';
+import { DatabaseSync } from 'node:sqlite';
 
 test('登录与支付返回保留分集和套餐，拒绝外站跳转与任意令牌参数',()=>{
   const origin='https://drama.example';
@@ -130,6 +132,13 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   await request(`${social}/likes${query}`,{actor:actors.first,body:{liked:true}});await request(`${social}/likes${query}`,{actor:actors.first,body:{liked:true}});
   assert.equal((await request(`${social}/interactions${query}`)).data.likes,1);
   assert.equal((await request(`/api/episodes/${paid}/interactions${query}`)).data.likes,0);
+  assert.equal((await request('/api/me/likes')).status,401);
+  const liked=(await request('/api/me/likes',{actor:actors.first})).data;
+  assert.equal(liked.count,1);assert.equal(liked.items[0].episodeId,free);assert.equal(liked.items[0].series.id,id);assert.equal(liked.items[0].episodeNumber,1);assert.equal(liked.items[0].available,true);
+  assert.equal((await request(`/api/me/likes?accountId=${first.id}`,{actor:actors.second})).data.count,0);
+  assert.deepEqual((await request('/api/me/likes?summary=1',{actor:actors.first})).data,{count:1});
+  assert.equal((await request('/api/me/likes?before=invalid',{actor:actors.first})).status,400);
+  assert.equal((await request(`/api/me/likes/${free}`,{actor:actors.first,body:{},requestOrigin:'https://untrusted.example'})).status,403);
   const comment=await request(`${social}/comments${query}`,{actor:actors.first,body:{body:'真实保存的评论'}});assert.equal(comment.status,200);
   assert.equal((await request(`/api/comments/${comment.data.id}`,{actor:actors.second,method:'DELETE'})).status,403);
   await request(`/api/comments/${comment.data.id}/report`,{actor:actors.second,body:{}});
@@ -151,4 +160,30 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   assert.ok((await request('/api/admin/audit',{actor:actors.admin})).data.items.some(row=>row.action==='撤销手动会员'));
   await request(`/api/admin/series/${id}/publish`,{actor:actors.admin,body:{status:'draft'}});
   assert.equal((await request(`/api/episodes/${free}/stream?seriesId=${id}`)).status,404);
+  const unavailable=(await request('/api/me/likes',{actor:actors.first})).data.items[0];
+  assert.equal(unavailable.available,false);assert.equal(unavailable.series.cover,'');
+  await request(`/api/me/likes/${free}`,{actor:actors.second,body:{}});
+  assert.equal((await request('/api/me/likes?summary=1',{actor:actors.first})).data.count,1);
+  await request(`/api/me/likes/${free}`,{actor:actors.first,body:{}});
+  assert.equal((await request('/api/me/likes',{actor:actors.first})).data.count,0);
+});
+
+test('旧点赞记录迁移不丢失，同毫秒分页不漏集，重启后保留真实内容归属',async t=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drama-likes-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const legacy=new DatabaseSync(path.join(directory,'content.sqlite'));
+  legacy.exec('CREATE TABLE episode_likes(episode_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(episode_id,account_id))');
+  for(let index=1;index<=25;index++)legacy.prepare('INSERT INTO episode_likes VALUES(?,?,?)').run(String(1000+index),'first',123456);
+  legacy.close();
+  let store=new ContentStore(directory);
+  store.rememberLikedEpisode({id:'123',title:'真实内容元数据',cover:'/cover.png',tags:'Romance',episodes:[{id:'1025',number:2}]},{id:'1025',number:2});
+  store.close();store=new ContentStore(directory);
+  try {
+    const first=store.likedEpisodes('first'),second=store.likedEpisodes('first',first.next);
+    assert.equal(first.count,25);assert.equal(first.items.length,20);assert.equal(second.items.length,5);assert.equal(second.next,null);
+    assert.equal(new Set([...first.items,...second.items].map(row=>row.episodeId)).size,25);
+    assert.equal(first.items[0].series.title,'真实内容元数据');assert.equal(first.items[0].episodeNumber,2);
+    assert.equal(first.items[1].series,null);assert.equal(first.items[1].available,false);
+    assert.equal(store.likedEpisodes('second',null,true).count,0);
+  } finally { store.close(); }
 });

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowRight, Camera, Check, ChevronRight, Clock, Crown, Heart, Languages, LogOut, Mail, Settings, ShieldCheck, UserRound, X } from "lucide-react";
+import { ArrowRight, Camera, Check, ChevronRight, Clock, Crown, Heart, ThumbsUp, LogOut, Mail, Settings, ShieldCheck, UserRound, X } from "lucide-react";
 import { Account, AccountSession, accountError, accountRequest, changeAccount } from "./account";
 import { languages, MessageKey, useI18n } from "./i18n";
 import { HistoryItem } from "./types";
@@ -28,7 +28,7 @@ export function useAccountSession() {
   useEffect(() => { void refresh(); const visible = () => { if (!document.hidden) void refresh(); }; document.addEventListener("visibilitychange", visible); return () => document.removeEventListener("visibilitychange", visible); }, []);
   return { session, error, refresh };
 }
-type AreaProps = { session: AccountSession | null; onPanel: (panel: AccountPanel) => void; onOverview: () => void; onFavorites: () => void; onHistory: () => void; onSettings: () => void; onLanguage: (language: string) => void; favoritesCount: number; historyCount: number };
+type AreaProps = { session: AccountSession | null; onPanel: (panel: AccountPanel) => void; onOverview: () => void; onFavorites: () => void; onHistory: () => void; onLikes: () => void; onSettings: () => void; favoritesCount: number; historyCount: number; likesCount: number | null };
 const needsSubscriptionManagement = (user?: Account | null) => {
   const subscription = user?.membership.billingSubscription || user?.membership;
   return !!subscription?.planId && subscription.planId !== 'manual' && !["none", "canceled", "incomplete_expired"].includes(subscription.status);
@@ -41,7 +41,7 @@ function Avatar({ user, large = false }: { user?: Account | null; large?: boolea
 function VipBadge({ active, guest = false }: { active: boolean; guest?: boolean }) { const { t } = useI18n(); return <span className={`account-vip-badge${active ? " is-vip" : ""}`}>{!guest && <Crown size={12} />}{t(guest ? "游客模式" : active ? "VIP会员" : "普通账户")}</span>; }
 
 export function AccountMenu(props: AreaProps) {
-  const { t, localizeError, language } = useI18n();
+  const { t, localizeError } = useI18n();
   const [open, setOpen] = useState(false), root = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(""), [signingOut, setSigningOut] = useState(false);
   const user = props.session?.user;
@@ -59,7 +59,7 @@ export function AccountMenu(props: AreaProps) {
       <button className="account-menu-identity" onClick={() => select(() => user ? props.onOverview() : props.onPanel("login"))}><Avatar user={user} large /><span><strong>{user?.name || t("登录你的账户")}</strong><small dir="auto">{user?.email || t("登录后保存个人追剧与观看记录")}</small></span><ChevronRight size={16} /></button>
       <button className="account-menu-membership" onClick={() => select(() => props.onPanel("membership"))}><Crown size={19} /><span><strong>{t(user?.membership.active ? "VIP会员" : "会员订阅")}</strong><small>{t(needsSubscriptionManagement(user) ? "管理订阅与续费" : "查看月付与年付套餐")}</small></span><ChevronRight size={16} /></button>
       <div className="account-menu-links"><button onClick={() => select(props.onFavorites)}><Heart size={18} /><span>{t("我的追剧")}</span><small>{props.favoritesCount}</small></button><button onClick={() => select(props.onHistory)}><Clock size={18} /><span>{t("观看历史")}</span><small>{props.historyCount}</small></button></div>
-      <label className="account-menu-language"><Languages size={18} /><span>{t("界面语言")}</span><select aria-label={t("界面语言")} value={language} onChange={event => props.onLanguage(event.target.value)}>{languages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <button className="account-menu-setting" onClick={() => select(props.onLikes)}><ThumbsUp size={18}/>{t('我的点赞')}<small className="ms-auto">{props.likesCount ?? '—'}</small></button>
       <button className="account-menu-setting" onClick={() => select(props.onSettings)}><Settings size={18} />{t("设置")}<ChevronRight size={16} /></button>
       {props.session?.capabilities.admin && <a className="account-menu-setting" href="/admin"><ShieldCheck size={18}/>{t('内容后台')}<ChevronRight size={16}/></a>}
       {error && <div role="alert" className="account-error">{localizeError(error)}</div>}
@@ -69,7 +69,7 @@ export function AccountMenu(props: AreaProps) {
 }
 
 export function AccountHome(props: AreaProps & { histories: HistoryItem[]; onResume: (history: HistoryItem) => void; error: string; onRetry: () => void }) {
-  const { t, localizeError, formatDate, language } = useI18n();
+  const { t, localizeError, formatDate } = useI18n();
   const user = props.session?.user, membership = user?.membership;
   if (!props.session) return props.error ? <div role="alert" className="account-error">{localizeError(props.error)} <button onClick={props.onRetry}>{t("重试")}</button></div> : <p role="status">{t("账户加载中...")}</p>;
   return <div className="account-home">
@@ -78,9 +78,8 @@ export function AccountHome(props: AreaProps & { histories: HistoryItem[]; onRes
       <div className="account-profile-card"><button className="account-profile-identity" onClick={() => props.onPanel(user ? "profile" : "login")}><Avatar user={user} large /><span><strong>{user?.name || t("登录你的账户")}</strong><small dir="auto">{user?.email || t("登录后保存个人追剧与观看记录")}</small><VipBadge active={!!membership?.active} guest={!user} /></span><ChevronRight size={18} /></button>{user && !user.emailVerified && <button className="account-email-note" onClick={() => props.onPanel("profile")}><Mail size={14} />{t("邮箱尚未验证")}</button>}</div>
       <button className="account-membership-card" onClick={() => props.onPanel("membership")}><div><span className="account-membership-symbol"><Crown size={24} /></span><span><strong>{t(membership?.active ? "VIP会员" : "会员订阅")}</strong><small>{membership?.active && membership.periodEnd ? t(membership.cancelAtPeriodEnd ? "会员有效至{{date}}" : "下次续费：{{date}}", { date: formatDate(membership.periodEnd, { year: "numeric", month: "short", day: "numeric" }) }) : t("月付或年付，自主管理订阅")}</small></span></div><span className="account-membership-link">{t(needsSubscriptionManagement(user) ? "管理订阅" : "查看套餐")}<ArrowRight size={16} /></span></button>
     </div>
-    <div className="account-quick-links"><button onClick={props.onFavorites}><Heart size={21} /><strong>{props.favoritesCount}</strong><span>{t("我的追剧")}</span></button><button onClick={props.onHistory}><Clock size={21} /><strong>{props.historyCount}</strong><span>{t("观看历史")}</span></button><button onClick={props.onSettings}><Settings size={21} /><span>{t("设置")}</span><ChevronRight size={15} /></button></div>
+    <div className="account-quick-links"><button onClick={props.onFavorites}><Heart size={21} /><strong>{props.favoritesCount}</strong><span>{t("我的追剧")}</span></button><button onClick={props.onHistory}><Clock size={21} /><strong>{props.historyCount}</strong><span>{t("观看历史")}</span></button><button onClick={props.onLikes}><ThumbsUp size={21} /><strong>{props.likesCount ?? '—'}</strong><span>{t("我的点赞")}</span></button></div>
     {props.histories.length > 0 && <section className="account-continue"><div className="account-section-heading"><h3>{t("继续观看")}</h3><button onClick={props.onHistory}>{t("查看全部")}<ChevronRight size={14} /></button></div><div className="account-continue-list">{props.histories.slice(0, 3).map(item => <button key={item.seriesId} onClick={() => props.onResume(item)}><img src={item.cover} alt={item.title} /><span><strong dir="auto">{item.title}</strong><small>{t("看到第{{number}}集", { number: item.episodeNumber || 1 })}</small><span className="account-progress-track"><span style={{ width: `${item.duration && item.duration > 0 ? Math.min(100, item.position / item.duration * 100) : 0}%` }} /></span></span><ArrowRight size={17} /></button>)}</div></section>}
-    <label className="account-home-language"><Languages size={19} /><span>{t("界面语言")}</span><select aria-label={t("界面语言")} value={language} onChange={event => props.onLanguage(event.target.value)}>{languages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
   </div>;
 }
 

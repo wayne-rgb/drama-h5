@@ -5,6 +5,7 @@ import { useI18n } from './i18n';
 import { PlayerSideAction } from './mobile-prototype/PlayerActions';
 import { playbackLocation } from './playback-location';
 import './interactions.css';
+import { notifyLikesChanged } from './LikedEpisodes';
 
 type Social = { liked: boolean; likes: number; comments: number };
 type Comment = { id: string; body: string; author: string; own: boolean; createdAt: number };
@@ -23,7 +24,7 @@ export function EpisodeInteractions({ seriesId, episodeId, title, session, onLog
   const load = async (before?: string) => { setLoading(true); try { const data = await accountRequest<{ items: Comment[]; next: string | null }>(`${path}/comments${params}${before ? `&before=${encodeURIComponent(before)}` : ''}`); setComments(current => before ? [...current,...data.items] : data.items); setNext(data.next); setError(''); } catch(error) { setError(accountError(error)); } finally { setLoading(false); } };
   const action = async (operation: () => Promise<void>) => { if (busy) return; if (!session?.user) { setOpen(false); onLogin(); return; } setBusy(true); setError(''); try { await operation(); } catch(error) { setError(accountError(error)); } finally { setBusy(false); } };
   return <div className="episode-interactions" data-gesture-exclude onClick={event => event.stopPropagation()}>
-    <PlayerSideAction disabled={busy || !social} active={!!social?.liked} icon={<Heart size={27} fill={social?.liked ? 'currentColor' : 'none'} />} label={social ? `${t('点赞')} ${social.likes}` : t('点赞')} onClick={() => void action(async () => { setSocial(await accountRequest<Social>(`${path}/likes${params}`, { liked: !social?.liked })); })} />
+    <PlayerSideAction disabled={busy || !social} active={!!social?.liked} icon={<Heart size={27} fill={social?.liked ? 'currentColor' : 'none'} />} label={social ? `${t('点赞')} ${social.likes}` : t('点赞')} onClick={() => void action(async () => { setSocial(await accountRequest<Social>(`${path}/likes${params}`, { liked: !social?.liked })); notifyLikesChanged(); })} />
     <PlayerSideAction icon={<MessageCircle size={27} />} label={social ? `${t('评论')} ${social.comments}` : t('评论')} onClick={() => { setOpen(true); void load(); }} />
     <PlayerSideAction icon={<Share2 size={26} />} label={t('分享')} onClick={() => { setCopied(false); setSharing(true); setError(''); }} />
     {error && !open && !sharing && <span role="alert" className="social-inline-error">{localizeError(error)}</span>}

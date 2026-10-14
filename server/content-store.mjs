@@ -20,6 +20,8 @@ export class ContentStore {
       CREATE TABLE IF NOT EXISTS content_episodes(id TEXT PRIMARY KEY,series_id TEXT NOT NULL,number INTEGER NOT NULL,title TEXT NOT NULL,asset_id TEXT NOT NULL,UNIQUE(series_id,number));
       CREATE TABLE IF NOT EXISTS content_assets(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,offset INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'uploading',metadata TEXT,error TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS episode_likes(episode_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(episode_id,account_id));
+      CREATE TABLE IF NOT EXISTS liked_episode_content(episode_id TEXT PRIMARY KEY,series_id TEXT NOT NULL,metadata TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS likes_account ON episode_likes(account_id,created_at,episode_id);
       CREATE TABLE IF NOT EXISTS episode_comments(id TEXT PRIMARY KEY,episode_id TEXT NOT NULL,series_id TEXT NOT NULL,account_id TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'visible',created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS comments_episode ON episode_comments(episode_id,created_at);
       CREATE TABLE IF NOT EXISTS comment_reports(comment_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(comment_id,account_id));
@@ -92,5 +94,30 @@ export class ContentStore {
   }
   interactions(episodeId, viewer) {
     return { likes: this.db.prepare('SELECT COUNT(*) AS count FROM episode_likes WHERE episode_id=?').get(episodeId).count, liked: !!viewer && !!this.db.prepare('SELECT 1 FROM episode_likes WHERE episode_id=? AND account_id=?').get(episodeId, viewer.id), comments: this.db.prepare("SELECT COUNT(*) AS count FROM episode_comments WHERE episode_id=? AND status='visible'").get(episodeId).count };
+  }
+  rememberLikedEpisode(series, episode) {
+    const metadata = { id: String(series.id), title: series.title, cover: series.cover || '', badge: series.badge || '', tags: series.tags || '', description: series.description || '', contentType: series.contentType, episodeNumber: episode.number || series.episodes.findIndex(item => String(item.id) === String(episode.id)) + 1 };
+    this.db.prepare('INSERT INTO liked_episode_content VALUES(?,?,?) ON CONFLICT(episode_id) DO UPDATE SET series_id=excluded.series_id,metadata=excluded.metadata').run(String(episode.id), String(series.id), JSON.stringify(metadata));
+  }
+  likedEpisodes(accountId, cursor = null, summary = false) {
+    const count = this.db.prepare('SELECT COUNT(*) AS count FROM episode_likes WHERE account_id=?').get(accountId).count;
+    if (summary) return { count };
+    const match = cursor ? /^(\d{1,16}):(\d{1,40})$/.exec(cursor) : null;
+    if (cursor && !match) throw new AccountError(400, '点赞分页无效');
+    const before = match ? Number(match[1]) : Number.MAX_SAFE_INTEGER, beforeId = match?.[2] || '';
+    const rows = this.db.prepare(`SELECT l.*,m.series_id,m.metadata,e.series_id AS own_series_id FROM episode_likes l LEFT JOIN liked_episode_content m ON m.episode_id=l.episode_id LEFT JOIN content_episodes e ON e.id=l.episode_id WHERE l.account_id=? AND (l.created_at<? OR l.created_at=? AND l.episode_id<?) ORDER BY l.created_at DESC,l.episode_id DESC LIMIT 21`).all(accountId, before, before, beforeId);
+    return { count, items: rows.slice(0,20).map(row => {
+      let series = row.metadata ? JSON.parse(row.metadata) : null;
+      const seriesId = row.series_id || row.own_series_id;
+      const own = seriesId && this.row(seriesId);
+      let available = !!series;
+      if (own) {
+        const current = this.detail(seriesId,true), episode = current.episodes.find(item => item.id === row.episode_id);
+        series = { ...current, episodeNumber: episode?.number || series?.episodeNumber };
+        available = own.status === 'published' && !!episode;
+      }
+      // 旧记录缺少内容归属时保留点赞，等待再次访问原分集补全，不能猜测剧名或播放地址。
+      return { episodeId: row.episode_id, series: series ? { id:series.id,title:series.title,cover:available ? series.cover : '',badge:series.badge,tags:series.tags,description:series.description,contentType:series.contentType } : null, episodeNumber: series?.episodeNumber || null, available, createdAt: row.created_at };
+    }), next: rows.length > 20 ? `${rows[19].created_at}:${rows[19].episode_id}` : null };
   }
 }

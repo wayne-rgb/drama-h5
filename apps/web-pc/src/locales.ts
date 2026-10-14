@@ -1,6 +1,13 @@
 // 每行依次为英语、西班牙语、巴西葡萄牙语、阿拉伯语、加拿大法语；中文使用键名。
 // 界面翻译不改变内容服务的分类标识、搜索词或剧集元数据。
 export const messages = {
+  "我的点赞": ["Liked episodes", "Mis me gusta", "Curtidas", "إعجاباتي", "Mes mentions J’aime"],
+  "登录后查看点赞的剧集": ["Sign in to view your liked episodes", "Inicia sesión para ver los episodios que te gustan", "Entre para ver os episódios curtidos", "سجّل الدخول لعرض الحلقات التي أعجبتك", "Connectez-vous pour voir les épisodes aimés"],
+  "还没有点赞的剧集": ["No liked episodes yet", "Aún no te gusta ningún episodio", "Nenhum episódio curtido ainda", "لم تعجبك أي حلقة بعد", "Aucun épisode aimé pour le moment"],
+  "取消点赞": ["Unlike", "Quitar me gusta", "Descurtir", "إلغاء الإعجاب", "Retirer la mention J’aime"],
+  "内容暂不可播放": ["Content currently unavailable", "Contenido no disponible", "Conteúdo indisponível", "المحتوى غير متاح حالياً", "Contenu indisponible pour le moment"],
+  "点赞分页无效": ["Invalid likes page", "Página de me gusta no válida", "Página de curtidas inválida", "صفحة الإعجابات غير صالحة", "Page de mentions J’aime non valide"],
+  "剧集信息暂不可用": ["Episode information is currently unavailable", "La información del episodio no está disponible", "Informações do episódio indisponíveis", "معلومات الحلقة غير متاحة حالياً", "Informations de l’épisode indisponibles pour le moment"],
   "选择分类": ["Choose genres", "Elegir géneros", "Escolher gêneros", "اختيار الأنواع", "Choisir les genres"],
   "保存短剧": ["Drama saved", "Drama guardado", "Drama salvo", "حفظ المسلسل", "Série enregistrée"],
   "发布短剧": ["Drama published", "Drama publicado", "Drama publicado", "نشر المسلسل", "Série publiée"],
