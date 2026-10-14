@@ -24,6 +24,22 @@
 .prototype-featured h3 { max-width: 100%; font-size: 18px; font-weight: 700; line-height: 1.4; }
 .prototype-featured span { font-size: 11px; }
 .prototype-featured-play { display: flex; align-items: center; gap: 6px; background: #e11d48; border-radius: 8px; padding: 8px 12px; }
+.mobile-prototype-mode main.prototype-category-main { padding: 16px; }
+.prototype-category-content > :not([hidden]) ~ :not([hidden]) { margin-top: 16px; }
+.prototype-category-filters { display: flex; flex-direction: column; gap: 12px; }
+.prototype-category-types { display: flex; gap: 4px; padding: 4px; border: 1px solid #1e293b; border-radius: 14px; background: #0f172ae6; }
+.prototype-category-types button { flex: 1; min-width: 0; min-height: 44px; padding: 8px; border-radius: 10px; color: #94a3b8; font-size: 12px; font-weight: 700; }
+.prototype-category-types button[aria-pressed="true"] { background: #e11d48; color: white; }
+.prototype-category-genre-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.prototype-category-genre-rail { display: flex; flex: 1; min-width: 0; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; }
+.prototype-category-genre-rail button, .prototype-category-genre-sheet button { min-height: 44px; padding: 8px 14px; border: 1px solid #1e293b; border-radius: 22px; background: #0f172a; color: #94a3b8; font-size: 12px; font-weight: 600; }
+.prototype-category-genre-rail button { flex-shrink: 0; white-space: nowrap; }
+.prototype-category-genre-rail button[aria-pressed="true"], .prototype-category-genre-sheet button[aria-pressed="true"] { border-color: #e11d48; background: #e11d48; color: white; }
+.prototype-category-more { display: flex; align-items: center; justify-content: center; gap: 4px; flex-shrink: 0; min-height: 44px; padding: 8px; border-inline-start: 1px solid #1e293b; color: #cbd5e1; font-size: 12px; font-weight: 600; }
+.prototype-category-more:disabled { opacity: .4; }
+.prototype-category-loading { color: #94a3b8; font-size: 12px; }
+.prototype-panel-body > .prototype-category-genre-sheet { display: flex; flex-wrap: wrap; gap: 10px; padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+.prototype-category-filters button:focus-visible { outline: 2px solid #fb7185; outline-offset: -2px; }
 .prototype-my-tabs { display: flex; flex-wrap: wrap; flex-direction: row; align-items: center; gap: 8px; }
 .prototype-my-tabs > div:first-child { flex: 1; min-width: 0; gap: 4px; padding: 4px; }
 .prototype-my-tabs > div:first-child button { flex: 1; justify-content: center; min-height: 44px; padding: 8px 5px; gap: 4px; font-size: 11px; }

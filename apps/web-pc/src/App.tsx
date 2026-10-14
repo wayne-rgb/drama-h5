@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useI18n, languages, translate, LocalizedMessage, MessageValues, Language } from "./i18n";
 import { readPlaybackLocation, playbackLocation } from "./playback-location";
 import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from "./mobile-prototype/PlayerActions";
+import { CategoryFilters } from "./mobile-prototype/CategoryFilters";
 import { bindPlaybackLifecycle } from './playback-lifecycle.mjs';
 import { toggleMediaFullscreen } from './playback-fullscreen.mjs';
 import { useMobileLayout } from "./use-mobile-layout";
@@ -1758,7 +1759,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       {!languageSaved && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{t("语言偏好无法保存")}</div>}
       {historyStorageWarning && <div role="alert" className="bg-amber-950 text-amber-200 px-5 py-2">{localizeError(historyStorageWarning)}</div>}
       {/* 主界面区域 */}
-      <main ref={mainContentRef} className={`flex-1 ${mobilePrototype && activeSeries ? "prototype-detail-main" : ""} ${!activeSeries && tab === "recommend" ? "overflow-hidden p-0" : "overflow-y-auto px-4 md:px-8 py-6"}`}>
+      <main ref={mainContentRef} className={`flex-1 ${mobilePrototype && activeSeries ? "prototype-detail-main" : ""} ${mobilePrototype && !activeSeries && tab === "category" ? "prototype-category-main" : ""} ${!activeSeries && tab === "recommend" ? "overflow-hidden p-0" : "overflow-y-auto px-4 md:px-8 py-6"}`}>
         {/* ======================= 1. 播放与选集详情界面 ======================= */}
         {activeSeries ? (
           <div className={`max-w-[1720px] mx-auto flex flex-col gap-8 pb-14 px-2 sm:px-4 ${mobilePrototype ? "prototype-detail-layout" : ""}`}>
@@ -3330,12 +3331,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
         {/* ======================= 3. 官方分类板块 (Category) ======================= */}
         {!activeSeries && tab === "category" && (
-          <div className="max-w-7xl mx-auto space-y-6 pb-14">
+          <div className={`max-w-7xl mx-auto space-y-6 pb-14 ${mobilePrototype ? "prototype-category-content" : ""}`}>
             {mobilePrototype && currentBanner && <button className="prototype-featured" onClick={() => handleSelectSeries(currentBanner)}>
               <img src={currentBanner.backgroundCover || currentBanner.cover} alt="" /><div><span>{t("推荐")}</span><h3><bdi>{currentBanner.title}</bdi></h3><span className="prototype-featured-play"><Play size={14} fill="currentColor" />{t("立即观看")}</span></div>
             </button>}
+            {mobilePrototype && <CategoryFilters key={selectedCatType} types={categoryTypes} tags={categoryTags} selectedType={selectedCatType} selectedTag={selectedCatTag} loading={categoryTagsLoading} onType={id => { setSelectedCatType(id); setSelectedCatTag(""); setCatPage(1); }} onTag={id => { setSelectedCatTag(id); setCatPage(1); }} />}
             {/* 分类标题与当前状态 */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+            {!mobilePrototype && <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
               <div>
                 <h2 className="text-xl md:text-2xl font-extrabold flex items-center gap-2">
                   <Grid className="w-6 h-6 text-rose-500" />{t("官方题材全部分类")}</h2>
@@ -3364,11 +3366,11 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   </button>
                 ))}
               </div>
-            </div>
+            </div>}
 
             {categoryError&&<div role="alert" className="text-sm text-rose-300">{localizeError(categoryError)}<button className="ms-3 underline" onClick={()=>{void loadCategoryTags(selectedCatType);void fetchCategoryList(selectedCatType,selectedCatTag,catPage);}}>{t("重试")}</button></div>}
             {/* 题材以当前官网分类页面为准 */}
-            <div className="space-y-2">
+            {!mobilePrototype && <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
                 <Compass className="w-4 h-4 text-rose-500" />{t("题材筛选：")}</div>
               <div className="flex items-center gap-2 overflow-x-auto pb-2 no-scrollbar flex-wrap">
@@ -3400,7 +3402,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   </button>
                 ))}
               </div>
-            </div>
+            </div>}
 
             {/* 短剧列表网格 */}
             {catLoading ? (
