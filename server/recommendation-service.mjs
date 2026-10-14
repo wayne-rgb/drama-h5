@@ -6,8 +6,8 @@ export class RecommendationError extends Error {constructor(status,message){supe
 
 /** Each browser/desktop has a private cursor. Candidates are shared only through source caches. */
 export class RecommendationService {
-  constructor({fetchPool,readProfile,now=Date.now,settleMs=2500,topics=[]}) {
-    this.fetchPool=fetchPool;this.readProfile=readProfile;this.now=now;this.settleMs=settleMs;this.topics=topics;this.sessions=new Map();
+  constructor({fetchPool,fetchLocalPool=()=>[],readProfile,now=Date.now,settleMs=2500,topics=[]}) {
+    this.fetchPool=fetchPool;this.fetchLocalPool=fetchLocalPool;this.readProfile=readProfile;this.now=now;this.settleMs=settleMs;this.topics=topics;this.sessions=new Map();
   }
   async page(id,page=1) {
     if(typeof id!=='string'||!/^[-_A-Za-z0-9]{16,128}$/.test(id))throw new RecommendationError(400,'invalid recommendation session');
@@ -51,6 +51,13 @@ export class RecommendationService {
   async loadRound(state,id) {
     const round=state.round++;
     const types=state.rank.mode==='mixed'?TYPES:[state.rank.mode];
+    // 自有上架内容独立进入推荐池，不等待外部站点；沿用曝光与已看过滤。
+    let hasLocal=false;
+    for(const row of this.fetchLocalPool({mode:state.rank.mode,page:round+1})){
+      if(typeof row.id==='string' && types.includes(row.contentType) && !state.rank.emitted.has(row.id) && !state.rank.completed.has(row.id)){
+        state.pool.set(row.id,{...row,source:'discovery'});hasLocal=true;
+      }
+    }
     const offset=crypto.createHash('sha256').update(id).digest()[0]%7+2;
     const jobs=[];
     for(const type of types){
@@ -69,6 +76,7 @@ export class RecommendationService {
         state.pending.add(job);job.then(()=>state.pending.delete(job),()=>state.pending.delete(job));jobs.push(job);
       }
     }
+    if(hasLocal)return;
     try {await Promise.any([...state.pending]);}
     catch {throw new RecommendationError(502,'推荐内容源暂不可用，请重试');}
     // First available content need not wait for a stalled source. Usually all types settle here.

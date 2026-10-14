@@ -2,6 +2,15 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {RecommendationService} from '../server/recommendation-service.mjs';
 const row=(type,page,i)=>({id:`${type}-${page}-${i}`,title:'剧',tags:'爱情',contentType:type});
+test('自有上架内容不等待外部源，并沿用模式过滤和会话去重',async()=>{
+ const local={id:'local-content',title:'自有内容',tags:'爱情',contentType:'real-drama'};
+ const service=new RecommendationService({fetchPool:()=>new Promise(()=>{}),fetchLocalPool:()=>[local],readProfile:()=>({}),settleMs:1});
+ const result=await service.page('session-local-content',1);
+ assert.deepEqual(result.items.map(item=>item.id),[local.id]);
+ assert.deepEqual((await service.page('session-local-content',1)).items,result.items);
+ const otherMode=new RecommendationService({fetchPool:async()=>[],fetchLocalPool:()=>[local],readProfile:()=>({preferences:{recommendationMode:'ai-drama'}}),settleMs:1});
+ assert.equal((await otherMode.page('session-local-filter',1)).items.length,0);
+});
 test('session pages are stable, concurrent retries do not duplicate, sessions vary',async()=>{
  const service=new RecommendationService({fetchPool:async({type,page})=>Array.from({length:24},(_,i)=>row(type,page,i)),readProfile:()=>({}),settleMs:5});
  const [a,b]=await Promise.all([service.page('session-aaaaaaaa',1),service.page('session-aaaaaaaa',1)]);

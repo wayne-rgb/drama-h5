@@ -494,3 +494,41 @@
 
 
 
+# 内容后台、观看权限与分集互动
+
+正式后台入口为 `/admin`，沿用真实账户的 HttpOnly 会话，VIP 身份不会取得管理权限。先注册管理账户，从 `/api/account/session` 读取 `user.id`，配置 `ADMIN_ACCOUNT_IDS` 后重启服务。`ADMIN_EMAILS` 仅适用于已验证邮箱的账户；邮件服务尚未接入时使用账户编号方式。不要设置公开的默认管理员密码。
+
+后台通过真实分类接口提供可选题材，保存不随界面翻译变化的 `categoryIds`；用户输入的剧名、简介和 `tags` 保留原始内容。自有上架内容独立进入推荐池，不等待外部内容源，列表接口只传递卡片元数据。
+
+登录保留当前剧集位置与会员套餐。Google登录、结算和订阅管理的 `returnTo` 只允许本站 `/` 及数字剧集标识、会员页面和月付/年付选项，外站地址及任意令牌参数被丢弃。支付服务未配置时不会创建虚假订单或解锁会员。
+
+每部短剧按真实分集顺序计算：前三集免费，第四集起需有效会员。服务端对画质、播放地址、视频流与 HEAD/Range 请求逐次校验会话及分集归属；会员过期或撤销后，后续请求被拒绝。管理员可以预览草稿和付费分集。外部公开内容源仍由原站控制，本站权限不能限制原站地址。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/admin/series?q=&page=1` | 查询自有短剧、草稿及上架状态 |
+| `POST /api/admin/series`、`POST /api/admin/series/:id` | 创建及编辑真实剧名、简介、分类、语言与封面 |
+| `GET /api/admin/series/:id` | 分集详情与关联素材，供编辑和预览 |
+| `POST /api/admin/series/:id/episodes` | 按集数添加或替换已处理视频，上架期间禁止修改分集 |
+| `DELETE /api/admin/series/:id/episodes/:episodeId` | 从草稿移除分集，原文件保留 |
+| `POST /api/admin/series/:id/reorder` | 传入完整 `ids` 数组调整连续集序 |
+| `POST /api/admin/series/:id/publish` | `status` 为 `published` 或 `draft`；缺封面、缺分集、集数不连续不能发布 |
+| `POST /api/admin/uploads` | 使用文件名、大小、MIME 与 `kind` 创建真实上传记录 |
+| `PUT /api/admin/uploads/:id` | 二进制分块，每块不超过 1MB，携带 `Content-Range: bytes 起点-终点/总大小` |
+| `GET /api/admin/uploads/:id`、`GET /api/admin/uploads?page=1` | 读取断点、处理状态与错误，恢复上传或轮询处理结果 |
+| `GET /api/admin/accounts?q=&page=1` | 查询真实账户及会员状态，不返回密码和会话令牌 |
+| `POST /api/admin/membership` | `accountId`、毫秒时间戳 `periodEnd`、`reason` 开通手动会员；`revoke:true` 撤销手动权益 |
+| `GET /api/admin/comments?page=1` | 查询评论和举报数 |
+| `POST /api/admin/comments/:id` | `status` 为 `visible`、`hidden` 或 `deleted`，记录管理操作 |
+| `GET /api/admin/audit?page=1` | 查询上传、内容发布、会员及审核操作记录 |
+| `GET /api/episodes/:id/interactions?seriesId=` | 单集真实点赞数、评论数和当前账户点赞状态 |
+| `POST /api/episodes/:id/likes?seriesId=` | 登录后传入布尔值 `liked`，同一账户重复请求不重复计数 |
+| `GET /api/episodes/:id/comments?seriesId=&before=` | 使用返回的 `next` 游标读取公开评论，同一毫秒发布的评论不会漏项 |
+| `POST /api/episodes/:id/comments?seriesId=` | 登录后发布不超过1000字符的评论 |
+| `DELETE /api/comments/:id` | 作者删除自己的评论 |
+| `POST /api/comments/:id/report` | 登录账户举报评论，同账户不重复计数 |
+
+本轮媒体存于 `HG_DATA_DIR/media`，配置该目录的持久化磁盘。视频默认上限 2GB，封面上限 8MB。生产 Docker 镜像包含 FFmpeg；本机开发需提供 `FFMPEG_PATH` 与 `FFPROBE_PATH`，默认从 PATH 查找。视频限定 MP4、8位H.264的4:2:0像素格式与AAC音轨，分辨率不超过4096像素。服务端读取实际媒体信息并整理为快速起播文件，完成前不能发布。处理状态在服务重启时标为失败，需重新上传，不能假报成功。分块网络失败后重新选择同一文件即可从服务端真实偏移继续上传。
+
+手动会员和真实支付订阅独立，撤销手动权益不会取消真实收费；订阅必须通过已有支付管理入口处理。分享链接使用 `/?series=短剧编号&episode=分集编号`，接收人仍需通过同样的会员校验。
+

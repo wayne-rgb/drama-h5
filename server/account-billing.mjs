@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { AccountError, membershipPlans } from './account-store.mjs';
+import { safeAccountReturn } from './account-return.mjs';
 
 // 支付服务尚未选定时保持关闭；Stripe是可选适配器，不影响账号与套餐数据。
 export function createBilling(store, config, origin) {
@@ -20,12 +21,16 @@ export function createBilling(store, config, origin) {
   };
   return {
     ready, provider: ready ? 'stripe' : null,
-    async checkout(account, planId) {
+    async checkout(account, planId, returnTo) {
       ensureReady();
       if (!account.email_verified) throw new AccountError(403, '请先验证邮箱');
-      if (store.membership(account.id).active) throw new AccountError(409, '已开通会员，请前往管理订阅');
+      const membership = store.membership(account.id);
+      if (membership.active && membership.planId !== 'manual') throw new AccountError(409, '已开通会员，请前往管理订阅');
       const plan = membershipPlans.find(row => row.id === planId);
       if (!plan) throw new AccountError(400, '请选择有效的会员套餐');
+      const destination = new URL(safeAccountReturn(returnTo || '/?account=membership',origin,'/?account=membership'),origin);
+      destination.searchParams.set('account','membership'); destination.searchParams.set('plan',plan.id);
+      const returnTarget = `${destination.pathname}${destination.search}`;
       const pending = (checkouts.get(account.id) || Promise.resolve()).catch(() => {}).then(async () => {
       account = store.byId(account.id);
       if (!account.customer_id) {
@@ -36,25 +41,26 @@ export function createBilling(store, config, origin) {
       if (existing.has_more || existing.data.some(row => ['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused'].includes(row.status))) throw new AccountError(409, '已有订阅，请前往管理订阅');
       const openSessions = await stripe.checkout.sessions.list({ customer: account.customer_id, status: 'open', limit: 100 });
       for (const previous of openSessions.data.filter(row => row.client_reference_id === account.id && row.mode === 'subscription')) {
-        if (previous.metadata?.plan_id === plan.id && previous.url) return { url: previous.url };
+        if (previous.metadata?.plan_id === plan.id && previous.metadata?.return_to === returnTarget && previous.url) return { url: previous.url };
         await stripe.checkout.sessions.expire(previous.id);
       }
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription', customer: account.customer_id, client_reference_id: account.id,
-        metadata: { account_id: account.id, plan_id: plan.id },
+        metadata: { account_id: account.id, plan_id: plan.id, return_to: returnTarget },
         line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: plan.amount, recurring: { interval: plan.interval }, product_data: { name: plan.id === 'monthly' ? 'VIP · Monthly' : 'VIP · Annual' } } }],
         subscription_data: { metadata: { account_id: account.id, plan_id: plan.id } },
-        success_url: `${origin}/?account=membership&checkout={CHECKOUT_SESSION_ID}`, cancel_url: `${origin}/?account=membership`,
+        success_url: `${origin}${returnTarget}&checkout={CHECKOUT_SESSION_ID}`, cancel_url: `${origin}${returnTarget}`,
       });
       return { url: session.url };
       });
       checkouts.set(account.id, pending);
       try { return await pending; } finally { if (checkouts.get(account.id) === pending) checkouts.delete(account.id); }
     },
-    async portal(account) {
+    async portal(account, returnTo) {
       ensureReady();
       if (!account.customer_id) throw new AccountError(400, '当前账户没有订阅记录');
-      return { url: (await stripe.billingPortal.sessions.create({ customer: account.customer_id, return_url: `${origin}/?account=membership` })).url };
+      const destination=new URL(safeAccountReturn(returnTo || '/?account=membership',origin,'/?account=membership'),origin); destination.searchParams.set('account','membership');
+      return { url: (await stripe.billingPortal.sessions.create({ customer: account.customer_id, return_url: destination.href })).url };
     },
     async confirm(account, sessionId) {
       ensureReady();

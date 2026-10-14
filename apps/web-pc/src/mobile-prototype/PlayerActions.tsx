@@ -8,6 +8,7 @@ type Props = {
   quality: string;
   qualities: VideoQualityItem[];
   loading?: boolean;
+  unavailable?: boolean;
   onSpeed: (speed: number) => void;
   onQuality: (quality: string) => void;
   onSearch: () => void;
@@ -27,6 +28,7 @@ export function PlayerActions(props: Props) {
   const { t, localizeLabel } = useI18n();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (props.unavailable) setOpen(false); }, [props.unavailable]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
@@ -38,7 +40,7 @@ export function PlayerActions(props: Props) {
 
   return <div className="prototype-player-actions" ref={root} data-gesture-exclude onClick={event => event.stopPropagation()}>
     <button className="prototype-action-icon" aria-label={t("搜索")} onClick={props.onSearch}><Search size={21} /></button>
-    <button className="prototype-action-icon" aria-label={t("播放设置")} aria-expanded={open} aria-controls="mobile-playback-options" onClick={() => setOpen(value => !value)}><MoreHorizontal size={25} /></button>
+    <button className="prototype-action-icon" disabled={props.unavailable} title={props.unavailable ? t('VIP_REQUIRED') : undefined} aria-label={t("播放设置")} aria-expanded={open} aria-controls="mobile-playback-options" onClick={() => setOpen(value => !value)}><MoreHorizontal size={25} /></button>
     {open && <div className="prototype-playback-menu" id="mobile-playback-options" role="region" aria-label={t("播放设置")}>
       <div className="prototype-menu-heading"><strong>{t("播放设置")}</strong><button aria-label={t("关闭")} onClick={() => setOpen(false)}><X size={18} /></button></div>
       <h4>{t("播放倍速")}</h4>

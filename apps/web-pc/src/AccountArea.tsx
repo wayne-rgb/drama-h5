@@ -29,7 +29,10 @@ export function useAccountSession() {
   return { session, error, refresh };
 }
 type AreaProps = { session: AccountSession | null; onPanel: (panel: AccountPanel) => void; onOverview: () => void; onFavorites: () => void; onHistory: () => void; onSettings: () => void; onLanguage: (language: string) => void; favoritesCount: number; historyCount: number };
-const needsSubscriptionManagement = (user?: Account | null) => !!user?.membership.planId && !["none", "canceled", "incomplete_expired"].includes(user.membership.status);
+const needsSubscriptionManagement = (user?: Account | null) => {
+  const subscription = user?.membership.billingSubscription || user?.membership;
+  return !!subscription?.planId && subscription.planId !== 'manual' && !["none", "canceled", "incomplete_expired"].includes(subscription.status);
+};
 
 function Avatar({ user, large = false }: { user?: Account | null; large?: boolean }) {
   const { t } = useI18n();
@@ -58,6 +61,7 @@ export function AccountMenu(props: AreaProps) {
       <div className="account-menu-links"><button onClick={() => select(props.onFavorites)}><Heart size={18} /><span>{t("我的追剧")}</span><small>{props.favoritesCount}</small></button><button onClick={() => select(props.onHistory)}><Clock size={18} /><span>{t("观看历史")}</span><small>{props.historyCount}</small></button></div>
       <label className="account-menu-language"><Languages size={18} /><span>{t("界面语言")}</span><select aria-label={t("界面语言")} value={language} onChange={event => props.onLanguage(event.target.value)}>{languages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <button className="account-menu-setting" onClick={() => select(props.onSettings)}><Settings size={18} />{t("设置")}<ChevronRight size={16} /></button>
+      {props.session?.capabilities.admin && <a className="account-menu-setting" href="/admin"><ShieldCheck size={18}/>{t('内容后台')}<ChevronRight size={16}/></a>}
       {error && <div role="alert" className="account-error">{localizeError(error)}</div>}
       {user && <button className="account-menu-setting" disabled={signingOut} onClick={() => { setSigningOut(true); setError(""); void changeAccount("/api/auth/logout", {}).catch(error => setError(accountError(error))).finally(() => setSigningOut(false)); }}><LogOut size={18} />{t("退出登录")}</button>}
     </div>}
@@ -80,24 +84,35 @@ export function AccountHome(props: AreaProps & { histories: HistoryItem[]; onRes
   </div>;
 }
 
-export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessionError, onRefresh }: { panel: AccountPanel; onPanel: (panel: AccountPanel) => void; session: AccountSession | null; sessionError: string; onRefresh: () => Promise<void> }) {
+export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessionError, onRefresh, playbackReturn }: { panel: AccountPanel; onPanel: (panel: AccountPanel) => void; session: AccountSession | null; sessionError: string; onRefresh: () => Promise<void>; playbackReturn?: { seriesId: string; episodeId: string } }) {
   const { t, localizeError, formatDate, language } = useI18n();
   const panel = requestedPanel === "profile" && session && !session.user ? "login" : requestedPanel;
   const dialog = useRef<HTMLDialogElement>(null), file = useRef<HTMLInputElement>(null);
   const [email, setEmail] = useState(""), [password, setPassword] = useState(""), [name, setName] = useState(""), [avatar, setAvatar] = useState<string | null>(null);
-  const [error, setError] = useState(""), [notice, setNotice] = useState<MessageKey | "">(""), [busy, setBusy] = useState(false), [planId, setPlanId] = useState("annual");
+  const [error, setError] = useState(""), [notice, setNotice] = useState<MessageKey | "">(""), [busy, setBusy] = useState(false), [planId, setPlanId] = useState(() => new URLSearchParams(window.location.search).get('plan') === 'monthly' ? 'monthly' : 'annual');
+  const returnToMembership = useRef(['monthly','annual'].includes(new URLSearchParams(window.location.search).get('plan') || ''));
   const user = session?.user, capabilities = session?.capabilities;
   const manageSubscription = needsSubscriptionManagement(user);
+  const subscription = manageSubscription ? user?.membership.billingSubscription || user?.membership : user?.membership;
   useEffect(() => {
     setError(new URLSearchParams(window.location.search).get("error")?.slice(0, 512) || ""); setNotice(""); setPassword(""); setAvatar(null); setName(current => user?.name ?? current); setEmail(current => user?.email ?? current);
     if (panel && !dialog.current?.open) dialog.current?.showModal();
     if (!panel && dialog.current?.open) dialog.current.close();
+    if (!panel) returnToMembership.current = false;
   }, [panel, user?.id]);
+  const returnTarget = () => {
+    const current = new URL(window.location.href), target = new URL('/',window.location.href);
+    const series=playbackReturn?.seriesId || current.searchParams.get('series'),episode=playbackReturn?.episodeId || current.searchParams.get('episode');
+    if (/^\d{1,40}$/.test(series || '')) { target.searchParams.set('series',series!); if (/^\d{1,40}$/.test(episode || '')) target.searchParams.set('episode',episode!); }
+    if(returnToMembership.current){target.searchParams.set('account','membership');target.searchParams.set('plan',planId);}
+    else if(!target.searchParams.has('series'))target.searchParams.set('account','profile');
+    return `${target.pathname}${target.search}`;
+  };
   const perform = async (action: () => Promise<void>) => { if (busy) return; setBusy(true); setError(""); setNotice(""); try { await action(); } catch (error) { setError(accountError(error)); } finally { setBusy(false); } };
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     void perform(async () => {
-      if (panel === "login" || panel === "register") await changeAccount(`/api/auth/${panel}`, { email, password, ...(panel === "register" ? { name } : {}) });
+      if (panel === "login" || panel === "register") await changeAccount(`/api/auth/${panel}`, { email, password, ...(panel === "register" ? { name } : {}) },returnTarget());
       else if (panel === "profile") { await accountRequest("/api/account/profile", { name, ...(avatar ? { avatar: avatar.split(",")[1] } : {}) }); setAvatar(null); await onRefresh(); setNotice("资料已保存"); }
       else if (panel === "recover") { await accountRequest("/api/auth/recover", { email }); setNotice("如邮箱已注册，你会收到找回密码邮件"); }
       else if (panel === "reset") { await accountRequest("/api/auth/reset", { password, token: new URLSearchParams(window.location.search).get("token") }); window.location.assign("/?account=login"); }
@@ -116,11 +131,11 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
       {(error || sessionError) && <div role="alert" className="account-error">{localizeError(error || sessionError)}</div>}{notice && <div role="status" className="account-notice">{t(notice)}</div>}
       {!session ? <p role="status">{t("账户加载中...")}<button className="account-text-button" onClick={() => void onRefresh()}>{t("重试")}</button></p> : window.location.protocol === "file:" ? <><p>{t("请在浏览器中完成账户与订阅操作")}</p><a className="account-primary account-text-button" href={session.siteUrl} target="_blank" rel="noopener noreferrer">{t("打开网页")}</a></> : panel === "membership" ? <>
         <div className="account-subscription-heading"><Crown size={35} /><h3>{t(user?.membership.active ? "VIP会员" : "选择会员套餐")}</h3><p>{t("按所选周期自动续费，可随时管理续费")}</p></div>
-        {user && ["past_due", "unpaid", "incomplete"].includes(user.membership.status) && <p className="account-subscription-status">{t("会员付款待处理，请管理订阅")}</p>}
-        {user?.membership.periodEnd && <p className="account-subscription-status">{t(!user.membership.active || user.membership.cancelAtPeriodEnd ? "会员有效至{{date}}" : "下次续费：{{date}}", { date: formatDate(user.membership.periodEnd, { year: "numeric", month: "short", day: "numeric" }) })}</p>}
+        {subscription && ["past_due", "unpaid", "incomplete"].includes(subscription.status) && <p className="account-subscription-status">{t("会员付款待处理，请管理订阅")}</p>}
+        {subscription?.periodEnd && <p className="account-subscription-status">{t(!['active','trialing'].includes(subscription.status) || subscription.cancelAtPeriodEnd ? "会员有效至{{date}}" : "下次续费：{{date}}", { date: formatDate(subscription.periodEnd, { year: "numeric", month: "short", day: "numeric" }) })}</p>}
         {!manageSubscription && <div className="account-plan-list">{session?.plans.map(plan => <button key={plan.id} aria-pressed={planId === plan.id} className={planId === plan.id ? "selected" : ""} onClick={() => setPlanId(plan.id)}><span><strong>{t(plan.interval === "month" ? "月付会员" : "年付会员")}</strong><small>{t(plan.interval === "month" ? "每月自动续费" : "每年自动续费")}</small></span><span><strong>{currency(plan.amount, plan.currency)}</strong><small>{t(plan.interval === "month" ? "每月" : "每年")}</small></span>{planId === plan.id && <Check size={17} />}</button>)}</div>}
         {!capabilities?.billing && <p className="account-service-note">{t("订阅支付尚未配置")}</p>}
-        <button className="account-primary" disabled={busy || !!user && (!capabilities?.billing || !user.emailVerified)} onClick={() => { if (!user) { onPanel("login"); return; } void perform(async () => { const result = await accountRequest<{ url: string }>(manageSubscription ? "/api/billing/portal" : "/api/billing/checkout", manageSubscription ? {} : { planId }); window.location.assign(result.url); }); }}>{t(manageSubscription ? "管理订阅" : user ? "订阅会员" : "登录后订阅")}</button>
+        <button className="account-primary" disabled={busy || !!user && (!capabilities?.billing || !user.emailVerified)} onClick={() => { if (!user) { returnToMembership.current=true; onPanel("login"); return; } void perform(async () => { const result = await accountRequest<{ url: string }>(manageSubscription ? "/api/billing/portal" : "/api/billing/checkout", manageSubscription ? { returnTo:returnTarget() } : { planId,returnTo:returnTarget() }); window.location.assign(result.url); }); }}>{t(manageSubscription ? "管理订阅" : user ? "订阅会员" : "登录后订阅")}</button>
         {user && !user.emailVerified && <button className="account-text-button" onClick={() => onPanel("profile")}>{t("请先验证邮箱")}<ChevronRight size={15} /></button>}
       </> : panel === "verify" ? <><ShieldCheck size={36} /><p>{t("确认邮箱验证后，链接将失效")}</p><button className="account-primary" disabled={busy} onClick={() => void perform(async () => { await accountRequest("/api/auth/verify", { token: new URLSearchParams(window.location.search).get("token") }); await onRefresh(); setNotice("邮箱验证成功"); })}>{t("验证邮箱")}</button></> : <form onSubmit={submit}>
         {panel === "profile" ? <>
@@ -142,7 +157,7 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
           {panel !== "recover" && <label>{t("密码")}<input type="password" aria-label={t("密码")} aria-describedby={panel === "login" ? undefined : "account-password-rule"} required minLength={panel === "login" ? undefined : 12} maxLength={256} autoComplete={panel === "login" ? "current-password" : "new-password"} value={password} onChange={event => setPassword(event.target.value)} />{panel !== "login" && <small id="account-password-rule">{t("至少12个字符")}</small>}</label>}
           {panel === "recover" && !capabilities?.email && <p className="account-service-note">{t("邮件服务尚未配置")}</p>}
           <button className="account-primary" disabled={busy || panel === "recover" && !capabilities?.email} type="submit">{t(busy ? "处理中..." : panel === "register" ? "创建账户" : panel === "recover" ? "发送找回邮件" : panel === "reset" ? "保存新密码" : "登录")}</button>
-          {(panel === "login" || panel === "register") && <><div className="account-auth-divider"><span>{t("或")}</span></div><button type="button" className="account-google" disabled={busy || !capabilities?.google} onClick={() => window.location.assign("/api/auth/google/start")}><span className="account-google-mark">G</span>{t("使用Google登录")}</button>{!capabilities?.google && <p className="account-service-note">{t("Google登录尚未配置")}</p>}<button className="account-text-button" type="button" onClick={() => onPanel(panel === "login" ? "register" : "login")}>{t(panel === "login" ? "还没有账户？创建账户" : "已有账户？登录")}</button>{panel === "login" && <button className="account-text-button" type="button" onClick={() => onPanel("recover")}>{t("忘记密码")}</button>}</>}
+          {(panel === "login" || panel === "register") && <><div className="account-auth-divider"><span>{t("或")}</span></div><button type="button" className="account-google" disabled={busy || !capabilities?.google} onClick={() => window.location.assign(`/api/auth/google/start?returnTo=${encodeURIComponent(returnTarget())}`)}><span className="account-google-mark">G</span>{t("使用Google登录")}</button>{!capabilities?.google && <p className="account-service-note">{t("Google登录尚未配置")}</p>}<button className="account-text-button" type="button" onClick={() => onPanel(panel === "login" ? "register" : "login")}>{t(panel === "login" ? "还没有账户？创建账户" : "已有账户？登录")}</button>{panel === "login" && <button className="account-text-button" type="button" onClick={() => onPanel("recover")}>{t("忘记密码")}</button>}</>}
         </>}
       </form>}
     </div>

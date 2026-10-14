@@ -36,6 +36,8 @@ export interface Episode {
   id: string;
   number: number;
   title: string;
+  vipRequired?: boolean;
+  locked?: boolean;
 }
 
 export interface Detail extends Series {

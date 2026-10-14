@@ -3,6 +3,8 @@ import nodemailer from 'nodemailer';
 import { OAuth2Client } from 'google-auth-library';
 import { AccountError, digest, emailAddress, membershipPlans, passwordHash, passwordMatches, secret } from './account-store.mjs';
 import { createBilling } from './account-billing.mjs';
+import { isAdministrator } from './account-role.mjs';
+import { safeAccountReturn } from './account-return.mjs';
 import { readJson as readInput } from '../shared/http-json.mjs';
 
 async function readJson(req) {
@@ -60,6 +62,7 @@ export function createAccountService(store, config = process.env) {
     },
     async handle(req, res, url) {
       if (!url.pathname.startsWith('/api/auth/') && !url.pathname.startsWith('/api/account/') && !url.pathname.startsWith('/api/billing/')) return false;
+      let callbackReturn = '/?account=profile';
       try {
         const route = url.pathname;
         if (route === '/api/billing/webhook' && req.method === 'POST') {
@@ -75,7 +78,7 @@ export function createAccountService(store, config = process.env) {
         if (route === '/api/account/session' && req.method === 'GET') {
           const account = viewer(req);
           if (!account) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), capabilities, plans: membershipPlans, siteUrl: origin });
+          reply(res, { user: store.publicAccount(account), capabilities: { ...capabilities, admin: isAdministrator(account, config) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);
@@ -113,7 +116,7 @@ export function createAccountService(store, config = process.env) {
           rateLimit(req, 'google');
           if (!oauth) throw new AccountError(503, 'Google登录尚未配置');
           const linking = url.searchParams.get('link') === '1', account = linking ? requireViewer(req) : null;
-          const nonce = secret(), codeVerifier = secret(), state = store.token('google', account?.id || null, { nonce, codeVerifier }, 600000);
+          const nonce = secret(), codeVerifier = secret(), state = store.token('google', account?.id || null, { nonce, codeVerifier, returnTo: safeAccountReturn(url.searchParams.get('returnTo'),origin) }, 600000);
           setCookie(res, 'hg_google_state', state, 600);
           res.writeHead(302, { Location: oauth.generateAuthUrl({ scope: ['openid', 'email', 'profile'], state, nonce, code_challenge: crypto.createHash('sha256').update(codeVerifier).digest('base64url'), code_challenge_method: 'S256' }), 'Cache-Control': 'no-store' }); res.end();
         } else if (route === '/api/auth/google/callback' && req.method === 'GET') {
@@ -121,6 +124,7 @@ export function createAccountService(store, config = process.env) {
           const state = url.searchParams.get('state');
           if (!state || digest(state) !== digest(cookies(req).hg_google_state || '')) throw new AccountError(403, 'Google登录验证失败，请重试');
           const token = store.consumeToken(state, 'google');
+          callbackReturn = safeAccountReturn(token.payload.returnTo, origin);
           if (!url.searchParams.get('code')) throw new AccountError(400, 'Google登录已取消');
           const { tokens } = await oauth.getToken({ code: url.searchParams.get('code'), codeVerifier: token.payload.codeVerifier });
           const ticket = await oauth.verifyIdToken({ idToken: tokens.id_token, audience: config.GOOGLE_CLIENT_ID });
@@ -133,14 +137,15 @@ export function createAccountService(store, config = process.env) {
             store.linkGoogle(current.id, payload.sub); account = store.byId(current.id);
           } else if (!account) account = store.create({ email: payload.email, name: payload.name || payload.email.split('@')[0], googleSub: payload.sub, avatar: typeof payload.picture === 'string' && /^https:\/\/[^/]+\.googleusercontent\.com\//.test(payload.picture) ? payload.picture : null, verified: true });
           store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', store.session(account.id), 2592000);
-          res.writeHead(302, { Location: `${origin}/?account=profile`, 'Cache-Control': 'no-store' }); res.end();
-        } else if (route === '/api/billing/checkout' && req.method === 'POST') reply(res, await billing.checkout(requireViewer(req), (await readJson(req)).planId));
-        else if (route === '/api/billing/portal' && req.method === 'POST') reply(res, await billing.portal(requireViewer(req)));
+          res.writeHead(302, { Location: `${origin}${callbackReturn}`, 'Cache-Control': 'no-store' }); res.end();
+        } else if (route === '/api/billing/checkout' && req.method === 'POST') { const input=await readJson(req); reply(res, await billing.checkout(requireViewer(req),input.planId,input.returnTo)); }
+        else if (route === '/api/billing/portal' && req.method === 'POST') reply(res, await billing.portal(requireViewer(req),(await readJson(req)).returnTo));
         else if (route === '/api/billing/confirm' && req.method === 'POST') { await billing.confirm(requireViewer(req), (await readJson(req)).sessionId); reply(res, { ok: true }); }
         else throw new AccountError(404, '页面不存在');
       } catch (error) {
         if (url.pathname === '/api/auth/google/callback') {
-          res.writeHead(302, { Location: `${origin}/?account=login&error=${encodeURIComponent(error instanceof AccountError ? error.message : 'Google登录验证失败，请重试')}`, 'Cache-Control': 'no-store' }); res.end();
+          const destination = new URL(callbackReturn,origin); destination.searchParams.set('account','login'); destination.searchParams.set('error',error instanceof AccountError ? error.message : 'Google登录验证失败，请重试');
+          res.writeHead(302, { Location: destination.href, 'Cache-Control': 'no-store' }); res.end();
         } else reply(res, { error: error instanceof AccountError ? error.message : '账户服务暂不可用，请稍后重试' }, error instanceof AccountError ? error.status : 503);
       }
       return true;

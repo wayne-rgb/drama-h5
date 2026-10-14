@@ -5,6 +5,7 @@ import { FullscreenWatch, PlayerActions, PlayerPanel, PlayerSideAction } from ".
 import { useMobileLayout } from "./use-mobile-layout";
 import { AccountDialogs, AccountHome, AccountMenu, AccountPanel, useAccountSession } from "./AccountArea";
 import "./account.css";
+import { EpisodeInteractions, VipGate } from "./EpisodeInteractions";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { 
@@ -84,6 +85,7 @@ import {
 export default function App({ mobilePrototype: forceMobileLayout }: { mobilePrototype?: boolean } = {}) {
   const mobilePrototype = useMobileLayout(forceMobileLayout);
   const accountState = useAccountSession();
+  const hasVipAccess = !!accountState.session?.user?.membership.active || !!accountState.session?.capabilities.admin;
   const [accountPanel, setAccountPanel] = useState<AccountPanel>(() => { const panel = new URLSearchParams(window.location.search).get("account"); return ["login", "register", "recover", "reset", "verify", "profile", "membership"].includes(panel || "") ? panel as AccountPanel : null; });
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
@@ -91,7 +93,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     if (languages.some(item => item.id === value)) setLanguageSaved(setLanguage(value as Language));
   };
   // 顶层主标签：首页 | 推荐刷剧 | 分类 | 榜单 | 搜索 | 追剧 | 设置
-  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(accountPanel ? "favorites" : mobilePrototype ? "recommend" : "home");
+  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(accountPanel && !readPlaybackLocation(window.location.href).seriesId ? "favorites" : mobilePrototype ? "recommend" : "home");
 
   // 1. 首页状态
   const [selectedHomeSection, setSelectedHomeSection] = useState<string>("all");
@@ -440,6 +442,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     if (tab !== "recommend" || activeSeries) return;
 
     const handleStreamKeyDown = (e: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return;
       if ((e.target as HTMLElement)?.closest("input, textarea, select, [contenteditable='true']")) return;
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -605,6 +608,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     let active = true;
     setStreamQualityEpisodeId(""); setStreamQualities([]); setStreamQualitiesLoading(true);
     setStreamError(""); setStreamIsPlaying(false);
+    if (streamEpisodeIndex >= 3 && !hasVipAccess) { setStreamQualitiesLoading(false); return; }
     api.getVideoQualities(streamCurrentEpisode.id, streamDetail.id).then(response => {
       if (!active) return;
       if (!response.qualities?.length) throw new Error("视频画质不可用");
@@ -612,10 +616,10 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       const quality = response.qualities.some(item => item.key === preferred) ? preferred : response.defaultQuality || response.qualities[0].key;
       setStreamQualities(response.qualities); setStreamQuality(quality);
       setStreamQualityEpisodeId(streamCurrentEpisode.id);
-    }).catch(() => { if (active) setStreamError("当前剧集没有可用的视频源，请稍后重试"); })
+    }).catch(error => { if (active) setStreamError(error?.response?.data?.error === 'VIP_REQUIRED' ? 'VIP_REQUIRED' : "当前剧集没有可用的视频源，请稍后重试"); })
       .finally(() => { if (active) setStreamQualitiesLoading(false); });
     return () => { active = false; };
-  }, [streamCurrentEpisode?.id, streamDetail?.id, streamPlaybackAttempt]);
+  }, [streamCurrentEpisode?.id, streamDetail?.id, streamPlaybackAttempt, hasVipAccess]);
 
   const handleStreamNextEpisode = (automatic = false) => {
     if (!streamDetail || !streamDetail.episodes || streamDetail.episodes.length === 0) return;
@@ -815,6 +819,11 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   };
 
   const currentEpisode: Episode | undefined = activeSeries?.episodes?.[currentEpisodeIndex];
+  useEffect(() => {
+    if (accountPanel) { videoRef.current?.pause(); streamVideoRef.current?.pause(); }
+  }, [accountPanel]);
+  const playbackReturn = activeSeries && currentEpisode ? {seriesId:activeSeries.id,episodeId:currentEpisode.id} : tab==='recommend' && streamDetail && streamCurrentEpisode ? {seriesId:streamDetail.id,episodeId:streamCurrentEpisode.id} : undefined;
+  const detailLocked = !!currentEpisode && (currentEpisodeIndex >= 3 && !hasVipAccess || playbackError === 'VIP_REQUIRED');
   const openMobileSearch = (origin: "recommend" | "category") => {
     mobileSearchOrigin.current = { tab: origin, series: activeSeries, episodeId: currentEpisode?.id };
     setTab("search"); setActiveSeries(null);
@@ -885,6 +894,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     setQualityEpisodeId("");
     setPlaybackError("");
     setCurrentTime(0); setDuration(0); setIsPlaying(false);
+    if (currentEpisodeIndex >= 3 && !hasVipAccess) { setQualitiesLoading(false); return; }
 
     api.getVideoQualities(currentEpisode.id, activeSeries?.id)
       .then((res) => {
@@ -907,7 +917,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         }
       })
       .catch((err) => {
-        if (isMounted) setPlaybackError("当前剧集没有可用的视频源，请稍后重试");
+        if (isMounted) setPlaybackError(err?.response?.data?.error === 'VIP_REQUIRED' ? 'VIP_REQUIRED' : "当前剧集没有可用的视频源，请稍后重试");
         console.warn("加载官方画质失败:", err);
       })
       .finally(() => {
@@ -917,7 +927,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     return () => {
       isMounted = false;
     };
-  }, [currentEpisode?.id, activeSeries?.id, qualityRetry]);
+  }, [currentEpisode?.id, activeSeries?.id, qualityRetry, hasVipAccess]);
 
   // 🌟 1.5 切换短剧时，自动拉取同题材推荐短剧 (任务 01: 猜你喜欢 & 任务 02: 换一批)
   useEffect(() => {
@@ -1177,6 +1187,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   // 3. 遥控器与键盘快捷键全面支持
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return;
       if (
         document.activeElement?.tagName === "INPUT" ||
         document.activeElement?.tagName === "TEXTAREA"
@@ -1348,7 +1359,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       }
     }
 
-    videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    if (!accountPanel) videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
   };
 
 
@@ -1738,13 +1749,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   isFullscreen ? "fixed inset-0 z-50 rounded-none border-none max-h-none aspect-auto w-screen h-screen" : ""
                 }`}
               >
-                {currentEpisode && qualityEpisodeId === currentEpisode.id ? (
+                {detailLocked ? <VipGate cover={activeSeries.cover} number={currentEpisode?.number} loading={!accountState.session} onSubscribe={() => setAccountPanel('membership')} onBack={() => setActiveSeries(null)} onEpisodes={mobilePrototype ? () => setMobileEpisodesOpen(true) : undefined} /> : currentEpisode && qualityEpisodeId === currentEpisode.id ? (
                   <>
                     <video
                       ref={videoRef}
                       key={currentEpisode.id}
                       src={api.getVideoStreamUrl(currentEpisode.id, currentQuality, activeSeries.id)}
-                      autoPlay
+                      autoPlay={!accountPanel}
                       playsInline
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={handleLoadedMetadata}
@@ -1772,7 +1783,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       </div>
                       {mobileDetailLandscape && <FullscreenWatch key={currentEpisode.id} videoRef={videoRef} onClick={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} />}
                       <div className="prototype-detail-side">
-                        <PlayerSideAction active={favorites.some(item => item.id === activeSeries.id)} label={t(favorites.some(item => item.id === activeSeries.id) ? "已追" : "追剧")} icon={<Heart size={27} fill={favorites.some(item => item.id === activeSeries.id) ? "currentColor" : "none"} />} onClick={() => handleToggleFav(activeSeries)} />
+                        <button aria-label={t(favorites.some(item => item.id === activeSeries.id) ? '已追剧' : '点击追剧')} onClick={() => handleToggleFav(activeSeries)} className="detail-follow-avatar"><img src={activeSeries.cover} alt={activeSeries.title}/><span>{favorites.some(item => item.id === activeSeries.id) ? '✓' : '+'}</span></button>
+                        <EpisodeInteractions key={currentEpisode.id} seriesId={activeSeries.id} episodeId={currentEpisode.id} title={activeSeries.title} session={accountState.session} onLogin={() => setAccountPanel('login')} />
                         <PlayerSideAction disabled={currentEpisodeIndex >= activeSeries.episodes.length - 1} label={t("下一集")} icon={<ChevronRight size={27} />} onClick={() => { setCurrentEpisodeIndex(value => value + 1); setMobileDetailInfoOpen(false); }} />
                       </div>
                       <div className="prototype-detail-info" data-gesture-exclude>
@@ -2175,7 +2187,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     {playbackError ? <div role="alert">{localizeError(playbackError)} <button className="underline ms-2" onClick={() => setQualityRetry(attempt => attempt + 1)}>{t("重试")}</button></div> : t("加载中...")}
                   </div>
                 )}
+                {currentEpisode && mobilePrototype && detailLocked && <div className="detail-social-actions"><EpisodeInteractions key={currentEpisode.id} seriesId={activeSeries.id} episodeId={currentEpisode.id} title={activeSeries.title} session={accountState.session} onLogin={() => setAccountPanel('login')} /></div>}
               </div>
+              {currentEpisode && !mobilePrototype && <div className="desktop-social-actions"><EpisodeInteractions key={currentEpisode.id} seriesId={activeSeries.id} episodeId={currentEpisode.id} title={activeSeries.title} session={accountState.session} onLogin={() => setAccountPanel('login')} /></div>}
 
               {/* 左侧播放器下方：轻量操作条（上下集切换） */}
               <div className={`flex flex-wrap items-center justify-between gap-3 pt-1 ${mobilePrototype ? "prototype-legacy-player-controls" : ""}`}>
@@ -2449,7 +2463,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                               : "bg-slate-800/85 hover:bg-slate-700/90 text-slate-200 hover:text-white"
                           }`}
                         >
-                          {isCurrent ? (
+                          {actualIdx >= 3 && !hasVipAccess && <Crown className="episode-vip-marker" aria-label="VIP" />}
+                          {isCurrent && !detailLocked ? (
                             <div className="flex items-center gap-1">
                               <span className="w-1 h-3 bg-white rounded-full animate-bounce" />
                               <span className="w-1 h-4.5 bg-white rounded-full animate-bounce [animation-delay:0.15s]" />
@@ -2759,13 +2774,15 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
             ) : (() => {
               const currentItem = streamList[streamIndex] || streamList[0];
               const isFav = favorites.some((f) => String(f.id) === String(currentItem.id));
-              const videoStreamUrl = streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id
+              const streamLocked = !!streamCurrentEpisode && (streamEpisodeIndex >= 3 && !hasVipAccess || streamError === 'VIP_REQUIRED');
+              const videoStreamUrl = !streamLocked && streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id
                 ? api.getVideoStreamUrl(streamCurrentEpisode.id, undefined, currentItem.id)
                 : "";
 
               return (
                 <div ref={mobilePrototype ? streamPlayerContainerRef : undefined} className={`relative w-full h-full overflow-clip bg-black flex flex-col justify-between group ${mobilePrototype ? "prototype-watch-stage" : ""}`}>
-                  {streamError && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
+                  {streamLocked && <VipGate cover={currentItem.cover} loading={!accountState.session} onSubscribe={() => setAccountPanel('membership')} />}
+                  {streamError && !streamLocked && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
                     if (streamCurrentEpisode && (streamError === "无法播放媒体" || streamError === "当前剧集没有可用的视频源，请稍后重试")) {
                       streamQualitySwitchTimeRef.current = streamCurrentTime;
                       setStreamPlaybackAttempt(attempt => attempt + 1);
@@ -2799,7 +2816,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}-${streamPlaybackAttempt}`}
                         src={api.getVideoStreamUrl(streamCurrentEpisode?.id || "", streamQuality, currentItem.id)}
                         onError={() => { setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
-                        autoPlay
+                        autoPlay={!accountPanel}
                         playsInline
                         muted={mobilePrototype ? streamMuted : undefined}
                         onPlaying={() => setStreamIsPlaying(true)}
@@ -2912,7 +2929,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     </div>
 
                     <div className="flex items-center gap-2 pointer-events-auto">
-                      {mobilePrototype ? <PlayerActions key={streamCurrentEpisode?.id || "loading"} speed={streamPlaybackSpeed} quality={streamQuality} qualities={streamQualities} loading={streamQualitiesLoading} onSpeed={handleStreamSelectSpeed} onQuality={handleStreamSelectQuality} onSearch={() => openMobileSearch("recommend")} onFullscreen={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={streamMuted} onMute={() => setStreamMuted(value => !value)} volume={streamVolume} onVolume={value => { if (streamVideoRef.current) streamVideoRef.current.volume = value; setStreamVolume(value); setStreamMuted(value === 0); }} /> : <>
+                      {mobilePrototype ? <PlayerActions key={streamCurrentEpisode?.id || "loading"} unavailable={streamLocked} speed={streamPlaybackSpeed} quality={streamQuality} qualities={streamQualities} loading={streamQualitiesLoading} onSpeed={handleStreamSelectSpeed} onQuality={handleStreamSelectQuality} onSearch={() => openMobileSearch("recommend")} onFullscreen={() => void toggleMobileFullscreen(streamPlayerContainerRef.current, streamVideoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={streamMuted} onMute={() => setStreamMuted(value => !value)} volume={streamVolume} onVolume={value => { if (streamVideoRef.current) streamVideoRef.current.volume = value; setStreamVolume(value); setStreamMuted(value === 0); }} /> : !streamLocked && <>
                       {/* ⚡ 倍速选择菜单 */}
                       <div className="relative">
                         <button
@@ -3031,24 +3048,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       </div>
                     </div>
 
-                    {/* 2. 点赞 / 追剧心形按钮 */}
-                    {mobilePrototype ? <PlayerSideAction active={isFav} label={t(isFav ? "已追" : "追剧")} icon={<Heart size={27} fill={isFav ? "currentColor" : "none"} />} onClick={() => handleToggleFav(currentItem)} /> : <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleFav(currentItem);
-                      }}
-                      className="flex flex-col items-center gap-1 group/btn cursor-pointer"
-                    >
-                      <div className={`w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md shadow-xl transition-all ${
-                        isFav ? "text-rose-500 scale-110" : "text-white/90 hover:text-white hover:scale-110"
-                      }`}>
-                        <Heart className={`w-7 h-7 drop-shadow-lg ${isFav ? "fill-rose-500 text-rose-500" : ""}`} />
-                      </div>
-                      <span className="text-[11px] font-bold text-white/90 drop-shadow">
-                        {isFav ? t("已追") : t("追剧")}
-                      </span>
-                    </button>}
+                    {/* 点赞、评论和分享对应当前分集；封面入口继续负责追剧。 */}
+                    {streamCurrentEpisode && <EpisodeInteractions key={streamCurrentEpisode.id} seriesId={currentItem.id} episodeId={streamCurrentEpisode.id} title={currentItem.title} session={accountState.session} onLogin={() => setAccountPanel('login')} />}
 
                     {/* 3. 悬浮切剧上/下按钮 (PC端便捷操作) */}
                     {mobilePrototype ? <PlayerSideAction label={t("下一集")} icon={<ChevronRight size={27} />} disabled={!streamDetail || streamEpisodeIndex >= streamDetail.episodes.length - 1} onClick={() => {
@@ -3082,7 +3083,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   </div>
 
                   {/* 👈 左下角信息层与胶囊条（严格参考图二：@创作者/剧名、第X集、#标签、合集条） */}
-                  <div data-gesture-exclude={mobilePrototype ? true : undefined} className={`relative z-10 ps-4 pe-20 md:ps-8 md:pe-24 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto ${mobilePrototype ? "prototype-stream-info" : ""}`}>
+                  <div data-gesture-exclude={mobilePrototype ? true : undefined} className={`relative ${streamLocked ? 'z-20' : 'z-10'} ps-4 pe-20 md:ps-8 md:pe-24 pb-10 space-y-2.5 max-w-[700px] pointer-events-auto ${mobilePrototype ? "prototype-stream-info" : ""}`}>
                     {/* 剧名与发布/集数信息 */}
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
@@ -3152,7 +3153,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   </div>
 
                   {/* 🌟 底部绝对铺满全宽进度条 (从最左端横跨到最右端，满屏无留白) */}
-                  <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col group/fullbar pointer-events-auto bg-gradient-to-t from-black/80 via-black/30 to-transparent pt-2 px-0">
+                  {!streamLocked && <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col group/fullbar pointer-events-auto bg-gradient-to-t from-black/80 via-black/30 to-transparent pt-2 px-0">
                     {/* 时间提示条：悬浮或平时在进度条上方显示 */}
                     <div className="px-6 flex items-center justify-between text-[11px] font-mono text-slate-400 mb-0.5 opacity-80 group-hover/fullbar:opacity-100 transition-opacity">
                       <div className="flex items-center gap-2">
@@ -3243,7 +3244,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         className="w-full h-1.5 group-hover/fullbar:h-2.5 rounded-none appearance-none cursor-pointer accent-rose-500 bg-white/20 hover:bg-white/30 transition-all m-0 p-0"
                       />
                     </div>
-                  </div>
+                  </div>}
                 </div>
               );
             })()}
@@ -4153,7 +4154,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
           </div>
         )}
       </main>
-      <AccountDialogs panel={accountPanel} onPanel={panel => { setAccountPanel(panel); if (!panel) { const url = new URL(window.location.href); url.searchParams.delete("account"); url.searchParams.delete("token"); url.searchParams.delete("error"); window.history.replaceState(null, "", url); } }} session={accountState.session} sessionError={accountState.error} onRefresh={accountState.refresh} />
+      <AccountDialogs panel={accountPanel} playbackReturn={playbackReturn} onPanel={panel => { setAccountPanel(panel); if (!panel) { const url = new URL(window.location.href); url.searchParams.delete("account"); url.searchParams.delete("token"); url.searchParams.delete("error"); url.searchParams.delete('plan'); window.history.replaceState(null, "", url); } }} session={accountState.session} sessionError={accountState.error} onRefresh={accountState.refresh} />
       {mobilePrototype && <nav className="prototype-bottom-nav" aria-label={t("主导航")}>
         <button className={tab === "recommend" || tab === "search" ? "active" : ""} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><Compass size={22} /><span>{t("推荐")}</span></button>
         <button className={tab === "category" || tab === "home" ? "active" : ""} onClick={() => { setTab("category"); setActiveSeries(null); if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage); }}><Grid size={22} /><span>{t("分类")}</span></button>

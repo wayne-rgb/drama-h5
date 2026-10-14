@@ -46,7 +46,8 @@ export class AccountStore {
       CREATE TABLE IF NOT EXISTS account_tokens (token_hash TEXT PRIMARY KEY, purpose TEXT NOT NULL, account_id TEXT, payload TEXT, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_subscriptions (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), plan_id TEXT NOT NULL, status TEXT NOT NULL, period_end INTEGER NOT NULL, cancel_at_period_end INTEGER NOT NULL, event_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS account_subscriptions_owner ON account_subscriptions(account_id);
-      CREATE TABLE IF NOT EXISTS account_billing_events (id TEXT PRIMARY KEY, received_at INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS account_billing_events (id TEXT PRIMARY KEY, received_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_manual_vip(account_id TEXT PRIMARY KEY REFERENCES accounts(id),period_end INTEGER NOT NULL,admin_id TEXT NOT NULL,reason TEXT NOT NULL,updated_at INTEGER NOT NULL);`);
   }
   close() { this.db.close(); }
   transaction(operation) {
@@ -126,7 +127,10 @@ export class AccountStore {
   }
   membership(id) {
     const row = this.db.prepare("SELECT * FROM account_subscriptions WHERE account_id=? ORDER BY CASE WHEN status IN ('active','trialing') AND period_end>? THEN 0 ELSE 1 END,period_end DESC LIMIT 1").get(id, Date.now());
-    return { active: !!row && ['active', 'trialing'].includes(row.status) && row.period_end > Date.now(), status: row?.status || 'none', planId: row?.plan_id || null, periodEnd: row?.period_end || null, cancelAtPeriodEnd: !!row?.cancel_at_period_end };
+    const billingSubscription = row ? { planId: row.plan_id, status: row.status, periodEnd: row.period_end, cancelAtPeriodEnd: !!row.cancel_at_period_end } : null;
+    const manual = this.db.prepare('SELECT period_end FROM account_manual_vip WHERE account_id=? AND period_end>?').get(id, Date.now());
+    if (manual && (!row || !['active', 'trialing'].includes(row.status) || row.period_end < manual.period_end)) return { active: true, status: 'active', planId: 'manual', periodEnd: manual.period_end, cancelAtPeriodEnd: true, billingSubscription };
+    return { active: !!row && ['active', 'trialing'].includes(row.status) && row.period_end > Date.now(), status: row?.status || 'none', planId: row?.plan_id || null, periodEnd: row?.period_end || null, cancelAtPeriodEnd: !!row?.cancel_at_period_end, billingSubscription };
   }
   publicAccount(account) {
     if (!account) return null;

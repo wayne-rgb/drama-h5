@@ -14,6 +14,7 @@ import { createLibraryHandler } from "./library-routes.mjs";
 import { RecommendationService, RecommendationError } from "./recommendation-service.mjs";
 import { AccountStore, AccountError } from "./account-store.mjs";
 import { createAccountService } from "./account-routes.mjs";
+import { createContentService } from "./content-service.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -68,6 +69,7 @@ const PORT = Number(process.env.PORT || 8788);
 const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
+const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore);
@@ -175,9 +177,16 @@ const OFFICIAL_TYPES = [
 ];
 
 function createRecommendations(libraryStore) { return new RecommendationService({
+  fetchLocalPool: ({mode,page}) => {
+    const options={type:mode==='mixed'?'':mode};
+    return [...content.list({...options,page:1}),...(page===1?[]:content.list({...options,page}))];
+  },
   fetchPool: async ({type,tag,page}) => {
     if(tag){const metadata=await coreProvider.categoryMetadata(type);if(!metadata.tags.some(row=>row.id===tag))return [];}
-    return coreProvider.category(type,tag,page);
+    let items;
+    try { items = await coreProvider.category(type,tag,page); }
+    catch (error) { if (!content.list({ type, page }).length) throw error; items = []; }
+    return content.merge(items, { type, tag, tagLabel: OFFICIAL_TAGS.find(item => item.id === tag)?.name || tag, page });
   },
   readProfile: () => libraryStore.snapshot(),
   now: () => Math.round(Date.now()+(libraryStore.getMeta('clockOffset')||0)),
@@ -555,6 +564,7 @@ function json(res, data, status = 200) {
   if (res.headersSent) return;
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, Range",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -569,8 +579,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, X-Library-Owner",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, Content-Range, X-Library-Owner",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     });
     return res.end();
   }
@@ -589,6 +599,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (await accounts.handle(req, res, u)) return;
+    if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
     const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null);
     if (await services.handleLibrary(req, res, u)) return;
@@ -602,7 +613,8 @@ const server = http.createServer(async (req, res) => {
     // 2.1 官方首页专区列表 (GET /api/sections)
     if (pathname === "/api/sections") {
       const data = await fetchOfficialHome();
-      return json(res, { sections: data.sections });
+      const own = content.list();
+      return json(res, { sections: own.length ? [{ type: 'uploaded', name: '为你推荐', items: own }, ...data.sections] : data.sections });
     }
 
     // 3. 官方分类标签池 (GET /api/category/tags)
@@ -616,7 +628,7 @@ const server = http.createServer(async (req, res) => {
       const type = u.searchParams.get("type") || "real-drama";
       const tag = u.searchParams.get("tag") || "";
       const page = Number(u.searchParams.get("page") || "1");
-      try{return json(res,await coreProvider.categoryList(type,tag,page));}
+      try{const data = await coreProvider.categoryList(type,tag,page); return json(res,{...data,items:content.merge(data.items || [],{type,tag,tagLabel:OFFICIAL_TAGS.find(item => item.id === tag)?.name || tag,page})});}
       catch(error){return json(res,{error:error.message},error.status||502);}
     }
 
@@ -659,26 +671,28 @@ const server = http.createServer(async (req, res) => {
       try {
         const upstreamRes = {data: await coreProvider.home(page)};
         if (upstreamRes.data && Array.isArray(upstreamRes.data.items) && upstreamRes.data.items.length > 0) {
-          return json(res, upstreamRes.data);
+          return json(res, {...upstreamRes.data, items: content.merge(upstreamRes.data.items, {page})});
         }
       } catch (err) {
         // 上游不可用时自动降级到官方 Web 分类推荐池
       }
       const cat = await fetchOfficialCategory("real-drama", "", page);
-      return json(res, { items: cat.items, page });
+      return json(res, { items: content.merge(cat.items, {page}), page });
     }
 
 
     // 7. 搜索接口 (GET /api/search?q=...)
     if (pathname === "/api/search") {
-      const upstreamRes = {data: await coreProvider.search(u.searchParams.get("q") || "", Number(u.searchParams.get("page") || 1))};
-      return json(res, upstreamRes.data);
+      const query = u.searchParams.get("q") || "", page = Number(u.searchParams.get("page") || 1);
+      let data; try { data = await coreProvider.search(query,page); } catch(error) { if (!content.list({query,page}).length) throw error; data={items:[],page}; }
+      return json(res, {...data, items:content.merge(data.items || [], {query,page})});
     }
 
     // 8. 单剧相关推荐 / 猜你喜欢 (GET /api/series/:id/related 或 GET /api/series/:id/recommend)
     const relMatch = /^\/api\/series\/(\d+)\/(?:related|recommend)$/.exec(pathname);
     if (relMatch) {
       const seriesId = relMatch[1];
+      if (content.store.row(seriesId)) { const series = await content.detail(seriesId); return json(res,{seriesId,keyword:'',page:1,items:content.list({type:series.contentType}).filter(item=>item.id!==seriesId)}); }
       const limit = parseInt(u.searchParams.get("limit") || "16", 10);
       const page = Math.max(1, parseInt(u.searchParams.get("page") || "1", 10));
       try {
@@ -752,8 +766,7 @@ const server = http.createServer(async (req, res) => {
 
     // 8.1 剧集详情 (GET /api/series/:id)
     if (pathname.startsWith("/api/series/")) {
-      const upstreamRes = {data: await coreProvider.detail(decodeURIComponent(pathname.slice("/api/series/".length)))};
-      const seriesData = upstreamRes.data;
+      const seriesData = await content.publicDetail(req, decodeURIComponent(pathname.slice("/api/series/".length)));
       if (seriesData && Array.isArray(seriesData.episodes)) {
         for (const ep of seriesData.episodes) {
           vidToSeriesMap.set(String(ep.id), String(seriesData.id));
@@ -766,6 +779,13 @@ const server = http.createServer(async (req, res) => {
     // 9. 官方多画质清晰度列表 (GET /api/episodes/:id/qualities)
     // 动态从官方接口读取该视频实际拥有的全部可解码播放清晰度档位，严格过滤会导致解码器崩溃的 bytevc2 私有流
     const qMatch = /^\/api\/episodes\/(\d+)\/qualities$/.exec(pathname);
+    const guardedPlayback = /^\/api\/episodes\/(\d+)\/(qualities|play|stream)$/.exec(pathname);
+    if (guardedPlayback) {
+      if (!['GET','HEAD'].includes(req.method)) throw new AccountError(405,'请求方式无效');
+      const seriesId = u.searchParams.get('seriesId') || u.searchParams.get('series_id') || vidToSeriesMap.get(guardedPlayback[1]);
+      const resolved = await content.resolveEpisode(req, seriesId, guardedPlayback[1]);
+      if (await content.ownPlayback(req,res,guardedPlayback[2],resolved)) return;
+    }
     if (qMatch) {
       const episodeId = qMatch[1];
       const seriesId = u.searchParams.get("seriesId") || u.searchParams.get("series_id") || vidToSeriesMap.get(episodeId);
@@ -1008,7 +1028,7 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return; shuttingDown = true; librarySync.stop();
   for (const service of personalLibraries.values()) service.sync.stop();
-  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
+  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } content.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
   server.closeAllConnections();
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);
