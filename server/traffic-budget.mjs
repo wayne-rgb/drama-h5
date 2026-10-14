@@ -10,9 +10,13 @@ export class TrafficBudget {
     this.clock = clock;
     // 日流量默认仅统计与告警；必须明确打开紧急开关，额度才会拒绝播放。
     this.enforce = config.CONTENT_ENFORCE_DAILY_LIMITS === '1';
-    this.limits = [positiveLimit(config, 'CONTENT_DAILY_BYTES', 100 * 1024 ** 3), positiveLimit(config, 'CONTENT_VIEWER_DAILY_BYTES', 5 * 1024 ** 3), positiveLimit(config, 'CONTENT_IP_DAILY_BYTES', 50 * 1024 ** 3)];
-    this.vipReserve = Math.min(Number(config.CONTENT_VIP_RESERVED_BYTES ?? Math.floor(this.limits[0]/5)),this.limits[0]);
-    if(!Number.isSafeInteger(this.vipReserve)||this.vipReserve<0)throw new Error('会员流量保留额度配置无效');
+    let invalid=false;
+    const limit=(key,fallback)=>{try{return positiveLimit(config,key,fallback);}catch(error){if(this.enforce)throw error;invalid=true;return fallback;}};
+    this.limits = [limit('CONTENT_DAILY_BYTES',100*1024**3),limit('CONTENT_VIEWER_DAILY_BYTES',5*1024**3),limit('CONTENT_IP_DAILY_BYTES',50*1024**3)];
+    const reserve=Number(config.CONTENT_VIP_RESERVED_BYTES??Math.floor(this.limits[0]/5));
+    if(!Number.isSafeInteger(reserve)||reserve<0){if(this.enforce)throw new Error('会员流量保留额度配置无效');invalid=true;}
+    this.vipReserve = Math.min(Number.isSafeInteger(reserve)&&reserve>=0?reserve:Math.floor(this.limits[0]/5),this.limits[0]);
+    if(invalid)console.warn('日流量监测配置无效，已采用默认参考值，正常播放不受影响');
     this.warnedDay=-1;this.failureWarned=false;this.detailWarnedDay=-1;this.suspendedUntil=0;
     try {
       if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });

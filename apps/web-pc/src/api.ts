@@ -47,10 +47,10 @@ function client(){
  instance.interceptors.request.use(async request=>{if(/^\/api\/(library|history|recommend)(?:\/|\?|$)/.test(request.url||"")){await ensureLibraryIdentity();request.headers["X-Library-Owner"]=libraryOwner;}return request;});
  return instance;
 }
-export async function flushPersonalLibrary(){await ensureLibraryIdentity();await journal.flush();}
+export async function flushPersonalLibrary(){await ensureLibraryIdentity();await journal.flush(true);}
 function warning(error:any){window.dispatchEvent(new CustomEvent("history-storage-error",{detail:error?.message||"本地记录保存失败，请检查服务和存储空间"}));}
 let journal=createJournal("guest");
-function operation(kind:string,key:string,op:string,value:any=null){try{if(!identityKnown)throw Error("个人资料正在加载，请稍后重试");journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush().catch(warning);return true;}catch(error){warning(error);return false;}}
+function operation(kind:string,key:string,op:string,value:any=null,force=false){try{if(!identityKnown)throw Error("个人资料正在加载，请稍后重试");journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush(force).catch(warning);return true;}catch(error){warning(error);return false;}}
 export function getSettings():Settings{try{return JSON.parse(localStorage.getItem(SETTINGS_KEY)||"null")||{baseUrl:"http://127.0.0.1:8788",token:""};}catch{return{baseUrl:"http://127.0.0.1:8788",token:""};}}
 export function saveSettings(value:Settings){localStorage.setItem(SETTINGS_KEY,JSON.stringify(value));}
 export function getFavorites():Series[]{return cache.favorites;}
@@ -71,8 +71,11 @@ export function beginHistory(series:Series,progress?:HistoryItem|null){activeHis
 export function saveProgress(seriesId:string,episodeId:string,position:number,extra?:{title?:string;cover?:string;badge?:string;tags?:string;episodeNumber?:number;duration?:number;completed?:boolean}){
  if(!activeHistory||activeHistory.id!==seriesId||!episodeId)return;
  const item={seriesId,...(activeHistory.contentType?{contentType:activeHistory.contentType}:{}),title:extra?.title||activeHistory.title,cover:extra?.cover||activeHistory.cover,badge:extra?.badge||activeHistory.badge,tags:extra?.tags||activeHistory.tags,description:activeHistory.description,episodeId,episodeNumber:extra?.episodeNumber||1,position,duration:extra?.duration||0,completed:!!extra?.completed,updatedAt:Math.round(Date.now()+clockOffset)};
+ const previous=getProgress(seriesId);
+ if(previous&&Object.entries(item).every(([key,value])=>key==='updatedAt'||(previous as any)[key]===value))return;
+ const force=!previous||previous.episodeId!==episodeId||item.completed||position<previous.position||position-previous.position>Math.max(3,(item.updatedAt-previous.updatedAt)/1000*4+1);
  cache.history=[item,...cache.history.filter(row=>row.seriesId!==seriesId)];
- operation("history",seriesId,"set",{...item,positionMs:Math.max(0,Math.round(position*1000)),durationMs:Number.isFinite(item.duration)?Math.max(0,Math.round(item.duration*1000)):0});
+ operation("history",seriesId,"set",{...item,positionMs:Math.max(0,Math.round(position*1000)),durationMs:Number.isFinite(item.duration)?Math.max(0,Math.round(item.duration*1000)):0},force);
 }
 async function migrate(){if(migration)return migration;const keys=["hg_favorites_v1","hg_progress_v1","hg_search_history_v1","hg_pref_quality","hg_playback_speed",...Object.keys(localStorage).filter(key=>key.startsWith("hg_history_outbox_v1:")).sort()];const raw=Object.fromEntries(keys.map(key=>[key,localStorage.getItem(key)]));if(!Object.values(raw).some(value=>value!==null))return;
  migration=(async()=>{
@@ -92,7 +95,17 @@ async function migrate(){if(migration)return migration;const keys=["hg_favorites
   }
   for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);
  })();try{await migration;}finally{migration=null;}}
-export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
+export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
+ // 尚未上传的真实本地进度不能被轮询返回的旧值覆盖。
+ for(const {event} of journal.entries())if(event.kind==='history'){
+  const newer=cache.history.filter(item=>item.updatedAt>event.at);
+  if(event.op==='clear')cache.history=newer;
+  else if(!newer.some(item=>item.seriesId===event.key)){
+   cache.history=cache.history.filter(item=>item.seriesId!==event.key);
+   if(event.op==='set')cache.history.unshift({...event.value,updatedAt:event.at,position:event.value.positionMs/1000,duration:event.value.durationMs/1000});
+  }
+ }
+ window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
 export async function commitRecommendationPreferences(){
  await ensureLibraryIdentity();
  const deadline=Date.now()+15000;

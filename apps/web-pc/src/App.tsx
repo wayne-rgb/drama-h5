@@ -22,6 +22,7 @@ import {
   getServerProgress,
   beginHistory,
   saveProgress, 
+  flushPersonalLibrary,
   getHistoryList,
   removeHistoryItem,
   clearHistory,
@@ -910,16 +911,22 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         title: series.title, cover: series.cover, badge: series.badge, tags: series.tags,
         episodeNumber: episode.number, duration: Math.floor(video.duration || 0), completed: video.ended,
       });
+      void flushPersonalLibrary().catch(()=>{});
     };
     const visibility = () => { if (document.visibilityState === "hidden") snapshot(); };
     window.addEventListener("pagehide", snapshot);
     document.addEventListener("visibilitychange", visibility);
     const video = activeSeries ? videoRef.current : streamVideoRef.current;
     video?.addEventListener("seeked", snapshot);
+    video?.addEventListener("pause", snapshot);
+    video?.addEventListener("ended", snapshot);
     return () => {
       window.removeEventListener("pagehide", snapshot);
       document.removeEventListener("visibilitychange", visibility);
       video?.removeEventListener("seeked", snapshot);
+      video?.removeEventListener("pause", snapshot);
+      video?.removeEventListener("ended", snapshot);
+      void flushPersonalLibrary().catch(()=>{});
     };
   }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id, qualityEpisodeId, streamQualityEpisodeId]);
 

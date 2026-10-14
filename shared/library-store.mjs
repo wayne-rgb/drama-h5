@@ -52,9 +52,11 @@ export function compareEvents(a,b) {return a.at-b.at || (a.deviceId<b.deviceId?-
 const fingerprint = event => createHash('sha256').update(JSON.stringify(event)).digest('hex');
 
 export class LibraryStore {
-  constructor(filename) {
+  constructor(filename,{compactLocal=false}={}) {
+    this.compactLocal=compactLocal;this.compactionTicks=0;this.compactionBacklog=false;
     if(filename!==':memory:')mkdirSync(dirname(filename),{recursive:true});
     this.db=new DatabaseSync(filename);
+    if(compactLocal&&this.db.prepare('PRAGMA page_count').get().page_count===0)this.db.exec('PRAGMA auto_vacuum=INCREMENTAL');
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS library_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS library_events(revision INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,device_id TEXT NOT NULL,seq INTEGER NOT NULL,kind TEXT NOT NULL,item_key TEXT NOT NULL,event_time INTEGER NOT NULL,event_json TEXT NOT NULL,fingerprint TEXT NOT NULL,is_local INTEGER NOT NULL,UNIQUE(device_id,seq));
@@ -62,25 +64,45 @@ export class LibraryStore {
       CREATE TABLE IF NOT EXISTS library_records(kind TEXT NOT NULL,item_key TEXT NOT NULL,event_json TEXT NOT NULL,PRIMARY KEY(kind,item_key));
       CREATE TABLE IF NOT EXISTS library_ack(target TEXT NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(target,event_id));`);
     for(const key of ['deviceId','instanceId'])if(!this.getMeta(key))this.setMeta(key,randomUUID());
+    if(compactLocal){
+      this.db.exec(`CREATE TABLE IF NOT EXISTS library_receipts(id TEXT PRIMARY KEY,device_id TEXT NOT NULL,seq INTEGER NOT NULL,event_time INTEGER NOT NULL,fingerprint TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS library_compact_floor(kind TEXT NOT NULL,item_key TEXT NOT NULL,event_time INTEGER NOT NULL,PRIMARY KEY(kind,item_key));
+        CREATE TABLE IF NOT EXISTS library_pins(id TEXT PRIMARY KEY);`);
+      this.maintain(true);
+    }
   }
   close(){this.db.close();}
   getMeta(key){const row=this.db.prepare('SELECT value FROM library_meta WHERE key=?').get(key);return row?JSON.parse(row.value):null;}
   setMeta(key,value){this.db.prepare('INSERT INTO library_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));}
   transaction(fn){this.db.exec('BEGIN IMMEDIATE');try{const result=fn();this.db.exec('COMMIT');return result;}catch(error){try{this.db.exec('ROLLBACK');}catch{/* SQLite满额时可能已自动回滚，保留原始错误供调用方识别。 */}throw error;}}
   write(input) {
-    return this.transaction(()=>this.writeInTransaction(input));
+    this.maintain();const result=this.transaction(()=>this.writeInTransaction(input));
+    if(input.op==='clear')this.maintain(true);return result;
   }
   writeInTransaction(input) {
       if(input.id){const previous=this.db.prepare('SELECT * FROM library_events WHERE id=?').get(input.id);if(previous){const saved=JSON.parse(previous.event_json);const retry=validateEvent({...input,deviceId:saved.deviceId,seq:saved.seq,at:input.at??saved.at});if(fingerprint(retry)!==previous.fingerprint&&fingerprint(retry)!==fingerprint(saved))throw new LibraryError(409,'operation ID was reused');return saved;}}
+      if(this.compactLocal&&input.id){
+        const receipt=this.db.prepare('SELECT * FROM library_receipts WHERE id=?').get(input.id);
+        if(receipt){const retry=validateEvent({...input,deviceId:receipt.device_id,seq:receipt.seq,at:input.at??receipt.event_time});if(fingerprint(retry)!==receipt.fingerprint)throw new LibraryError(409,'操作编号不能重复用于不同内容');return retry;}
+      }
       const seq=(this.getMeta('sequence')||0)+1;
       const clock=Math.round(Date.now()+(this.getMeta('clockOffset')||0));
       const last=this.getMeta('lastTime')||0;
       const at=input.at??Math.max(clock,Math.abs(last-clock)>300000?clock:last+1);
       const event=validateEvent({...input,id:input.id||randomUUID(),deviceId:this.getMeta('deviceId'),seq,at});
-      this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event,1);return event;
+      if(this.compactLocal&&input.at!=null&&['history','recommendation'].includes(event.kind)){
+        const floor=this.db.prepare('SELECT event_time FROM library_compact_floor WHERE kind=? AND item_key=?').get(event.kind,event.key);
+        // 已整理的旧进度只能作为过期重试确认，不能复活删除记录或覆盖新的续播位置。
+        if(floor&&event.at<=floor.event_time)return {...event,ignored:true};
+      }
+      if(event.op==='clear'&&this.canCompact()&&['history','recommendation'].includes(event.kind))this.db.prepare("DELETE FROM library_records WHERE kind=? AND item_key<>'*' AND json_extract(event_json,'$.at')<=?").run(event.kind,event.at);
+      this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event,1);
+      if(this.compactLocal&&input.at==null&&['history','recommendation'].includes(event.kind))this.db.prepare('INSERT OR IGNORE INTO library_pins VALUES(?)').run(event.id);
+      return event;
   }
   writeBatch(inputs) {
     if(!Array.isArray(inputs)||inputs.length>256)fail('每批最多导入256条资料');
+    this.maintain();
     return this.transaction(()=>inputs.map(input=>this.writeInTransaction(input)));
   }
   importOperations({migrationId,operations,offset=0,total=operations?.length}) {
@@ -112,6 +134,27 @@ export class LibraryStore {
     try {this.db.prepare('INSERT INTO library_events(id,device_id,seq,kind,item_key,event_time,event_json,fingerprint,is_local) VALUES(?,?,?,?,?,?,?,?,?)').run(event.id,event.deviceId,event.seq,event.kind,event.key,event.at,JSON.stringify(event),fingerprint(original),isLocal);}
     catch(error){if(error.message.includes('UNIQUE'))throw new LibraryError(409,'device sequence was reused');throw error;}
     this.materialize(event);return event;
+  }
+  canCompact(){
+    return this.compactLocal&&!this.getMeta('syncConfig')&&!this.db.prepare("SELECT 1 FROM library_meta WHERE key LIKE 'seed:%' OR key LIKE 'cursor:%' LIMIT 1").get()&&!this.db.prepare('SELECT 1 FROM library_ack LIMIT 1').get()&&!this.db.prepare('SELECT 1 FROM library_events WHERE is_local=0 LIMIT 1').get();
+  }
+  maintain(force=false){
+    if(!this.compactLocal || !force&&!this.compactionBacklog&&this.compactionTicks++%64!==0 || !this.canCompact())return 0;
+    const maximum=this.db.prepare('SELECT MAX(revision) AS revision FROM library_events').get().revision||0;
+    const rows=this.db.prepare(`SELECT e.* FROM library_events e WHERE e.kind IN ('history','recommendation') AND e.revision<=? AND NOT EXISTS(SELECT 1 FROM library_pins p WHERE p.id=e.id) AND NOT EXISTS(SELECT 1 FROM library_records r WHERE r.kind=e.kind AND r.item_key=e.item_key AND json_extract(r.event_json,'$.id')=e.id) ORDER BY e.revision LIMIT 512`).all(maximum-256);
+    this.compactionBacklog=rows.length===512;if(!rows.length)return 0;
+    this.transaction(()=>{
+      const remove=this.db.prepare('DELETE FROM library_events WHERE id=?'),receipt=this.db.prepare('INSERT OR REPLACE INTO library_receipts VALUES(?,?,?,?,?)'),floor=this.db.prepare('INSERT INTO library_compact_floor VALUES(?,?,?) ON CONFLICT(kind,item_key) DO UPDATE SET event_time=MAX(event_time,excluded.event_time)');
+      // 先释放旧日志页面，再存小体积重试凭据；已接近页数上限的库也能整理。
+      for(const row of rows)remove.run(row.id);
+      for(const row of rows){receipt.run(row.id,row.device_id,row.seq,row.event_time,row.fingerprint);floor.run(row.kind,row.item_key,row.event_time);}
+      this.db.exec('DELETE FROM library_receipts WHERE id IN (SELECT id FROM library_receipts ORDER BY seq DESC LIMIT -1 OFFSET 512)');
+    });
+    const pages=this.db.prepare('PRAGMA page_count').get().page_count,free=this.db.prepare('PRAGMA freelist_count').get().freelist_count,size=this.db.prepare('PRAGMA page_size').get().page_size;
+    if(this.db.prepare('PRAGMA auto_vacuum').get().auto_vacuum===2)this.db.exec('PRAGMA incremental_vacuum(128)');
+    else if(pages*size<=32*1024**2&&free*size>=1024**2&&free>pages*.75)this.db.exec('PRAGMA auto_vacuum=INCREMENTAL; VACUUM');
+    this.db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    return rows.length;
   }
   materialize(event) {
     const row=this.db.prepare('SELECT event_json FROM library_records WHERE kind=? AND item_key=?').get(event.kind,event.key);

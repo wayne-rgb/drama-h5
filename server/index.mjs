@@ -248,7 +248,7 @@ function personalServices(account, res, req) {
     // 空资料的读取仅用内存；首次实际写入才创建磁盘库，访问页面不会积累游客文件。
     const ephemeral=['GET','HEAD'].includes(req.method) && !fs.existsSync(directory);
     if(!ephemeral)personalStorage.open(directory,!!account.guest);
-    const library = new LibraryStore(ephemeral?':memory:':path.join(directory, 'library.sqlite'));
+    const library = new LibraryStore(ephemeral?':memory:':path.join(directory, 'library.sqlite'),{compactLocal:true});
     const history = new HistoryStore(ephemeral?':memory:':path.join(directory, 'history.sqlite'));
     if(!ephemeral){fs.chmodSync(directory,0o700);for(const name of ['library.sqlite','history.sqlite'])fs.chmodSync(path.join(directory,name),0o600);}
     const sync = new LibrarySync(library,{allowPrivateTargets:accounts.isLocal(req),guardWrite:bytes=>{personalStorage.check(directory,!!account.guest,bytes);return()=>personalStorage.refresh(directory);}});
@@ -257,6 +257,7 @@ function personalServices(account, res, req) {
     if(!ephemeral)personalStorage.refresh(directory);
   }
   const service = personalLibraries.get(account.id);
+  if(!['GET','HEAD'].includes(req.method)){service.library.maintain();personalStorage.refresh(service.directory);}
   personalStorage.attach(req,res,service.directory,!!account.guest,[service.library.db,service.history.db]);
   personalLibraries.delete(account.id);personalLibraries.set(account.id,service);service.active++;
   let released=false;const release=()=>{if(!released){released=true;service.active--;if(service.retired&&!service.active){service.sync.stop();service.library.close();service.history.close();}}};
@@ -672,12 +673,12 @@ const server = http.createServer(async (req, res) => {
           req.playbackPrivileged=!!current&&!current.guest&&(accounts.canConfigureSync(current,req)||accountStore.membership(current.id).active);
           checkedAt=Date.now();
         };
-        req.revalidatePlayback(true);return coverGuard.acquire(req,res,viewer,address);
+        req.revalidatePlayback(true);return coverGuard.acquire(req,res,viewer,address,!!accounts.audience(req));
       };
       if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
         requestGuard.checkVideo(viewer, address);
-        playbackSignal = playbackGuard.acquire(req, res, viewer, address);
+        playbackSignal = playbackGuard.acquire(req, res, viewer, address,!!audience);
       } else {
         const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience,req);
         requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
