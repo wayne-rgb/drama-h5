@@ -23,6 +23,8 @@ import {
   beginHistory,
   saveProgress, 
   flushPersonalLibrary,
+  getPersonalPagination,
+  loadPersonalPage,
   getHistoryList,
   removeHistoryItem,
   clearHistory,
@@ -233,6 +235,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const [favorites, setFavorites] = useState<Series[]>([]);
   const [historyList, setHistoryList] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState("");
+  const [personalPageBusy,setPersonalPageBusy]=useState(false);
   const [historyStorageWarning, setHistoryStorageWarning] = useState("");
   const historyRequest = useRef(0);
   const detailRequest = useRef(0);
@@ -1646,7 +1649,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     setFavSubTab(section); setActiveSeries(null); setTab(section === "settings" && !mobilePrototype ? "settings" : "favorites"); void refreshHistory(); setFavorites(getFavorites());
   };
   const returnMobileSettings = () => { restorePersonalScroll.current = true; openPersonalPage(personalSettingsReturn.current.section); };
-  const personalAreaProps = { session: accountState.session, onPanel: setAccountPanel, onOverview: () => openPersonalPage("overview"), onFavorites: () => openPersonalPage("favorites"), onHistory: () => openPersonalPage("history"), onLikes: () => openPersonalPage("likes"), onSettings: () => openPersonalPage("settings"), favoritesCount: favorites.length, historyCount: historyList.length, likesCount };
+  const personalFavoriteCount=getPersonalPagination('favorite').count||favorites.length,personalHistoryCount=getPersonalPagination('history').count||historyList.length;
+  const personalAreaProps = { session: accountState.session, onPanel: setAccountPanel, onOverview: () => openPersonalPage("overview"), onFavorites: () => openPersonalPage("favorites"), onHistory: () => openPersonalPage("history"), onLikes: () => openPersonalPage("likes"), onSettings: () => openPersonalPage("settings"), favoritesCount: personalFavoriteCount, historyCount: personalHistoryCount, likesCount };
 
   return (
     <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}${forceMobileLayout === true ? "mobile-prototype-preview " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
@@ -3975,7 +3979,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         personalContentTab === "favorites" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
                       }`}
                     >
-                      {favorites.length}
+                      {personalFavoriteCount}
                     </span>
                   )}
                 </button>
@@ -4001,7 +4005,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                         personalContentTab === "history" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
                       }`}
                     >
-                      {historyList.length}
+                      {personalHistoryCount}
                     </span>
                   )}
                 </button>
@@ -4209,6 +4213,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 )}
               </div>
             )}
+            {(['favorites','history'].includes(personalContentTab))&&getPersonalPagination(personalContentTab==='favorites'?'favorite':'history').next&&<button className="account-text-button" disabled={personalPageBusy} onClick={()=>void (async()=>{
+              setPersonalPageBusy(true);try{await loadPersonalPage(personalContentTab==='favorites'?'favorite':'history');setFavorites(getFavorites());await refreshHistory();}catch{showToast('操作失败，请稍后重试');}finally{setPersonalPageBusy(false);}
+            })()}>{t(personalPageBusy?'加载中...':'加载更多')}</button>}
             </div>}
           </div>
         )}

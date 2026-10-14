@@ -27,7 +27,7 @@ export class LibrarySync {
     this.store.setMeta('clockOffset',handshake.serverTime-(started+Date.now())/2);this.store.seedTarget(config.target);this.store.setMeta('syncConfig',config);
     this.nextAttempt=0;this.failures=0;this.status={...this.status,state:'pending',error:''};return this.view();
   }
-  view(){const config=this.store.getMeta('syncConfig');return{...this.status,enabled:!!config,url:config?.url||'',pending:config?this.store.pending(config.target).length:0};}
+  view(){const config=this.store.getMeta('syncConfig');return{...this.status,enabled:!!config,url:config?.url||'',pending:config?this.store.db.prepare('SELECT COUNT(*) AS count FROM library_events WHERE is_local=1 AND id NOT IN(SELECT event_id FROM library_ack WHERE target=?)').get(config.target).count:0};}
   start(){this.timer=setInterval(()=>void this.tick(),1000);this.timer.unref();void this.tick();}
   stop(){clearInterval(this.timer);this.generation++;}
   async tick(){

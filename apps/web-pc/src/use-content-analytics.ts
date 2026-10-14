@@ -45,6 +45,7 @@ export function useContentAnalytics(video: RefObject<HTMLVideoElement>, seriesId
         if (!active || session.libraryOwner !== identity) return;
         void flush(identity);
         const data = await accountRequest('/api/analytics/sessions', { requestId, seriesId, episodeId, entry });
+        if(data.deferred)return;
         finished = true;
         if (!active || data.excluded || data.gate) return;
         tracker.current = new PlaybackAnalytics((snapshot: Omit<Snapshot, 'id'>) => enqueue(identity, { ...snapshot, id: data.id }), data.durationMs);

@@ -27,6 +27,17 @@ let activeHistory:Series|null=null;
 let refreshInFlight:Promise<any>|null=null;
 let migration:Promise<void>|null=null;
 let auxiliaryRecommendationSession = "";
+let libraryRevision=0,libraryVersion='';
+let libraryPagination:Record<string,{next:string|null;count:number}>={};
+const loadedPersonalPages=new Set<string>();
+export function getPersonalPagination(kind:'favorite'|'history'){return libraryPagination[kind]||{next:null,count:0};}
+export async function loadPersonalPage(kind:'favorite'|'history'){
+ const cursor=libraryPagination[kind]?.next;if(!cursor)return;
+ const data=(await client().get('/api/library',{params:{kind,cursor}})).data,field=kind==='favorite'?'favorites':'history';
+ const rows=kind==='favorite'?data.items:data.items.map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}));
+ (cache as any)[field]=[...(cache as any)[field],...rows.filter((item:any)=>!(cache as any)[field].some((existing:any)=>(existing.id||existing.seriesId)===(item.id||item.seriesId)))];
+ libraryPagination[kind]={next:(cache as any)[field].length>=data.count?null:data.next,count:data.count};loadedPersonalPages.add(kind);window.dispatchEvent(new CustomEvent('library-updated'));
+}
 const migrationOnly=new URLSearchParams(window.location.search).has("__legacy_migration");
 function rawClient(){const instance=axios.create({baseURL:window.location.protocol==="file:"?(getSettings().baseUrl||"http://127.0.0.1:8788").replace(/\/+$/,""):"",timeout:15000,withCredentials:window.location.protocol!=="file:"});instance.interceptors.response.use(response=>response,error=>{if(error.response?.status===409&&error.response?.data?.error==="登录状态已变化，请刷新页面")window.location.reload();return Promise.reject(error);});return instance;}
 let libraryOwner="guest";
@@ -95,7 +106,22 @@ async function migrate(){if(migration)return migration;const keys=["hg_favorites
   }
   for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);
  })();try{await migration;}finally{migration=null;}}
-export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library")).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
+export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library",{params:libraryVersion?{since:libraryRevision,version:libraryVersion}:{}})).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;
+ if(!data.unchanged){
+  const old=cache;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
+  if(data.reset)loadedPersonalPages.clear();
+  else for(const [kind,field,id] of [['favorite','favorites','id'],['history','history','seriesId'],['recommendation','recommendationSignals','seriesId']] as const){
+   const retained=(old[field] as any[]).filter(item=>(loadedPersonalPages.has(kind)||kind==='favorite'&&item.id===activeHistory?.id)&&!(data.changes||[]).some((event:any)=>event.kind===kind&&(event.op==='clear'||event.op==='delete'&&event.key===item[id])&&event.at>=item.updatedAt));
+   (cache as any)[field]=[...cache[field],...retained.filter(item=>!cache[field].some((row:any)=>kind==='recommendation'?row.seriesId===item.seriesId&&row.sessionId===item.sessionId:row[id]===item[id]))];
+  }
+  for(const [kind,page] of Object.entries(data.pagination||{}) as any){
+   const field=kind==='favorite'?'favorites':kind==='history'?'history':'recommendationSignals',previous=libraryPagination[kind];
+   const moved=(data.changes||[]).some((event:any)=>event.kind===kind&&(event.op==='clear'||event.op==='set'&&!(old[field] as any[]).some(row=>(kind==='favorite'?row.id:kind==='history'?row.seriesId:`${row.sessionId}:${row.seriesId}`)===event.key)));
+   const next=loadedPersonalPages.has(kind)&&previous?.count===page.count&&!moved?previous.next:page.next;
+   libraryPagination[kind]={...page,next:(cache as any)[field].length>=page.count?null:next};
+  }
+ }
+ cache.sync=data.sync||cache.sync;libraryRevision=data.revision;libraryVersion=data.version;
  // 尚未上传的真实本地进度不能被轮询返回的旧值覆盖。
  for(const {event} of journal.entries())if(event.kind==='history'){
   const newer=cache.history.filter(item=>item.updatedAt>event.at);
@@ -113,7 +139,7 @@ export async function commitRecommendationPreferences(){
  if(refreshInFlight)await refreshInFlight;
  return (await refreshLibrary()).preferences;
 }
-export async function getServerProgress(id:string):Promise<HistoryItem|null>{await refreshLibrary();return getProgress(id);}
+export async function getServerProgress(id:string):Promise<HistoryItem|null>{await ensureLibraryIdentity();await journal.flush(true);const data=(await client().get('/api/library',{params:{seriesId:id}})).data;const item=data.item?{...data.item,position:data.item.positionMs/1000,duration:data.item.durationMs/1000}:null;if(data.favorite&&!cache.favorites.some(row=>row.id===id))cache.favorites.unshift(data.favorite);const local=getProgress(id),pending=journal.entries().some(({event}:any)=>event.kind==='history'&&event.key===id&&event.op==='set');if(local&&(pending||item&&local.updatedAt>item.updatedAt))return local;cache.history=[...(item?[item]:[]),...cache.history.filter(row=>row.seriesId!==id)];window.dispatchEvent(new CustomEvent('library-updated'));return item;}
 export async function getHistoryList(_source:HistorySource="all"):Promise<HistoryItem[]>{await refreshLibrary();return cache.history;}
 export async function removeHistoryItem(id:string,_source:HistorySource="all"){operation("history",id,"delete");await journal.flush();await refreshLibrary();}
 export async function clearHistory(_source:HistorySource="all"){operation("history","*","clear");await journal.flush();await refreshLibrary();}

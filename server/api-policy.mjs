@@ -82,8 +82,8 @@ export function createApiPolicy(accounts, store, config = process.env) {
       return null;
     };
     const identity = check();
-    if (!['GET','HEAD'].includes(req.method) && (identity || permission === 'personal')) {
-      // 等待正文期间的退出、密码重置或角色撤销必须在真正写入之前生效。
+    if (identity || permission === 'personal') {
+      // 正文读取和外部目录等待结束后，写入及私有响应都必须使用仍然有效的身份。
       req.revalidateAccess = () => {
         const current = check();
         if (identity ? !current || current.id !== identity.id || !!current.guest !== !!identity.guest : current !== null) throw new AccountError(409, '登录状态已变化，请刷新页面');

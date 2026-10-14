@@ -10,12 +10,14 @@ import { CommentModeration } from './comment-moderation.mjs';
 import { ContentAudit } from './content-audit.mjs';
 import { CatalogCache } from './catalog-cache.mjs';
 import { withContentSignal } from '../shared/content-request.mjs';
+import {AnalyticsResource} from './analytics-resource.mjs';
 
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
   const store = new ContentStore(directory), uploads = createUploads(store, directory, config);
   const isAdmin = user => isAdministrator(user, config);
   const analytics = new ContentAnalytics(store, accountStore, accounts, isAdmin);
+  const analyticsResource=new AnalyticsResource(store,directory,config);
   const requireAdmin = req => { const user = accounts.requireViewer(req); if (!isAdmin(user)) throw new AccountError(403, '需要管理员权限'); return user; };
   const metadata = new CatalogCache(), rates = new Map();
   const limit = (req, user) => {
@@ -44,11 +46,14 @@ export function createContentService(directory, accountStore, accounts, provider
     const required = index >= 3;
     if (enforce && required && !isAdmin(viewer) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
     if (enforce) {
+      const audience=accounts.audience(req);
       let checkedAt = 0;
       req.revalidatePlayback = (force = false) => {
         const now = Date.now();
         if (!force && now - checkedAt < 1000) return;
         const current = accounts.viewer(req);
+        const currentAudience=accounts.audience(req);
+        if(audience&&(!currentAudience||currentAudience.id!==audience.id||!!currentAudience.guest!==!!audience.guest))throw new AccountError(401,'请刷新页面后重试');
         req.playbackPrivileged = isAdmin(current) || !!current && accountStore.membership(current.id).active;
         if (series.owned && store.row(series.id)?.status !== 'published' && !isAdmin(current)) throw new AccountError(404, '短剧未上架');
         if (required && !isAdmin(current) && (!current || current.id !== viewer?.id || !accountStore.membership(current.id).active)) throw new AccountError(403, 'VIP_REQUIRED');
@@ -61,6 +66,7 @@ export function createContentService(directory, accountStore, accounts, provider
   const contentAudit = new ContentAudit(store,accountStore);
   const streamFile = (req, res, asset, quality, cover = false, publicCover = false) => {
     const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
+    if(!cover&&asset.metadata?.duration>0)req.downloadRate=24*stat.size/asset.metadata.duration;
     if(cover && publicCover){
       const etag=`"${asset.id}-${stat.size}-${stat.mtimeMs}"`;
       res.setHeader('ETag',etag);res.setHeader('Cache-Control','private, max-age=300');
@@ -78,7 +84,7 @@ export function createContentService(directory, accountStore, accounts, provider
     req.revalidatePlayback?.(true);
     res.writeHead(status, { 'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', 'Cache-Control': publicCover?'private, max-age=300':'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(quality ? {'X-Video-Quality':quality} : {}), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) });
     if (req.method === 'HEAD') return res.end();
-    const stream = fs.createReadStream(filename, { start, end }); res.once('close', () => stream.destroy()); stream.once('error', () => res.destroy()); stream.pipe(res);
+    const stream = fs.createReadStream(filename, { start, end }); res.once('close', () => stream.destroy()); stream.once('error', () => res.destroy());if(req.sendDownload)req.sendDownload(stream);else stream.pipe(res);
   };
   return {
     store, detail, resolveEpisode, analytics,
@@ -112,7 +118,7 @@ export function createContentService(directory, accountStore, accounts, provider
       if (myLikes || removeLike) throw new AccountError(405,'请求方式无效');
       const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch (error) { if (error instanceof AccountError) throw error; throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); } };
       if (analyticsRoute) {
-        if (route === '/api/analytics/sessions' && req.method === 'POST') reply(res, analytics.start(req, await input()));
+        if (route === '/api/analytics/sessions' && req.method === 'POST') reply(res, analyticsResource.start(analytics,req, await input()));
         else if (route === '/api/analytics/progress' && req.method === 'POST') reply(res, analytics.progress(req, await input()));
         else if (route === '/api/analytics/series' && req.method === 'GET') reply(res, analytics.series(req));
         else if (route === '/api/analytics/report' && req.method === 'GET') reply(res, analytics.report(req, url.searchParams));
@@ -120,6 +126,7 @@ export function createContentService(directory, accountStore, accounts, provider
         return true;
       }
       if (cover && ['GET', 'HEAD'].includes(req.method)) {
+        accounts.sameOrigin(req);
         const asset = store.asset(cover[1]), published = store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
         const user=accounts.viewer(req), creatorCover=user&&accountStore.isCreator(user.id)&&store.db.prepare('SELECT 1 FROM content_series WHERE cover_id=? AND creator_id=?').get(cover[1],user.id);
         if (asset?.kind !== 'image' || asset.status !== 'ready' || !published && !isAdmin(user) && !creatorCover) throw new AccountError(404, '封面不存在');
@@ -177,8 +184,8 @@ export function createContentService(directory, accountStore, accounts, provider
           accountStore.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET period_end=excluded.period_end,admin_id=excluded.admin_id,reason=excluded.reason,updated_at=excluded.updated_at').run(user.id, end, admin.id, reason, Date.now());
           store.audit(admin, data.revoke ? '撤销手动会员' : '开通手动会员', user.id, { periodEnd: end, reason,accountName:user.name,accountEmail:user.email }); reply(res, { user: accountStore.publicAccount(user) });
         }
-        else if (route === '/api/admin/comment-series' && req.method === 'GET') reply(res, await commentModeration.series(url.searchParams));
-        else if (route === '/api/admin/comments' && req.method === 'GET') { const data=await commentModeration.comments(url.searchParams); reply(res,{...data,items:data.items.map(({account_id,...row})=>({...row,author:accountStore.byId(account_id)?.name || '—'}))}); }
+        else if (route === '/api/admin/comment-series' && req.method === 'GET') { const data=await commentModeration.series(url.searchParams);req.revalidateAccess?.();requireAdmin(req);reply(res,data); }
+        else if (route === '/api/admin/comments' && req.method === 'GET') { const data=await commentModeration.comments(url.searchParams);req.revalidateAccess?.();requireAdmin(req);reply(res,{...data,items:data.items.map(({account_id,...row})=>({...row,author:accountStore.byId(account_id)?.name || '—'}))}); }
         else if (moderation && req.method === 'POST') { const data = await input(); if (!['visible', 'hidden', 'deleted'].includes(data.status)) throw new AccountError(400, '评论状态无效'); store.db.prepare('UPDATE episode_comments SET status=? WHERE id=?').run(data.status, moderation[1]); store.audit(admin, '处理评论', moderation[1], { status: data.status }); reply(res, { ok: true }); }
         else if (route === '/api/admin/audit-series' && req.method === 'GET') reply(res,contentAudit.series(url.searchParams));
         else if (route === '/api/admin/audit' && req.method === 'GET') reply(res,contentAudit.logs(url.searchParams));

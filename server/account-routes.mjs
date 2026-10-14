@@ -9,6 +9,7 @@ import { safeAccountReturn } from './account-return.mjs';
 import { readJson as readInput, readBody } from '../shared/http-json.mjs';
 import { AuthenticationLimits, clientAddress } from './auth-limits.mjs';
 import { createLocalAccess } from './local-access.mjs';
+import {cacheMatches} from './download-protection.mjs';
 
 async function readJson(req) {
   try { return await readInput(req); }
@@ -135,7 +136,11 @@ export function createAccountService(store, config = process.env) {
         else if (route === '/api/account/avatar' && req.method === 'GET') {
           const account = requireViewer(req);
           if (!account.avatar_mime) throw new AccountError(404, '头像不存在');
-          res.writeHead(200, { 'Content-Type': account.avatar_mime, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(Buffer.from(account.avatar_data));
+          const etag=`"avatar-${account.id}-${account.updated_at}"`;res.setHeader('ETag',etag);
+          if(cacheMatches(req,etag)){res.writeHead(304,{'Cache-Control':'private, no-cache'});res.end();return true;}
+          req.guardDownload?.();req.revalidateAccess?.();
+          await req.paceDownload?.(account.avatar_data.length);req.revalidateAccess?.();
+          res.writeHead(200, { 'Content-Type': account.avatar_mime, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff' });res.end(Buffer.from(account.avatar_data));
         } else if (route === '/api/auth/recover' && req.method === 'POST') {
           rateLimit(req, 'recover', 5);
           if (!mail) throw new AccountError(503, '邮件服务尚未配置');

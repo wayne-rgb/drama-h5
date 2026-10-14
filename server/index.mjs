@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import vm from "node:vm";
+import {Readable} from 'node:stream';
 import crypto from "node:crypto";
 import path from "node:path";
 import { URL, fileURLToPath } from "node:url";
@@ -23,6 +24,7 @@ import { RequestGuard, positiveLimit } from './request-guard.mjs';
 import { TrafficBudget } from './traffic-budget.mjs';
 import { createApiPolicy } from './api-policy.mjs';
 import { PersonalStorage } from './personal-storage.mjs';
+import { DownloadProtection,cacheMatches,mp4TransferRate } from './download-protection.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -71,6 +73,10 @@ function serveStatic(req, res, pathname) {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
   const stat = fs.statSync(filePath);
+  const etag=`"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  res.setHeader('ETag',etag);
+  if(cacheMatches(req,etag)){res.writeHead(304);res.end();return true;}
+  req.guardDownload?.();
 
   res.writeHead(200, {
     "Content-Type": contentType,
@@ -82,7 +88,7 @@ function serveStatic(req, res, pathname) {
   const stream = fs.createReadStream(filePath);
   res.once('close', () => stream.destroy());
   stream.once('error', error => { console.error('[静态文件读取失败]:', error.message); res.destroy(); });
-  stream.pipe(res);
+  if(req.sendDownload)req.sendDownload(stream);else stream.pipe(res);
   return true;
 }
 
@@ -99,6 +105,8 @@ const playbackGuard = new PlaybackGuard(process.env, trafficBudget);
 // 封面使用独立并发池，字节与视频共用预算，避免图片下载绕过每日流量上限。
 const coverGuard = new PlaybackGuard({CONTENT_MAX_ACTIVE_STREAMS:64,CONTENT_MAX_VIEWER_STREAMS:16,CONTENT_MAX_IP_STREAMS:64,CONTENT_STREAM_TIMEOUT_MS:60000},trafficBudget,'image/');
 const requestGuard = new RequestGuard(process.env);
+const downloadProtection=new DownloadProtection(process.env);
+const assetGuard=new PlaybackGuard({CONTENT_MAX_ACTIVE_STREAMS:128,CONTENT_MAX_VIEWER_STREAMS:16,CONTENT_MAX_IP_STREAMS:64,CONTENT_STREAM_TIMEOUT_MS:120000},trafficBudget,'');
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore,{allowPrivateTargets:process.env.HG_MANAGED==='1',guardWrite:()=>personalStorage.ensureFree()});
@@ -110,12 +118,13 @@ if (!libraryStore.getMeta("legacyBackendMigrated")) {
 function legacyLibraryHistory(historyStore, libraryStore) { return {
  registerSession: value => historyStore.registerSession(value),
  saveProgress: value => { const result=historyStore.saveProgress(value); if(result.accepted) libraryStore.write({id:`legacy:${value.sessionId}:${value.sequence}`,kind:"history",key:result.item.seriesId,op:"set",at:result.item.updatedAt,value:result.item}); return result; },
- list: () => libraryStore.snapshot().history,
- get: id => libraryStore.snapshot().history.find(item=>item.seriesId===id)||null,
+ list: () => libraryStore.snapshotPage().history,
+ page: options => libraryStore.listPage('history',options),
+ get: id => libraryStore.record('history',id),
  remove: id => { historyStore.remove(id); libraryStore.write({kind:"history",key:id,op:"delete"}); return {ok:true}; },
  clear: () => { historyStore.clear(); libraryStore.write({kind:"history",key:"*",op:"clear"}); return {ok:true}; },
  importLegacy: value => {
-   const result=historyStore.importLegacy(value),existing=new Set(libraryStore.snapshot().history.map(row=>row.seriesId)),requested=new Set(value.items.map(row=>row.seriesId));
+   const result=historyStore.importLegacy(value),existing=new Set(libraryStore.profile().history.map(row=>row.seriesId)),requested=new Set(value.items.map(row=>row.seriesId));
    const operations=historyStore.list(value.source).filter(item=>requested.has(item.seriesId)&&!existing.has(item.seriesId)).map(item=>({id:`legacy-import:${value.clientId}:${item.seriesId}`,kind:"history",key:item.seriesId,op:"set",at:item.updatedAt,value:item}));
    libraryStore.writeBatch(operations);return result;
  }
@@ -223,7 +232,7 @@ function createRecommendations(libraryStore) { return new RecommendationService(
     catch (error) { if (!content.list({ type, page }).length) throw error; items = []; }
     return content.merge(items, { type, tag, tagLabel: OFFICIAL_TAGS.find(item => item.id === tag)?.name || tag, page });
   },
-  readProfile: () => libraryStore.snapshot(),
+  readProfile: () => libraryStore.profile(),
   now: () => Math.round(Date.now()+(libraryStore.getMeta('clockOffset')||0)),
   topics: OFFICIAL_TAGS,
 }); }
@@ -340,7 +349,7 @@ async function proxyWebVideo(req, res, playback) {
     res.writeHead(upstream.status, responseHeaders);
     if (req.method === "HEAD" || upstream.status === 416) { upstream.data.destroy(); res.end(); return; }
     upstream.data.once("error", () => res.destroy());
-    upstream.data.pipe(res);
+    if(req.sendDownload)req.sendDownload(upstream.data);else upstream.data.pipe(res);
   } catch (error) {
     if (res.destroyed || controller.signal.aborted) return;
     if (res.headersSent) res.destroy();
@@ -646,9 +655,27 @@ const server = http.createServer(async (req, res) => {
   catch { return json(res,{error:'请求地址无效'},400); }
   const pathname = u.pathname;
   const isApi = pathname === '/api' || pathname.startsWith('/api/');
+  let downloadAudience,downloadAddress;
+  try{downloadAudience=accounts.audience(req);downloadAddress=accounts.address(req);}catch(error){const failure=publicFailure(error);return json(res,{error:failure.message},failure.status);}
+  const downloadViewer=downloadAudience?`${downloadAudience.guest?'guest':'account'}:${downloadAudience.id}`:`ip:${downloadAddress}`;
+  req.guardDownload=()=>{if(req.downloadMetered)return;const signal=assetGuard.acquire(req,res,downloadViewer,downloadAddress,!!downloadAudience);req.downloadMetered=true;return signal;};
+  req.sendDownload=source=>downloadProtection.pipe(req,res,source,downloadViewer);
+  req.paceDownload=size=>downloadProtection.wait(req,res,downloadViewer,size);
+  const responseEnd=res.end;
+  res.end=function(chunk,encoding,callback){
+    // 观众接口的资料及目录正文也纳入保护，不能通过大型JSON绕过媒体传输统计。
+    // 登录、支付、后台控制和探活保留独立请求保护，资源满额时仍可处理账户及管理故障。
+    if(!req.downloadMetered&&req.method!=='HEAD'&&[200,206].includes(res.statusCode)&&isApi&&!/^\/api\/(auth|account|billing|admin)(\/|$)/.test(pathname)&&(typeof chunk==='string'||ArrayBuffer.isView(chunk))){
+      req.guardDownload();
+      if(req.revalidateAccess&&!req.revalidatePlayback)req.revalidatePlayback=()=>req.revalidateAccess();
+      const body=typeof chunk==='string'?Buffer.from(chunk,typeof encoding==='string'?encoding:undefined):Buffer.from(chunk.buffer,chunk.byteOffset,chunk.byteLength);
+      req.sendDownload(Readable.from((function*(){for(let offset=0;offset<body.length;offset+=65536)yield body.subarray(offset,offset+65536);})()));return this;
+    }
+    return responseEnd.call(this,chunk,encoding,callback);
+  };
 
   if (req.method === "OPTIONS") {
-    try { if (isApi) authorizeApi(req,res,u); }
+    try { requestGuard.acquirePreflight(req,res,accounts.address(req));if (isApi) authorizeApi(req,res,u); }
     catch (error) { const failure=publicFailure(error); return json(res,{error:failure.message},failure.status); }
     res.writeHead(204);
     return res.end();
@@ -656,6 +683,7 @@ const server = http.createServer(async (req, res) => {
 
   // 1. 健康检查
   if (pathname === "/health") {
+    try{requestGuard.acquirePreflight(req,res,accounts.address(req));}catch(error){const failure=publicFailure(error);return json(res,{error:failure.message},failure.status);}
     return json(res, { ok: true });
   }
 
@@ -673,12 +701,13 @@ const server = http.createServer(async (req, res) => {
           req.playbackPrivileged=!!current&&!current.guest&&(accounts.canConfigureSync(current,req)||accountStore.membership(current.id).active);
           checkedAt=Date.now();
         };
-        req.revalidatePlayback(true);return coverGuard.acquire(req,res,viewer,address,!!accounts.audience(req));
+        req.revalidatePlayback(true);const signal=coverGuard.acquire(req,res,viewer,address,!!accounts.audience(req));req.downloadMetered=true;return signal;
       };
       if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
         requestGuard.checkVideo(viewer, address);
         playbackSignal = playbackGuard.acquire(req, res, viewer, address,!!audience);
+        req.downloadMetered=true;
       } else {
         const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience,req);
         requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
@@ -700,7 +729,7 @@ const server = http.createServer(async (req, res) => {
     if (isApi) authorizeApi(req,res,u);
     const securityAction=['/api/auth/login','/api/auth/logout','/api/auth/reset','/api/auth/verify','/api/account/sessions/revoke','/api/account/mfa/setup','/api/account/mfa/enable','/api/account/mfa/verify'].includes(pathname);
     // 保留空间不足时，仍允许登录、退出及验证，便于用户保护账户和管理员处理故障。
-    if(isApi && ['POST','PUT'].includes(req.method) && !securityAction){
+    if(isApi && ['POST','PUT'].includes(req.method) && !securityAction && !(pathname==='/api/library/operations'&&accounts.audience(req))){
       const previous=req.revalidateAccess;
       req.revalidateAccess=()=>{previous?.();personalStorage.ensureFree();};
       req.revalidateAccess();
@@ -919,6 +948,8 @@ const server = http.createServer(async (req, res) => {
     const guardedPlayback = /^\/api\/episodes\/(\d+)\/(qualities|play|stream)$/.exec(pathname);
     if (guardedPlayback) {
       if (!['GET','HEAD'].includes(req.method)) throw new AccountError(405,'请求方式无效');
+      accounts.sameOrigin(req);
+      if(guardedPlayback[2]==='stream'&&!accounts.audience(req)&&!accounts.isLocal(req))throw new AccountError(401,'请刷新页面后重试');
       const seriesId = u.searchParams.get('seriesId') || u.searchParams.get('series_id') || vidToSeriesMap.get(guardedPlayback[1]);
       const resolved = await content.resolveEpisode(req, seriesId, guardedPlayback[1]);
       if (await content.ownPlayback(req,res,guardedPlayback[2],resolved)) return;
@@ -1084,6 +1115,7 @@ const server = http.createServer(async (req, res) => {
           // 在途头部请求不共享取消状态；已完成的真实头部仍回填原缓存复用。
           const stream = { ...cachedStream }; delete stream.preparePromise;
           const prepared = await hgEngine.prepareHeader(stream);
+          req.downloadRate=mp4TransferRate(prepared.total,prepared.header);
           req.revalidatePlayback?.(true);
           cachedStream.prepared ||= prepared;
           const range = byteRange(req.headers.range, prepared.total);
@@ -1114,6 +1146,7 @@ const server = http.createServer(async (req, res) => {
             const chunkEnd = Math.min(offset + chunkSize - 1, end);
             const raw = await hgEngine.remoteRange(stream, offset, chunkEnd);
             const chunk = hgEngine.decryptPartial(raw.data, offset, stream.key, prepared);
+            await req.paceDownload(chunk.length);
             if (res.destroyed) break;
             if (!res.write(chunk)) {
               await new Promise((resolve) => {

@@ -4,6 +4,9 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 
 export const messages = {
   ...analyticsMessages,
+  "资料分页无效": ["Invalid library page", "Página de biblioteca no válida", "Página da biblioteca inválida", "صفحة المكتبة غير صالحة", "Page de bibliothèque non valide"],
+  "资料类型无效": ["Invalid library type", "Tipo de biblioteca no válido", "Tipo de biblioteca inválido", "نوع المكتبة غير صالح", "Type de bibliothèque non valide"],
+  "资料版本无效": ["Invalid library version", "Versión de biblioteca no válida", "Versão da biblioteca inválida", "إصدار المكتبة غير صالح", "Version de bibliothèque non valide"],
   "个人资料存储额度不足，请稍后重试": ["Personal storage limit reached. Please try again later.","Se alcanzó el límite de datos personales. Inténtalo más tarde.","Limite de dados pessoais atingido. Tente novamente mais tarde.","تم بلوغ حد تخزين البيانات الشخصية. حاول لاحقًا.","Limite de stockage personnel atteinte. Réessayez plus tard."],
   "存储空间不足，请稍后重试": ["Storage is temporarily full. Please try again later.","El almacenamiento está lleno. Inténtalo más tarde.","O armazenamento está cheio. Tente novamente mais tarde.","مساحة التخزين ممتلئة مؤقتًا. حاول لاحقًا.","Le stockage est temporairement plein. Réessayez plus tard."],
   "远程同步失败，请检查地址与密钥": ["Sync failed. Check the address and shared key.","Falló la sincronización. Revisa la dirección y la clave.","Falha na sincronização. Verifique o endereço e a chave.","فشلت المزامنة. تحقق من العنوان والمفتاح.","Échec de synchronisation. Vérifiez l’adresse et la clé."],

@@ -8,6 +8,7 @@ const fail = message => { throw new LibraryError(400,message); };
 const text = (value,name,max=256) => typeof value==='string' && value.trim() && value.length<=max ? value : fail(`invalid ${name}`);
 const number = (value,name,min=0,max=Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value)&&value>=min&&value<=max ? value : fail(`invalid ${name}`);
 const contentTypes=['real-drama','comic-drama','ai-drama'];
+const compactableKinds=['history','recommendation','favorite','search'];
 const contentType = value => contentTypes.includes(value) ? value : fail('invalid content type');
 const series = value => ({id:text(value?.id,'series id'),title:text(value?.title,'title',1000),...Object.fromEntries(['cover','description','badge','tags'].map(key=>[key,typeof value[key]==='string'?value[key].slice(0,key==='description'?20000:8192):''])),...(value.contentType==null?{}:{contentType:contentType(value.contentType)})});
 export function validateEvent(input) {
@@ -53,7 +54,7 @@ const fingerprint = event => createHash('sha256').update(JSON.stringify(event)).
 
 export class LibraryStore {
   constructor(filename,{compactLocal=false}={}) {
-    this.compactLocal=compactLocal;this.compactionTicks=0;this.compactionBacklog=false;
+    this.compactLocal=compactLocal;this.compactionTicks=0;this.compactionBacklog=false;this.counts=new Map();this.readInstance=randomUUID();this.mutations=0;
     if(filename!==':memory:')mkdirSync(dirname(filename),{recursive:true});
     this.db=new DatabaseSync(filename);
     if(compactLocal&&this.db.prepare('PRAGMA page_count').get().page_count===0)this.db.exec('PRAGMA auto_vacuum=INCREMENTAL');
@@ -62,6 +63,7 @@ export class LibraryStore {
       CREATE TABLE IF NOT EXISTS library_events(revision INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,device_id TEXT NOT NULL,seq INTEGER NOT NULL,kind TEXT NOT NULL,item_key TEXT NOT NULL,event_time INTEGER NOT NULL,event_json TEXT NOT NULL,fingerprint TEXT NOT NULL,is_local INTEGER NOT NULL,UNIQUE(device_id,seq));
       CREATE INDEX IF NOT EXISTS library_event_item ON library_events(kind,item_key,event_time);
       CREATE TABLE IF NOT EXISTS library_records(kind TEXT NOT NULL,item_key TEXT NOT NULL,event_json TEXT NOT NULL,PRIMARY KEY(kind,item_key));
+      CREATE INDEX IF NOT EXISTS library_record_order ON library_records(kind,json_extract(event_json,'$.at') DESC,json_extract(event_json,'$.deviceId') DESC,json_extract(event_json,'$.seq') DESC);
       CREATE TABLE IF NOT EXISTS library_ack(target TEXT NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(target,event_id));`);
     for(const key of ['deviceId','instanceId'])if(!this.getMeta(key))this.setMeta(key,randomUUID());
     if(compactLocal){
@@ -90,14 +92,14 @@ export class LibraryStore {
       const last=this.getMeta('lastTime')||0;
       const at=input.at??Math.max(clock,Math.abs(last-clock)>300000?clock:last+1);
       const event=validateEvent({...input,id:input.id||randomUUID(),deviceId:this.getMeta('deviceId'),seq,at});
-      if(this.compactLocal&&input.at!=null&&['history','recommendation'].includes(event.kind)){
+      if(this.compactLocal&&input.at!=null&&compactableKinds.includes(event.kind)){
         const floor=this.db.prepare('SELECT event_time FROM library_compact_floor WHERE kind=? AND item_key=?').get(event.kind,event.key);
         // 已整理的旧进度只能作为过期重试确认，不能复活删除记录或覆盖新的续播位置。
         if(floor&&event.at<=floor.event_time)return {...event,ignored:true};
       }
-      if(event.op==='clear'&&this.canCompact()&&['history','recommendation'].includes(event.kind))this.db.prepare("DELETE FROM library_records WHERE kind=? AND item_key<>'*' AND json_extract(event_json,'$.at')<=?").run(event.kind,event.at);
+      if(event.op==='clear'&&this.canCompact()&&compactableKinds.includes(event.kind))this.db.prepare("DELETE FROM library_records WHERE kind=? AND item_key<>'*' AND json_extract(event_json,'$.at')<=?").run(event.kind,event.at);
       this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event,1);
-      if(this.compactLocal&&input.at==null&&['history','recommendation'].includes(event.kind))this.db.prepare('INSERT OR IGNORE INTO library_pins VALUES(?)').run(event.id);
+      if(this.compactLocal&&input.at==null&&compactableKinds.includes(event.kind))this.db.prepare('INSERT OR IGNORE INTO library_pins VALUES(?)').run(event.id);
       return event;
   }
   writeBatch(inputs) {
@@ -141,7 +143,7 @@ export class LibraryStore {
   maintain(force=false){
     if(!this.compactLocal || !force&&!this.compactionBacklog&&this.compactionTicks++%64!==0 || !this.canCompact())return 0;
     const maximum=this.db.prepare('SELECT MAX(revision) AS revision FROM library_events').get().revision||0;
-    const rows=this.db.prepare(`SELECT e.* FROM library_events e WHERE e.kind IN ('history','recommendation') AND e.revision<=? AND NOT EXISTS(SELECT 1 FROM library_pins p WHERE p.id=e.id) AND NOT EXISTS(SELECT 1 FROM library_records r WHERE r.kind=e.kind AND r.item_key=e.item_key AND json_extract(r.event_json,'$.id')=e.id) ORDER BY e.revision LIMIT 512`).all(maximum-256);
+    const rows=this.db.prepare(`SELECT e.* FROM library_events e WHERE e.kind IN ('history','recommendation','favorite','search') AND e.revision<=? AND NOT EXISTS(SELECT 1 FROM library_pins p WHERE p.id=e.id) AND NOT EXISTS(SELECT 1 FROM library_records r WHERE r.kind=e.kind AND r.item_key=e.item_key AND json_extract(r.event_json,'$.id')=e.id) ORDER BY e.revision LIMIT 512`).all(maximum-256);
     this.compactionBacklog=rows.length===512;if(!rows.length)return 0;
     this.transaction(()=>{
       const remove=this.db.prepare('DELETE FROM library_events WHERE id=?'),receipt=this.db.prepare('INSERT OR REPLACE INTO library_receipts VALUES(?,?,?,?,?)'),floor=this.db.prepare('INSERT INTO library_compact_floor VALUES(?,?,?) ON CONFLICT(kind,item_key) DO UPDATE SET event_time=MAX(event_time,excluded.event_time)');
@@ -152,11 +154,12 @@ export class LibraryStore {
     });
     const pages=this.db.prepare('PRAGMA page_count').get().page_count,free=this.db.prepare('PRAGMA freelist_count').get().freelist_count,size=this.db.prepare('PRAGMA page_size').get().page_size;
     if(this.db.prepare('PRAGMA auto_vacuum').get().auto_vacuum===2)this.db.exec('PRAGMA incremental_vacuum(128)');
-    else if(pages*size<=32*1024**2&&free*size>=1024**2&&free>pages*.75)this.db.exec('PRAGMA auto_vacuum=INCREMENTAL; VACUUM');
+    else if(pages*size<=256*1024**2&&free*size>=1024**2&&free>pages*.5)this.db.exec('PRAGMA auto_vacuum=INCREMENTAL; VACUUM');
     this.db.exec('PRAGMA wal_checkpoint(PASSIVE)');
     return rows.length;
   }
   materialize(event) {
+    this.counts.clear();this.mutations++;
     const row=this.db.prepare('SELECT event_json FROM library_records WHERE kind=? AND item_key=?').get(event.kind,event.key);
     if(row&&compareEvents(event,JSON.parse(row.event_json))<=0)return;
     this.db.prepare('INSERT INTO library_records VALUES(?,?,?) ON CONFLICT(kind,item_key) DO UPDATE SET event_json=excluded.event_json').run(event.kind,event.key,JSON.stringify(event));
@@ -171,6 +174,7 @@ export class LibraryStore {
         const previous=JSON.parse(known.event_json);
         if(fingerprint({...previous,at:event.at})!==fingerprint(event))throw new LibraryError(409,'canonical event changed identity');
         if(previous.at!==event.at){
+          this.counts.clear();this.mutations++;
           this.db.prepare('UPDATE library_events SET event_time=?,event_json=? WHERE id=?').run(event.at,JSON.stringify(event),event.id);
           const winner=this.db.prepare('SELECT event_json FROM library_events WHERE kind=? AND item_key=? ORDER BY event_time DESC,device_id DESC,seq DESC LIMIT 1').get(event.kind,event.key);
           this.db.prepare('INSERT INTO library_records VALUES(?,?,?) ON CONFLICT(kind,item_key) DO UPDATE SET event_json=excluded.event_json').run(event.kind,event.key,winner.event_json);
@@ -193,6 +197,37 @@ export class LibraryStore {
   pending(target,limit=256){return this.db.prepare('SELECT event_json FROM library_events WHERE is_local=1 AND id NOT IN(SELECT event_id FROM library_ack WHERE target=?) ORDER BY revision LIMIT ?').all(target,limit).map(row=>JSON.parse(row.event_json));}
   acknowledge(target,ids){this.transaction(()=>{const statement=this.db.prepare('INSERT OR IGNORE INTO library_ack VALUES(?,?)');for(const id of ids)statement.run(target,id);});}
   changes(cursor=0,limit=256){number(cursor,'cursor');number(limit,'limit',1,256);const rows=this.db.prepare('SELECT revision,event_json FROM library_events WHERE revision>? ORDER BY revision LIMIT ?').all(cursor,limit+1);return{events:rows.slice(0,limit).map(row=>({revision:row.revision,...JSON.parse(row.event_json)})),cursor:rows.length?rows[Math.min(rows.length,limit)-1].revision:cursor,hasMore:rows.length>limit};}
+  record(kind,key){
+    const row=this.db.prepare('SELECT event_json FROM library_records WHERE kind=? AND item_key=?').get(kind,key);
+    const clear=this.db.prepare("SELECT event_json FROM library_records WHERE kind=? AND item_key='*'").get(kind),event=row&&JSON.parse(row.event_json);
+    return event?.op==='set'&&(!clear||compareEvents(event,JSON.parse(clear.event_json))>0)?{...event.value,updatedAt:event.at}:null;
+  }
+  listPage(kind,{limit=50,cursor=''}={}){
+    if(!['favorite','history','recommendation','search','preference'].includes(kind))fail('资料类型无效');
+    if(!Number.isSafeInteger(limit)||limit<1||limit>100)fail('资料分页无效');let before=[Number.MAX_SAFE_INTEGER,'\uffff',Number.MAX_SAFE_INTEGER];
+    if(cursor){try{before=JSON.parse(Buffer.from(cursor,'base64url').toString());if(!Array.isArray(before)||before.length!==3||!Number.isSafeInteger(before[0])||typeof before[1]!=='string'||before[1].length>256||!Number.isSafeInteger(before[2]))throw Error();}catch{fail('资料分页无效');}}
+    const row=this.db.prepare("SELECT event_json FROM library_records WHERE kind=? AND item_key='*'").get(kind),clear=row?JSON.parse(row.event_json):{at:-1,deviceId:'',seq:0};
+    const active="kind=? AND json_extract(event_json,'$.op')='set' AND (json_extract(event_json,'$.at'),json_extract(event_json,'$.deviceId'),json_extract(event_json,'$.seq'))>(?,?,?)",bindings=[kind,clear.at,clear.deviceId,clear.seq];
+    if(!this.counts.has(kind))this.counts.set(kind,this.db.prepare(`SELECT COUNT(*) AS count FROM library_records WHERE ${active}`).get(...bindings).count);
+    const rows=this.db.prepare(`SELECT event_json FROM library_records WHERE ${active} AND (json_extract(event_json,'$.at'),json_extract(event_json,'$.deviceId'),json_extract(event_json,'$.seq'))<(?,?,?) ORDER BY json_extract(event_json,'$.at') DESC,json_extract(event_json,'$.deviceId') DESC,json_extract(event_json,'$.seq') DESC LIMIT ?`).all(...bindings,...before,limit+1);
+    const events=[];let bytes=0;
+    for(const row of rows){const size=Buffer.byteLength(row.event_json);if(events.length>=limit||events.length&&bytes+size>1048576)break;events.push(JSON.parse(row.event_json));bytes+=size;}
+    const last=events.at(-1),more=events.length<rows.length;
+    return {items:events.map(event=>({...event.value,...(kind==='preference'?{key:event.key}:{}),...(kind==='recommendation'?{sessionId:event.key.split(':')[0]}:{}),updatedAt:event.at})),count:this.counts.get(kind),next:more&&last?Buffer.from(JSON.stringify([last.at,last.deviceId,last.seq])).toString('base64url'):null};
+  }
+  snapshotPage(){
+    const favorites=this.listPage('favorite'),history=this.listPage('history'),recommendation=this.listPage('recommendation'),preferences=this.listPage('preference'),search=this.listPage('search',{limit:10});
+    return {favorites:favorites.items,history:history.items,recommendationSignals:recommendation.items,searchHistory:search.items.map(item=>item.query),preferences:{quality:'1080P',speed:1,recommendationMode:'mixed',recommendationResetAt:0,...Object.fromEntries(preferences.items.map(item=>[item.key,item.value]))},pagination:{favorite:{next:favorites.next,count:favorites.count},history:{next:history.next,count:history.count},recommendation:{next:recommendation.next,count:recommendation.count}}};
+  }
+  profile(){
+    // 推荐只读取真实偏好字段，不加载完整简介、封面和事件日志。
+    const snapshot=this.snapshotPage();
+    const select=kind=>{
+      const row=this.db.prepare("SELECT event_json FROM library_records WHERE kind=? AND item_key='*'").get(kind),clear=row?JSON.parse(row.event_json):{at:-1,deviceId:'',seq:0};
+      return this.db.prepare("SELECT item_key AS id,json_extract(event_json,'$.value.tags') AS tags,json_extract(event_json,'$.value.badge') AS badge,json_extract(event_json,'$.value.contentType') AS contentType,json_extract(event_json,'$.value.completed') AS completed,json_extract(event_json,'$.value.episodeNumber') AS episodeNumber,json_extract(event_json,'$.value.positionMs') AS positionMs,json_extract(event_json,'$.value.durationMs') AS durationMs,json_extract(event_json,'$.value.watchMs') AS watchMs,json_extract(event_json,'$.value.exposures') AS exposures,json_extract(event_json,'$.value.skips') AS skips,json_extract(event_json,'$.at') AS updatedAt FROM library_records WHERE kind=? AND json_extract(event_json,'$.op')='set' AND (json_extract(event_json,'$.at'),json_extract(event_json,'$.deviceId'),json_extract(event_json,'$.seq'))>(?,?,?)").all(kind,clear.at,clear.deviceId,clear.seq);
+    };
+    return {...snapshot,favorites:select('favorite'),history:select('history').map(({id,...item})=>({...item,seriesId:id,completed:!!item.completed})),recommendationSignals:select('recommendation').map(({id,...item})=>({...item,seriesId:id.split(':')[1],completed:!!item.completed}))};
+  }
   seedTarget(target){if(this.getMeta(`seed:${target}`))return;this.transaction(()=>{
     for(const row of this.db.prepare('SELECT event_json FROM library_records').all()){
       const event=JSON.parse(row.event_json);

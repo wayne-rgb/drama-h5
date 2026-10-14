@@ -34,7 +34,7 @@ export function createHistoryHandler(store) {
       if (req.method === 'POST' && url.pathname === '/api/history/sessions') json(res, store.registerSession(await body(req)));
       else if (req.method === 'POST' && url.pathname === '/api/history/progress') json(res, store.saveProgress(await body(req)));
       else if (req.method === 'POST' && url.pathname === '/api/history/import') json(res, store.importLegacy(await body(req)));
-      else if (req.method === 'GET' && url.pathname === '/api/history') json(res, { items: store.list(platform) });
+      else if (req.method === 'GET' && url.pathname === '/api/history') json(res, store.page?store.page({cursor:url.searchParams.get('cursor')||'',limit:Number(url.searchParams.get('limit')||50)}):{ items: store.list(platform) });
       else if (req.method === 'DELETE' && url.pathname === '/api/history') json(res, store.clear(platform));
       else if (['GET', 'DELETE'].includes(req.method) && /^\/api\/history\/[^/]+$/.test(url.pathname)) {
         let id;

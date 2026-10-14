@@ -54,6 +54,12 @@ export class RequestGuard {
     this.rate([[`static:ip:${address}`, this.ip], ['static:global', this.global]]);
     this.activate(req, res, [['all', this.maximum], [`static:ip:${address}`, 64]]);
   }
+  acquirePreflight(req,res,address){
+    // 预检和探活独立计数，不能绕过保护，也不能挤占正常接口轮询额度。
+    const probe=req.url?.split('?')[0]==='/health',scope=probe?'probe':'preflight';
+    this.rate([[`${scope}:ip:${address}`,probe?120:this.ip],[`${scope}:global`,probe?600:this.global]]);
+    this.activate(req,res,[[scope,probe?16:32],[`${scope}:ip:${address}`,8]]);
+  }
   activate(req, res, entries) {
     if (entries.some(([key, maximum]) => (this.active.get(key) || 0) >= maximum)) throw new AccountError(429, '操作过于频繁，请稍后重试');
     for (const [key] of entries) this.active.set(key, (this.active.get(key) || 0) + 1);
