@@ -4,6 +4,18 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 
 export const messages = {
   ...analyticsMessages,
+  "选择短剧后按集审核评论": ["Choose a drama, then moderate its episodes", "Elige un drama y modera sus episodios", "Escolha um drama e modere seus episódios", "اختر مسلسلاً ثم راجع تعليقات حلقاته", "Choisissez une série, puis modérez ses épisodes"],
+  "搜索剧名": ["Search drama titles", "Buscar por título", "Buscar por título", "البحث باسم المسلسل", "Rechercher par titre"],
+  "选择分集": ["Choose an episode", "Elegir episodio", "Escolher episódio", "اختيار حلقة", "Choisir un épisode"],
+  "全部分集": ["All episodes", "Todos los episodios", "Todos os episódios", "جميع الحلقات", "Tous les épisodes"],
+  "评论数量：{{count}}": ["Comments: {{count}}", "Comentarios: {{count}}", "Comentários: {{count}}", "التعليقات: {{count}}", "Commentaires : {{count}}"],
+  "举报数量：{{count}}": ["Reports: {{count}}", "Denuncias: {{count}}", "Denúncias: {{count}}", "البلاغات: {{count}}", "Signalements : {{count}}"],
+  "当前范围暂无评论": ["No comments in this selection", "No hay comentarios en esta selección", "Nenhum comentário nesta seleção", "لا توجد تعليقات ضمن هذا الاختيار", "Aucun commentaire dans cette sélection"],
+  "没有匹配的短剧": ["No matching dramas", "No se encontraron dramas", "Nenhum drama encontrado", "لا توجد مسلسلات مطابقة", "Aucune série correspondante"],
+  "剧名暂不可用": ["Drama title unavailable", "Título no disponible", "Título indisponível", "اسم المسلسل غير متاح", "Titre de série indisponible"],
+  "集数暂不可用": ["Episode number unavailable", "Número de episodio no disponible", "Número do episódio indisponível", "رقم الحلقة غير متاح", "Numéro d’épisode indisponible"],
+  "已移除分集": ["Removed episode", "Episodio retirado", "Episódio removido", "حلقة تمت إزالتها", "Épisode retiré"],
+  "评论筛选无效": ["Invalid comment filter", "Filtro de comentarios no válido", "Filtro de comentários inválido", "تصفية التعليقات غير صالحة", "Filtre de commentaires non valide"],
   "请求地址无效": ["Invalid request address", "Dirección de solicitud no válida", "Endereço da solicitação inválido", "عنوان الطلب غير صالح", "Adresse de requête non valide"],
   "网络连接中断，请检查网络后重试": ["Connection interrupted. Check your network and retry.", "Conexión interrumpida. Revisa la red e inténtalo de nuevo.", "Conexão interrompida. Verifique a rede e tente novamente.", "انقطع الاتصال. تحقق من الشبكة وأعد المحاولة.", "Connexion interrompue. Vérifiez le réseau et réessayez."],
   "追剧、观看历史和偏好自动保存到你的账户": ["Your watchlist, history and preferences are saved to your account", "Tu lista, historial y preferencias se guardan en tu cuenta", "Sua lista, histórico e preferências são salvos na sua conta", "تُحفظ قائمة المتابعة والسجل والتفضيلات في حسابك", "Votre liste, historique et préférences sont enregistrés dans votre compte"],

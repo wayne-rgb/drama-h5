@@ -6,6 +6,7 @@ import { ContentStore, textValue } from './content-store.mjs';
 import { createUploads } from './content-upload.mjs';
 import { readJson } from '../shared/http-json.mjs';
 import { ContentAnalytics } from './content-analytics.mjs';
+import { CommentModeration } from './comment-moderation.mjs';
 
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
@@ -37,6 +38,7 @@ export function createContentService(directory, accountStore, accounts, provider
     if (enforce && required && !isAdmin(viewer) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
     return { series, episode: series.episodes[index], viewer, required };
   };
+  const commentModeration = new CommentModeration(store, detail);
   const streamFile = (req, res, asset, quality) => {
     const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
     let start = 0, end = stat.size - 1, status = 200;
@@ -142,7 +144,8 @@ export function createContentService(directory, accountStore, accounts, provider
           accountStore.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET period_end=excluded.period_end,admin_id=excluded.admin_id,reason=excluded.reason,updated_at=excluded.updated_at').run(user.id, end, admin.id, reason, Date.now());
           store.audit(admin, data.revoke ? '撤销手动会员' : '开通手动会员', user.id, { periodEnd: end, reason }); reply(res, { user: accountStore.publicAccount(user) });
         }
-        else if (route === '/api/admin/comments' && req.method === 'GET') reply(res, { items: store.db.prepare("SELECT c.*, (SELECT COUNT(*) FROM comment_reports r WHERE r.comment_id=c.id) AS reports FROM episode_comments c ORDER BY reports DESC,c.created_at DESC LIMIT 100 OFFSET ?").all(offset).map(row => ({ ...row, author: accountStore.byId(row.account_id)?.name || '—' })) });
+        else if (route === '/api/admin/comment-series' && req.method === 'GET') reply(res, await commentModeration.series(url.searchParams));
+        else if (route === '/api/admin/comments' && req.method === 'GET') { const data=await commentModeration.comments(url.searchParams); reply(res,{...data,items:data.items.map(({account_id,...row})=>({...row,author:accountStore.byId(account_id)?.name || '—'}))}); }
         else if (moderation && req.method === 'POST') { const data = await input(); if (!['visible', 'hidden', 'deleted'].includes(data.status)) throw new AccountError(400, '评论状态无效'); store.db.prepare('UPDATE episode_comments SET status=? WHERE id=?').run(data.status, moderation[1]); store.audit(admin, '处理评论', moderation[1], { status: data.status }); reply(res, { ok: true }); }
         else if (route === '/api/admin/audit' && req.method === 'GET') reply(res, { items: store.db.prepare('SELECT * FROM content_audit ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(offset) });
         else throw new AccountError(404, '管理接口不存在');
@@ -161,7 +164,7 @@ export function createContentService(directory, accountStore, accounts, provider
           const before = match ? Number(match[1]) : Date.now()+1, beforeId = match?.[2] || '';
           const rows = store.db.prepare("SELECT * FROM episode_comments WHERE episode_id=? AND status='visible' AND (created_at<? OR created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT 31").all(social[1], before, before, beforeId);
           reply(res, { items: rows.slice(0,30).map(row => ({ id: row.id, body: row.body, author: accountStore.byId(row.account_id)?.name || '—', own: viewer?.id === row.account_id, createdAt: row.created_at })), next: rows.length > 30 ? `${rows[29].created_at}:${rows[29].id}` : null });
-        } else if (social[2] === 'comments' && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req, user); const data = await input(), body = textValue(data.body, '评论', 1000); const id = crypto.randomUUID(); store.transaction(()=>{store.db.prepare('INSERT INTO episode_comments(id,episode_id,series_id,account_id,body,created_at) VALUES(?,?,?,?,?,?)').run(id, social[1], url.searchParams.get('seriesId'), user.id, body, Date.now());analytics.feedback(resolved.series.id,social[1],'comment');}); reply(res, { id }); }
+        } else if (social[2] === 'comments' && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req, user); const data = await input(), body = textValue(data.body, '评论', 1000); const id = crypto.randomUUID(); store.transaction(()=>{commentModeration.remember(resolved.series);store.db.prepare('INSERT INTO episode_comments(id,episode_id,series_id,account_id,body,created_at) VALUES(?,?,?,?,?,?)').run(id, social[1], url.searchParams.get('seriesId'), user.id, body, Date.now());analytics.feedback(resolved.series.id,social[1],'comment');}); reply(res, { id }); }
         else throw new AccountError(405, '请求方式无效');
         return true;
       }

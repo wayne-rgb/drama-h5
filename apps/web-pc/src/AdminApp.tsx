@@ -8,6 +8,7 @@ import { Detail, CategoryTag } from './types';
 import { api } from './api';
 import AdminUploadQueue from './AdminUploadQueue';
 import AnalyticsDashboard from './AnalyticsDashboard';
+import CommentModeration from './CommentModeration';
 import { CreatorAccessControl, SeriesCreatorControl } from './CreatorControls';
 import './account.css';
 import './admin.css';
@@ -39,7 +40,7 @@ export default function AdminApp() {
     setSeries(rows=>rows.map(row=>row.id===data.id?data:row));
     if(selectedRef.current?.id===data.id){setSelected(data);setCoverId(data.coverId||'');setNumber(Math.max(0,...data.episodes.map(ep=>ep.number))+1);}
   };
-  const [accounts,setAccounts] = useState<Account[]>([]), [comments,setComments] = useState<any[]>([]), [audit,setAudit] = useState<any[]>([]), [query,setQuery] = useState('');
+  const [accounts,setAccounts] = useState<Account[]>([]), [audit,setAudit] = useState<any[]>([]), [query,setQuery] = useState('');
   const [title,setTitle] = useState(''), [description,setDescription] = useState(''), [tags,setTags] = useState(''), [contentType,setContentType] = useState('real-drama'), [contentLanguage,setContentLanguage] = useState('en'), [coverId,setCoverId] = useState('');
   const [genres,setGenres] = useState<CategoryTag[]>([]), [genreIds,setGenreIds] = useState<string[]>([]), [genresLoading,setGenresLoading] = useState(false);
   useEffect(()=>{
@@ -62,7 +63,6 @@ export default function AdminApp() {
     try {
     if(tab==='series'){const rows=(await adminRequest(`series?q=${encodeURIComponent(query)}&page=${page}`)).items;setSeries(rows);setPageSize(rows.length);}
     if(tab==='accounts'){const rows=(await adminRequest(`accounts?q=${encodeURIComponent(query)}&page=${page}`)).items;setAccounts(rows);setPageSize(rows.length);}
-    if(tab==='comments'){const rows=(await adminRequest(`comments?page=${page}`)).items;setComments(rows);setPageSize(rows.length);}
     if(tab==='audit'){const rows=(await adminRequest(`audit?page=${page}`)).items;setAudit(rows);setPageSize(rows.length);}
     } finally { setLoading(false); }
   };
@@ -133,11 +133,11 @@ export default function AdminApp() {
       </>}
       </section><AdminUploadQueue key={account.session.user.id} accountId={account.session.user.id} series={selected} visible={tab==='series'&&!!selected} onUpdated={uploaded} onActivity={setUploadingSeries}/></div></div>
     {tab==='accounts'&&<section className="admin-panel"><h2>{t('用户与会员')}</h2><p>{t('手动会员与支付订阅独立，撤销手动会员不会取消付费订阅')}</p>{accounts.map(user=><button className="admin-account-row" key={user.id} onClick={()=>{setMember(user);setEnd(defaultVipEnd(user));setReason('');}}><strong>{user.name}</strong><span>{user.email}</span><span>{t(user.membership.active?'VIP会员':'普通账户')}</span></button>)}{member&&<form onSubmit={event=>{event.preventDefault();void run(async()=>{await adminRequest('membership',{accountId:member.id,periodEnd:new Date(`${end}T23:59:59`).getTime(),reason});await load();setMember(null);});}}><h3>{member.email}</h3><label>{t('有效期至')}<input required type="date" value={end} onChange={event=>setEnd(event.target.value)}/></label><label>{t('操作原因')}<input required maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></label><button disabled={busy}>{t('开通或延长VIP')}</button><button type="button" disabled={busy||!reason.trim()} onClick={()=>void run(async()=>{await adminRequest('membership',{accountId:member.id,revoke:true,reason});await load();setMember(null);})}>{t('撤销手动会员')}</button></form>}</section>}
-    {tab==='comments'&&<section className="admin-panel"><div className="admin-panel-title"><h2>{t('评论管理')}</h2><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button></div>{comments.map(row=><article className="admin-comment-row" key={row.id}><strong>{row.author}</strong><p dir="auto">{row.body}</p><small>{row.series_id} / {row.episode_id} · {t(statusLabels[row.status])} · {t('举报')} {row.reports}</small>{(['visible','hidden','deleted'] as const).map(status=><button key={status} disabled={busy||row.status===status} onClick={()=>void run(async()=>{await adminRequest(`comments/${row.id}`,{status});await load();})}>{t(statusLabels[status])}</button>)}</article>)}</section>}
+    {tab==='comments'&&<CommentModeration key={account.session.user.id}/>}
     {tab==='audit'&&<section className="admin-panel"><h2>{t('操作记录')}</h2><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button>{audit.map(row=><article className="admin-comment-row" key={row.id}><strong>{localizeLabel(row.action)}</strong><p>{row.target_id}</p><small>{row.admin_id} · {formatDate(row.created_at,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><pre>{row.detail}</pre></article>)}</section>}
     {tab==='analytics'&&<AnalyticsDashboard initialSeriesId={analyticsSeriesId}/>}
     {tab==='accounts'&&member&&<section className="admin-panel"><CreatorAccessControl key={member.id} user={member} onChanged={()=>{void load();}}/></section>}
-    {tab!=='analytics'&&<nav className="admin-pagination"><button disabled={busy||page<=1} onClick={()=>setPage(value=>value-1)}>{t('上一页')}</button><span>{t('第{{number}}页',{number:page})}</span><button disabled={busy||pageSize<(tab==='series'?24:100)} onClick={()=>setPage(value=>value+1)}>{t('下一页')}</button></nav>}
+    {tab!=='analytics'&&tab!=='comments'&&<nav className="admin-pagination"><button disabled={busy||page<=1} onClick={()=>setPage(value=>value-1)}>{t('上一页')}</button><span>{t('第{{number}}页',{number:page})}</span><button disabled={busy||pageSize<(tab==='series'?24:100)} onClick={()=>setPage(value=>value+1)}>{t('下一页')}</button></nav>}
     </main>
     </div>
   </div>;
