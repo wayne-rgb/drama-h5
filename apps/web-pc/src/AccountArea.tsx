@@ -80,8 +80,9 @@ export function AccountHome(props: AreaProps & { histories: HistoryItem[]; onRes
   </div>;
 }
 
-export function AccountDialogs({ panel, onPanel, session, sessionError, onRefresh }: { panel: AccountPanel; onPanel: (panel: AccountPanel) => void; session: AccountSession | null; sessionError: string; onRefresh: () => Promise<void> }) {
+export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessionError, onRefresh }: { panel: AccountPanel; onPanel: (panel: AccountPanel) => void; session: AccountSession | null; sessionError: string; onRefresh: () => Promise<void> }) {
   const { t, localizeError, formatDate, language } = useI18n();
+  const panel = requestedPanel === "profile" && session && !session.user ? "login" : requestedPanel;
   const dialog = useRef<HTMLDialogElement>(null), file = useRef<HTMLInputElement>(null);
   const [email, setEmail] = useState(""), [password, setPassword] = useState(""), [name, setName] = useState(""), [avatar, setAvatar] = useState<string | null>(null);
   const [error, setError] = useState(""), [notice, setNotice] = useState<MessageKey | "">(""), [busy, setBusy] = useState(false), [planId, setPlanId] = useState("annual");
