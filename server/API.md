@@ -517,15 +517,19 @@ H5 普通账户和游客不能配置家庭同步，也不会启动旧家庭同�
 | `DELETE /api/admin/series/:id/episodes/:episodeId` | 从草稿移除分集，原文件保留 |
 | `POST /api/admin/series/:id/reorder` | 传入完整 `ids` 数组调整连续集序 |
 | `POST /api/admin/series/:id/publish` | `status` 为 `published` 或 `draft`；缺封面、缺分集、集数不连续不能发布 |
-| `POST /api/admin/uploads` | 使用文件名、大小、MIME 与 `kind` 创建真实上传记录 |
+| `POST /api/admin/uploads` | 使用文件名、大小、MIME 与 `kind` 创建真实上传记录；管理端同时传入 `seriesId`，视频另传 `number`，记录实际剧集归属 |
 | `PUT /api/admin/uploads/:id` | 二进制分块，每块不超过 1MB，携带 `Content-Range: bytes 起点-终点/总大小` |
 | `GET /api/admin/uploads/:id`、`GET /api/admin/uploads?page=1` | 读取断点、处理状态与错误，恢复上传或轮询处理结果 |
 | `DELETE /api/admin/uploads/:id` | 上传所属管理员取消未完成上传，释放待处理额度并清理临时文件；写入或处理期间需稍后重试，已完成素材保留 |
 | `GET /api/admin/accounts?q=&page=1` | 查询真实账户及会员状态，不返回密码和会话令牌 |
 | `POST /api/admin/membership` | `accountId`、毫秒时间戳 `periodEnd`、`reason` 开通手动会员；`revoke:true` 撤销手动权益 |
-| `GET /api/admin/comments?page=1` | 查询评论和举报数 |
+| `GET /api/admin/comment-series?q=&page=1` | 按真实剧名搜索评论审核剧列表，显示评论与举报数量 |
+| `GET /api/admin/comments?seriesId=&episodeId=&page=1` | 必须选择剧，可进一步筛选所属集；返回剧名、集数、评论和举报数 |
 | `POST /api/admin/comments/:id` | `status` 为 `visible`、`hidden` 或 `deleted`，记录管理操作 |
-| `GET /api/admin/audit?page=1` | 查询上传、内容发布、会员及审核操作记录 |
+| `GET /api/admin/audit-series?q=&page=1` | 按剧组织内容操作记录，返回剧名、记录数量及未关联作品的历史记录数量 |
+| `GET /api/admin/audit?seriesId=&episodeId=&page=1` | 查询指定剧、集的上传、发布、编辑及审核记录，返回实际名称、操作人和可读的操作详情 |
+| `GET /api/admin/audit?scope=platform&page=1` | 查询账户、会员和创作者权限操作，显示账户姓名与邮箱 |
+| `GET /api/admin/audit?unassigned=1&page=1` | 保留确实无法关联到剧的历史内容操作，不猜测归属 |
 | `GET /api/episodes/:id/interactions?seriesId=` | 单集真实点赞数、评论数和当前账户点赞状态 |
 | `POST /api/episodes/:id/likes?seriesId=` | 登录后传入布尔值 `liked`，同一账户重复请求不重复计数 |
 | `GET /api/me/likes?before=` | 当前登录账户点赞的单集、真实总数及下一页 `next` 游标；`summary=1` 只返回总数，不接受指定其他账户 |

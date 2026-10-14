@@ -16,14 +16,14 @@ export function CreatorAccessControl({ user, onChanged }: { user: Account; onCha
 }
 export function SeriesCreatorControl({ seriesId, creatorId, onChanged }: { seriesId: string; creatorId: string | null; onChanged: (data: any) => void }) {
   const { t, localizeError } = useI18n();
-  const [creators, setCreators] = useState<Account[]>([]), [selected, setSelected] = useState(creatorId || ''), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [creators, setCreators] = useState<Account[]>([]), [assigned,setAssigned]=useState<Account|null>(null), [loading,setLoading]=useState(true), [selected, setSelected] = useState(creatorId || ''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   useEffect(() => { setSelected(creatorId || ''); }, [seriesId, creatorId]);
   useEffect(() => {
-    let active = true;
-    accountRequest('/api/admin/creators').then(data => { if (active) setCreators(data.items); }).catch(error => { if (active) setError(accountError(error)); });
+    let active = true;setLoading(true);setAssigned(null);setError('');
+    accountRequest(`/api/admin/creators?seriesId=${encodeURIComponent(seriesId)}`).then(data => { if (active) {setCreators(data.items);setAssigned(data.assignedCreator);} }).catch(error => { if (active) setError(accountError(error)); }).finally(()=>{if(active)setLoading(false);});
     return () => { active = false; };
-  }, [seriesId]);
-  return <div className="analytics-owner"><label>{t('作品归属')}<select value={selected} onChange={event => setSelected(event.target.value)}><option value="">{t('未分配创作者')}</option>{creatorId && !creators.some(user => user.id === creatorId) && <option value={creatorId}>{creatorId}</option>}{creators.map(user => <option key={user.id} value={user.id}>{user.name} · {user.email}</option>)}</select></label><button type="button" disabled={busy || selected === (creatorId || '')} onClick={async () => {
+  }, [seriesId,creatorId]);
+  return <div className="analytics-owner"><label>{t('作品归属')}<select disabled={loading||busy} value={selected} onChange={event => setSelected(event.target.value)}><option value="">{t('未分配创作者')}</option>{creatorId && !creators.some(user => user.id === creatorId) && <option value={creatorId}>{loading ? t('加载中...') : assigned ? `${assigned.name} · ${assigned.email} · ${t('创作者权限已撤销')}` : t('创作者资料暂不可用')}</option>}{creators.map(user => <option key={user.id} value={user.id}>{user.name} · {user.email}</option>)}</select></label><button type="button" disabled={loading||busy || selected === (creatorId || '')} onClick={async () => {
     setBusy(true); setError('');
     try { onChanged(await accountRequest(`/api/admin/series/${seriesId}/creator`, { creatorId: selected || null })); }
     catch (error) { setError(accountError(error)); }

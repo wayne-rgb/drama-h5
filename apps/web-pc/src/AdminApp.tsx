@@ -9,6 +9,7 @@ import { api } from './api';
 import AdminUploadQueue from './AdminUploadQueue';
 import AnalyticsDashboard from './AnalyticsDashboard';
 import CommentModeration from './CommentModeration';
+import AuditLog from './AuditLog';
 import { CreatorAccessControl, SeriesCreatorControl } from './CreatorControls';
 import './account.css';
 import './admin.css';
@@ -40,7 +41,7 @@ export default function AdminApp() {
     setSeries(rows=>rows.map(row=>row.id===data.id?data:row));
     if(selectedRef.current?.id===data.id){setSelected(data);setCoverId(data.coverId||'');setNumber(Math.max(0,...data.episodes.map(ep=>ep.number))+1);}
   };
-  const [accounts,setAccounts] = useState<Account[]>([]), [audit,setAudit] = useState<any[]>([]), [query,setQuery] = useState('');
+  const [accounts,setAccounts] = useState<Account[]>([]), [query,setQuery] = useState('');
   const [title,setTitle] = useState(''), [description,setDescription] = useState(''), [tags,setTags] = useState(''), [contentType,setContentType] = useState('real-drama'), [contentLanguage,setContentLanguage] = useState('en'), [coverId,setCoverId] = useState('');
   const [genres,setGenres] = useState<CategoryTag[]>([]), [genreIds,setGenreIds] = useState<string[]>([]), [genresLoading,setGenresLoading] = useState(false);
   useEffect(()=>{
@@ -63,7 +64,6 @@ export default function AdminApp() {
     try {
     if(tab==='series'){const rows=(await adminRequest(`series?q=${encodeURIComponent(query)}&page=${page}`)).items;setSeries(rows);setPageSize(rows.length);}
     if(tab==='accounts'){const rows=(await adminRequest(`accounts?q=${encodeURIComponent(query)}&page=${page}`)).items;setAccounts(rows);setPageSize(rows.length);}
-    if(tab==='audit'){const rows=(await adminRequest(`audit?page=${page}`)).items;setAudit(rows);setPageSize(rows.length);}
     } finally { setLoading(false); }
   };
   useEffect(()=>{if(account.session?.capabilities.admin)void load().catch(error=>setError(accountError(error)));},[tab,page,account.session?.user?.id]);
@@ -106,7 +106,7 @@ export default function AdminApp() {
         <div className="admin-genre-options" role="group" aria-label={t('选择分类')}><strong>{t('选择分类')}</strong>{genresLoading&&<span>{t('加载中...')}</span>}{genres.map(genre=><button type="button" key={genre.id} aria-pressed={genreIds.includes(genre.id)} onClick={()=>setGenreIds(current=>current.includes(genre.id)?current.filter(id=>id!==genre.id):[...current,genre.id])}>{localizeLabel(genre.name)}</button>)}</div>
         <label>{t('分类标签')}<input maxLength={500} value={tags} onChange={event=>setTags(event.target.value)}/></label>
         <label>{t('内容语言')}<select value={contentLanguage} onChange={event=>setContentLanguage(event.target.value)}>{languages.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-        <label>{t('封面')}<select value={coverId} onChange={event=>setCoverId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{selectedAssets.filter(asset=>asset.kind==='image'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+          <label>{t('封面')}<select value={coverId} onChange={event=>setCoverId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{selectedAssets.filter(asset=>asset.kind==='image'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{t('封面')} · {asset.name}</option>)}</select></label>
         <button disabled={busy}>{t(selected?'保存基本信息':'保存并上传')}</button>
       </form></details>
       {selected&&<>
@@ -120,11 +120,11 @@ export default function AdminApp() {
         });}}>
           <label>{t('集数')}<input type="number" min={1} max={10000} required value={number} onChange={event=>setNumber(Number(event.target.value))}/></label>
           <label>{t('分集标题')}<input maxLength={200} value={episodeTitle} onChange={event=>setEpisodeTitle(event.target.value)}/></label>
-          <label>{t('视频')}<select required value={assetId} onChange={event=>setAssetId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{selectedAssets.filter(asset=>asset.kind==='video'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+          <label>{t('视频')}<select required value={assetId} onChange={event=>setAssetId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{selectedAssets.filter(asset=>asset.kind==='video'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{selected.episodes.filter(episode=>episode.assetId===asset.id).map(episode=>t('第{{number}}集',{number:episode.number})).join(' / ')} · {asset.name}</option>)}</select></label>
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)}>{t('保存分集')}</button>
         </form></details>
         <div className="admin-episodes">{selected.episodes.map((ep,index)=><div key={ep.id}>
-          <span>{ep.number}. {ep.title} · {t(index<3?'免费':'VIP会员')}</span>
+          <span>{t('第{{number}}集',{number:ep.number})}{ep.title!==`第${ep.number}集`&&<> · <bdi>{ep.title}</bdi></>} · {t(index<3?'免费':'VIP会员')}</span>
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===0} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index-1],ids[index]]=[ids[index],ids[index-1]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('上移')}</button>
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===selected.episodes.length-1} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index],ids[index+1]]=[ids[index+1],ids[index]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('下移')}</button>
           <button disabled={busy||selected.status==='published'} onClick={()=>{setNumber(ep.number);setEpisodeTitle(ep.title);setAssetId(ep.assetId);}}>{t('编辑')}</button>
@@ -134,10 +134,10 @@ export default function AdminApp() {
       </section><AdminUploadQueue key={account.session.user.id} accountId={account.session.user.id} series={selected} visible={tab==='series'&&!!selected} onUpdated={uploaded} onActivity={setUploadingSeries}/></div></div>
     {tab==='accounts'&&<section className="admin-panel"><h2>{t('用户与会员')}</h2><p>{t('手动会员与支付订阅独立，撤销手动会员不会取消付费订阅')}</p>{accounts.map(user=><button className="admin-account-row" key={user.id} onClick={()=>{setMember(user);setEnd(defaultVipEnd(user));setReason('');}}><strong>{user.name}</strong><span>{user.email}</span><span>{t(user.membership.active?'VIP会员':'普通账户')}</span></button>)}{member&&<form onSubmit={event=>{event.preventDefault();void run(async()=>{await adminRequest('membership',{accountId:member.id,periodEnd:new Date(`${end}T23:59:59`).getTime(),reason});await load();setMember(null);});}}><h3>{member.email}</h3><label>{t('有效期至')}<input required type="date" value={end} onChange={event=>setEnd(event.target.value)}/></label><label>{t('操作原因')}<input required maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></label><button disabled={busy}>{t('开通或延长VIP')}</button><button type="button" disabled={busy||!reason.trim()} onClick={()=>void run(async()=>{await adminRequest('membership',{accountId:member.id,revoke:true,reason});await load();setMember(null);})}>{t('撤销手动会员')}</button></form>}</section>}
     {tab==='comments'&&<CommentModeration key={account.session.user.id}/>}
-    {tab==='audit'&&<section className="admin-panel"><h2>{t('操作记录')}</h2><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button>{audit.map(row=><article className="admin-comment-row" key={row.id}><strong>{localizeLabel(row.action)}</strong><p>{row.target_id}</p><small>{row.admin_id} · {formatDate(row.created_at,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><pre>{row.detail}</pre></article>)}</section>}
+    {tab==='audit'&&<AuditLog key={account.session.user.id}/>}
     {tab==='analytics'&&<AnalyticsDashboard initialSeriesId={analyticsSeriesId}/>}
     {tab==='accounts'&&member&&<section className="admin-panel"><CreatorAccessControl key={member.id} user={member} onChanged={()=>{void load();}}/></section>}
-    {tab!=='analytics'&&tab!=='comments'&&<nav className="admin-pagination"><button disabled={busy||page<=1} onClick={()=>setPage(value=>value-1)}>{t('上一页')}</button><span>{t('第{{number}}页',{number:page})}</span><button disabled={busy||pageSize<(tab==='series'?24:100)} onClick={()=>setPage(value=>value+1)}>{t('下一页')}</button></nav>}
+    {(tab==='series'||tab==='accounts')&&<nav className="admin-pagination"><button disabled={busy||page<=1} onClick={()=>setPage(value=>value-1)}>{t('上一页')}</button><span>{t('第{{number}}页',{number:page})}</span><button disabled={busy||pageSize<(tab==='series'?24:100)} onClick={()=>setPage(value=>value+1)}>{t('下一页')}</button></nav>}
     </main>
     </div>
   </div>;

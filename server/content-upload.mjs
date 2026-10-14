@@ -101,6 +101,8 @@ export function createUploads(store, directory, config = process.env) {
     create(admin, input) {
       if (!['video', 'image'].includes(input.kind) || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > (input.kind === 'image' ? 8 * 1024 ** 2 : maximum)) throw new AccountError(400, '上传类型或文件大小无效');
       if (input.kind === 'video' ? input.mime !== 'video/mp4' : !['image/jpeg', 'image/png', 'image/webp'].includes(input.mime)) throw new AccountError(400, '视频需为MP4，封面需为JPEG、PNG或WebP');
+      if (input.seriesId!==undefined && (!/^\d{1,40}$/.test(input.seriesId) || !store.row(input.seriesId))) throw new AccountError(400,'短剧不存在');
+      if (input.seriesId!==undefined && input.kind==='video' && (!Number.isInteger(input.number) || input.number<1 || input.number>10000)) throw new AccountError(400,'集数无效');
       const pending = store.db.prepare("SELECT COUNT(*) AS count FROM content_assets WHERE status IN ('uploading','processing')").get().count;
       if (pending >= 20) throw new AccountError(429, '待处理上传过多，请先完成已有上传');
       const id = crypto.randomUUID();
@@ -108,6 +110,7 @@ export function createUploads(store, directory, config = process.env) {
       try {
         store.transaction(() => {
           store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,created_at) VALUES(?,?,?,?,?,?,?)').run(id, admin.id, String(input.name || '').slice(0, 200), input.kind, input.mime, input.size, Date.now());
+          if (input.seriesId) store.db.prepare('UPDATE content_assets SET series_id=?,episode_number=? WHERE id=?').run(input.seriesId,input.kind==='video'?input.number:null,id);
         });
       } catch (error) { fs.unlinkSync(filePath(id, '.part')); throw error; }
       return store.asset(id);

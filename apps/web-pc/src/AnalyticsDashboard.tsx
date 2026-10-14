@@ -29,7 +29,7 @@ export default function AnalyticsDashboard({ initialSeriesId = '' }: { initialSe
   const [report, setReport] = useState<Report | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [revision, setRevision] = useState(0), [search, setSearch] = useState('');
   const [episodeKey, setEpisodeKey] = useState(''), [compareKey, setCompareKey] = useState(''), [commentPage, setCommentPage] = useState(1);
-  const [seriesTitle, setSeriesTitle] = useState(''), [episodeTitle, setEpisodeTitle] = useState('');
+  const [seriesTitle, setSeriesTitle] = useState(''), [episodeTitle, setEpisodeTitle] = useState(''), [episodeNumber,setEpisodeNumber]=useState<number|null>(null);
   const number = (value: number) => new Intl.NumberFormat(language).format(value);
   const percent = (value: number | null) => value === null ? '—' : new Intl.NumberFormat(language, { style: 'percent', maximumFractionDigits: 1 }).format(value);
   const time = (value: number) => `${number(Math.round(value / 60000 * 10) / 10)} ${t('分钟')}`;
@@ -40,18 +40,19 @@ export default function AnalyticsDashboard({ initialSeriesId = '' }: { initialSe
       if (!active) return;
       setReport(data);
       if (seriesId) setSeriesTitle(data.series[0]?.title || '');
-      if (episodeId) setEpisodeTitle(data.episodeGroups[0]?.title || '');
+      if (episodeId) {setEpisodeTitle(data.episodeGroups[0]?.title || '');setEpisodeNumber(data.episodeGroups[0]?.number || null);}
     }).catch(error => { if (active) setError(accountError(error)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [seriesId, episodeId, start, end, revision, commentPage]);
   const enterSeries = (id: string, title: string) => { setSeriesId(id); setSeriesTitle(title); setEpisodeId(''); setEpisodeKey(''); setCompareKey(''); setCommentPage(1); };
-  const enterEpisode = (episode: EpisodeGroup) => { setEpisodeId(episode.episodeId); setEpisodeTitle(episode.title); setEpisodeKey(''); setCompareKey(''); setCommentPage(1); };
+  const enterEpisode = (episode: EpisodeGroup) => { setEpisodeId(episode.episodeId); setEpisodeTitle(episode.title); setEpisodeNumber(episode.number); setEpisodeKey(''); setCompareKey(''); setCommentPage(1); };
   const backSeries = () => { setEpisodeId(''); setEpisodeKey(''); setCompareKey(''); setCommentPage(1); };
   const backList = () => { setSeriesId(''); setSeriesTitle(''); backSeries(); };
   const episodes = report?.episodes || [], selected = episodes.find(episode => versionKey(episode) === episodeKey) || episodes.find(episode => episode.current) || episodes[episodes.length-1];
   const comparison = episodes.find(episode => versionKey(episode) === compareKey && episode.episodeId === selected?.episodeId && versionKey(episode) !== versionKey(selected));
   const versionLabel = (episode: EpisodeRow) => episode.current ? t('当前版本') : `${t('历史版本')} ${number(episodes.filter(row => !row.current).findIndex(row => versionKey(row) === versionKey(episode)) + 1)}`;
   const metric = (value: string) => report?.collected ? value : t('尚未采集');
+  const episodeHeading=episodeNumber ? `${t('第{{number}}集',{number:episodeNumber})}${episodeTitle&&episodeTitle!==`第${episodeNumber}集`?` · ${episodeTitle}`:''}` : t('集数暂不可用');
   const cards = (values: [MessageKey, string][]) => <div className="analytics-cards">{values.map(([label, value]) => <div key={label}><span>{t(label)}</span><strong>{value}</strong></div>)}</div>;
   const watchingCards = (summary: Summary) => cards([['有效观看人数', metric(number(summary.viewers))], ['有效观看次数', metric(number(summary.plays))], ['有效观看时长', metric(time(summary.watchMs))], ['分集完播率', metric(percent(summary.completionRate))]]);
   const trend = () => report && <details><summary>{t('每日趋势')}</summary><div className="analytics-table"><table><thead><tr><th>{t('日期')}</th><th>{t('开始观看人数')}</th><th>{t('有效观看人数')}</th><th>{t('有效观看次数')}</th><th>{t('有效观看时长')}</th></tr></thead><tbody>{report.timeline.map(day => <tr key={day.date}><td dir="ltr">{day.date}</td><td>{day.collected ? number(day.startedViewers) : t('尚未采集')}</td><td>{day.collected ? number(day.viewers) : t('尚未采集')}</td><td>{day.collected ? number(day.plays) : t('尚未采集')}</td><td>{day.collected ? time(day.watchMs) : t('尚未采集')}</td></tr>)}</tbody></table></div></details>;
@@ -59,7 +60,7 @@ export default function AnalyticsDashboard({ initialSeriesId = '' }: { initialSe
     <nav className="analytics-breadcrumb" aria-label={t('内容层级')}>
       <button disabled={!seriesId} onClick={backList}>{t('剧列表')}</button>
       {seriesId && <><ChevronRight size={16}/><button disabled={!episodeId} dir="auto" onClick={backSeries}>{seriesTitle || t('短剧')}</button></>}
-      {episodeId && <><ChevronRight size={16}/><strong dir="auto">{episodeTitle || t('分集')}</strong></>}
+      {episodeId && <><ChevronRight size={16}/><strong dir="auto">{episodeHeading}</strong></>}
     </nav>
     <section className="admin-panel analytics-filters">
       <label>{t('开始日期')}<input type="date" max={end} value={start} onChange={event => { setStart(event.target.value); setCommentPage(1); }}/></label>
@@ -80,7 +81,7 @@ export default function AnalyticsDashboard({ initialSeriesId = '' }: { initialSe
         {!report.series.length && <p className="analytics-empty">{t('尚无上传内容')}</p>}
       </section> : <>
         <section className="admin-panel">
-          <div className="admin-panel-title"><button className="analytics-back" onClick={episodeId ? backSeries : backList}><ArrowLeft size={16}/>{t(episodeId ? '返回分集列表' : '返回剧列表')}</button><h2 dir="auto">{episodeId ? episodeTitle : seriesTitle}</h2></div>
+          <div className="admin-panel-title"><button className="analytics-back" onClick={episodeId ? backSeries : backList}><ArrowLeft size={16}/>{t(episodeId ? '返回分集列表' : '返回剧列表')}</button><h2 dir="auto">{episodeId ? `${seriesTitle} · ${episodeHeading}` : seriesTitle}</h2></div>
           <p className="analytics-note">{t('开始观看人数')}：{metric(number(report.summary.startedViewers))}</p>
           {watchingCards(report.summary)}
           {!report.summary.attempts && <p className="analytics-empty">{t(report.collected ? '暂无观看数据' : '尚未采集')}</p>}
@@ -110,7 +111,7 @@ export default function AnalyticsDashboard({ initialSeriesId = '' }: { initialSe
           })}</tbody></table></div>}
           <details><summary>{t('每日趋势')}</summary><div className="analytics-table"><table><thead><tr><th>{t('日期')}</th><th>{t('期间新增点赞')}</th><th>{t('期间取消点赞')}</th><th>{t('期间新增评论')}</th></tr></thead><tbody>{report.feedback.timeline.map(day => <tr key={day.date}><td dir="ltr">{day.date}</td><td>{day.collected ? number(day.likesAdded) : t('尚未采集')}</td><td>{day.collected ? number(day.likesRemoved) : t('尚未采集')}</td><td>{day.collected ? number(day.commentsAdded) : t('尚未采集')}</td></tr>)}</tbody></table></div></details>
           {!report.feedback.comments.length && <p className="analytics-empty">{t('暂无可见评论')}</p>}
-          {report.feedback.comments.map(comment => <article className="admin-comment-row" key={comment.id}><p dir="auto">{comment.body}</p><small>{formatDate(comment.created_at, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })} · {report.episodeGroups.find(ep => ep.episodeId === comment.episode_id)?.number ? t('第{{number}}集', { number: report.episodeGroups.find(ep => ep.episodeId === comment.episode_id)!.number }) : t('历史分集')}</small></article>)}
+          {report.feedback.comments.map(comment => <article className="admin-comment-row" key={comment.id}><div className="admin-comment-context"><strong dir="auto">{seriesTitle}</strong><span>{report.episodeGroups.find(ep => ep.episodeId === comment.episode_id)?.number ? t('第{{number}}集', { number: report.episodeGroups.find(ep => ep.episodeId === comment.episode_id)!.number }) : t('集数暂不可用')}</span></div><p dir="auto">{comment.body}</p><small>{formatDate(comment.created_at, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}</small></article>)}
           {(commentPage > 1 || report.feedback.hasMoreComments) && <nav className="admin-pagination"><button disabled={commentPage === 1} onClick={() => setCommentPage(value => value - 1)}>{t('上一页')}</button><span>{t('第{{number}}页', { number: commentPage })}</span><button disabled={!report.feedback.hasMoreComments} onClick={() => setCommentPage(value => value + 1)}>{t('下一页')}</button></nav>}
         </section>
       </>}

@@ -7,6 +7,7 @@ import { createUploads } from './content-upload.mjs';
 import { readJson } from '../shared/http-json.mjs';
 import { ContentAnalytics } from './content-analytics.mjs';
 import { CommentModeration } from './comment-moderation.mjs';
+import { ContentAudit } from './content-audit.mjs';
 
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
@@ -39,6 +40,7 @@ export function createContentService(directory, accountStore, accounts, provider
     return { series, episode: series.episodes[index], viewer, required };
   };
   const commentModeration = new CommentModeration(store, detail);
+  const contentAudit = new ContentAudit(store,accountStore);
   const streamFile = (req, res, asset, quality) => {
     const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
     let start = 0, end = stat.size - 1, status = 200;
@@ -99,19 +101,24 @@ export function createContentService(directory, accountStore, accounts, provider
       }
       if (adminRoute) {
         const admin = requireAdmin(req);
-        if (route === '/api/admin/creators' && req.method === 'GET') { reply(res, {items:accountStore.db.prepare('SELECT a.* FROM accounts a JOIN account_creators c ON c.account_id=a.id ORDER BY a.name').all().map(user=>accountStore.publicAccount(user))}); return true; }
+        if (route === '/api/admin/creators' && req.method === 'GET') {
+          const seriesId=url.searchParams.get('seriesId'),series=seriesId ? store.row(seriesId) : null;
+          if(seriesId&&!series)throw new AccountError(404,'短剧不存在');
+          const assigned=series?.creator_id ? accountStore.byId(series.creator_id) : null;
+          reply(res, {items:accountStore.db.prepare('SELECT a.* FROM accounts a JOIN account_creators c ON c.account_id=a.id ORDER BY a.name').all().map(user=>accountStore.publicAccount(user)),assignedCreator:assigned ? accountStore.publicAccount(assigned) : null}); return true;
+        }
         if (route === '/api/admin/creators' && req.method === 'POST') {
           const data=await input(), user=accountStore.byId(data.accountId);
           if (!user || typeof data.enabled!=='boolean') throw new AccountError(400,'创作者账户无效');
           if (data.enabled) accountStore.db.prepare('INSERT OR IGNORE INTO account_creators VALUES(?,?,?)').run(user.id,admin.id,Date.now());
           else accountStore.db.prepare('DELETE FROM account_creators WHERE account_id=?').run(user.id);
-          store.audit(admin,data.enabled?'授予创作者权限':'撤销创作者权限',user.id); reply(res,{ok:true}); return true;
+          store.audit(admin,data.enabled?'授予创作者权限':'撤销创作者权限',user.id,{accountName:user.name,accountEmail:user.email}); reply(res,{ok:true}); return true;
         }
         const assignment=/^\/api\/admin\/series\/(\d+)\/creator$/.exec(route);
         if (assignment && req.method==='POST') {
           const data=await input();
           if (data.creatorId!==null && !accountStore.isCreator(data.creatorId)) throw new AccountError(400,'创作者账户无效');
-          reply(res,store.assignCreator(admin,assignment[1],data.creatorId)); return true;
+          reply(res,store.assignCreator(admin,assignment[1],data.creatorId,data.creatorId ? accountStore.byId(data.creatorId) : null)); return true;
         }
         const offset = (Math.max(1,Math.min(1000,Math.floor(Number(url.searchParams.get('page')))||1))-1)*100;
         const upload = /^\/api\/admin\/uploads\/([a-f0-9-]+)$/.exec(route), series = /^\/api\/admin\/series\/(\d+)(?:\/(episodes|publish|reorder)(?:\/(\d+))?)?$/.exec(route), moderation = /^\/api\/admin\/comments\/([a-f0-9-]+)$/.exec(route);
@@ -142,12 +149,13 @@ export function createContentService(directory, accountStore, accounts, provider
           const previous=accountStore.db.prepare('SELECT period_end FROM account_manual_vip WHERE account_id=?').get(user.id);
           if (!data.revoke && previous?.period_end > end) throw new AccountError(400,'新有效期不能早于当前手动会员有效期');
           accountStore.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET period_end=excluded.period_end,admin_id=excluded.admin_id,reason=excluded.reason,updated_at=excluded.updated_at').run(user.id, end, admin.id, reason, Date.now());
-          store.audit(admin, data.revoke ? '撤销手动会员' : '开通手动会员', user.id, { periodEnd: end, reason }); reply(res, { user: accountStore.publicAccount(user) });
+          store.audit(admin, data.revoke ? '撤销手动会员' : '开通手动会员', user.id, { periodEnd: end, reason,accountName:user.name,accountEmail:user.email }); reply(res, { user: accountStore.publicAccount(user) });
         }
         else if (route === '/api/admin/comment-series' && req.method === 'GET') reply(res, await commentModeration.series(url.searchParams));
         else if (route === '/api/admin/comments' && req.method === 'GET') { const data=await commentModeration.comments(url.searchParams); reply(res,{...data,items:data.items.map(({account_id,...row})=>({...row,author:accountStore.byId(account_id)?.name || '—'}))}); }
         else if (moderation && req.method === 'POST') { const data = await input(); if (!['visible', 'hidden', 'deleted'].includes(data.status)) throw new AccountError(400, '评论状态无效'); store.db.prepare('UPDATE episode_comments SET status=? WHERE id=?').run(data.status, moderation[1]); store.audit(admin, '处理评论', moderation[1], { status: data.status }); reply(res, { ok: true }); }
-        else if (route === '/api/admin/audit' && req.method === 'GET') reply(res, { items: store.db.prepare('SELECT * FROM content_audit ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(offset) });
+        else if (route === '/api/admin/audit-series' && req.method === 'GET') reply(res,contentAudit.series(url.searchParams));
+        else if (route === '/api/admin/audit' && req.method === 'GET') reply(res,contentAudit.logs(url.searchParams));
         else throw new AccountError(404, '管理接口不存在');
         return true;
       }

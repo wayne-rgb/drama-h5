@@ -3,6 +3,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AccountError } from './account-store.mjs';
+import { initializeAuditContext, captureAuditContext, linkUploadAudit } from './content-audit.mjs';
 
 // 自有内容使用数字标识，兼容现有跨端播放链接和收藏记录。
 export const contentId = () => `9${Date.now()}${crypto.randomInt(100000, 1000000)}`;
@@ -32,10 +33,17 @@ export class ContentStore {
       // 旧内容只依据真实的首次保存记录恢复归属，缺少记录时保持未分配。
       this.db.exec("UPDATE content_series SET creator_id=(SELECT admin_id FROM content_audit WHERE target_id=content_series.id AND action='保存短剧' ORDER BY created_at,id LIMIT 1)");
     }
+    if (!this.db.prepare('PRAGMA table_info(content_assets)').all().some(column=>column.name==='series_id')) this.db.exec('ALTER TABLE content_assets ADD COLUMN series_id TEXT');
+    if (!this.db.prepare('PRAGMA table_info(content_assets)').all().some(column=>column.name==='episode_number')) this.db.exec('ALTER TABLE content_assets ADD COLUMN episode_number INTEGER');
+    initializeAuditContext(this);
   }
   close() { this.db.close(); }
   transaction(action) { this.db.exec('BEGIN IMMEDIATE'); try { const result = action(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-  audit(admin, action, target, detail = {}) { this.db.prepare('INSERT INTO content_audit VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(), admin.id, action, target, JSON.stringify(detail), Date.now()); }
+  audit(admin, action, target, detail = {}) {
+    const row={id:crypto.randomUUID(),admin_id:admin.id,action,target_id:target,detail:JSON.stringify({...detail,adminName:admin.name || null,adminEmail:admin.email || null}),created_at:Date.now()};
+    this.db.prepare('INSERT INTO content_audit VALUES(?,?,?,?,?,?)').run(row.id,row.admin_id,row.action,row.target_id,row.detail,row.created_at);
+    captureAuditContext(this,row);
+  }
   asset(id) { const row = this.db.prepare('SELECT * FROM content_assets WHERE id=?').get(id); return row ? { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null } : null; }
   row(id) { return this.db.prepare('SELECT * FROM content_series WHERE id=?').get(id) || null; }
   detail(id, preview = false) {
@@ -63,7 +71,7 @@ export class ContentStore {
     if (this.row(id)?.status === 'published' && !cover) throw new AccountError(400, '已上架短剧必须保留有效封面');
     if (input.coverId && (cover?.kind !== 'image' || cover.status !== 'ready')) throw new AccountError(400, '封面尚未上传完成');
     this.db.prepare(`INSERT INTO content_series(id,title,description,tags,content_type,language,cover_id,status,updated_at,category_ids) VALUES(?,?,?,?,?,?,?,'draft',?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,tags=excluded.tags,content_type=excluded.content_type,language=excluded.language,cover_id=excluded.cover_id,category_ids=excluded.category_ids,updated_at=excluded.updated_at`).run(id, title, description, tags, input.contentType, input.language, cover?.id || null, Date.now(), [...new Set(categoryIds)].join(','));
-    this.audit(admin, '保存短剧', id, { title }); return this.detail(id, true);
+    this.audit(admin, '保存短剧', id, { title }); if(cover)linkUploadAudit(this,cover.id); return this.detail(id, true);
   }
   listPage(options = {}) {
     const { query = '', type = '', tag = '', tagLabel = tag, page = 1 } = options;
@@ -74,10 +82,10 @@ export class ContentStore {
     const ids = new Set(this.db.prepare('SELECT category_ids FROM content_series WHERE content_type=?').all(type).flatMap(row => row.category_ids.split(',').filter(Boolean)));
     return [...ids].map(id => ({ id, name: labels.find(row => row.id === id)?.name || id }));
   }
-  assignCreator(admin, id, creatorId) {
+  assignCreator(admin, id, creatorId, creator = null) {
     if (!this.row(id)) throw new AccountError(404, '短剧不存在');
     this.db.prepare('UPDATE content_series SET creator_id=? WHERE id=?').run(creatorId, id);
-    this.audit(admin, '设置短剧创作者', id, { creatorId });
+    this.audit(admin, '设置短剧创作者', id, { creatorId,creatorName:creator?.name || null,creatorEmail:creator?.email || null });
     return this.detail(id, true);
   }
   saveEpisode(admin, seriesId, input) {
@@ -92,7 +100,7 @@ export class ContentStore {
     if (input.mode === 'replace' && (!existing || (existing.asset_id !== asset.id && (existing.id !== input.expectedEpisodeId || existing.asset_id !== input.expectedAssetId)))) throw new AccountError(409, '原分集已变化，请重新选择替换');
     const id = existing?.id || contentId();
     this.db.prepare('INSERT INTO content_episodes VALUES(?,?,?,?,?) ON CONFLICT(series_id,number) DO UPDATE SET title=excluded.title,asset_id=excluded.asset_id').run(id, seriesId, input.number, textValue(input.title || `第${input.number}集`, '分集标题'), asset.id);
-    this.audit(admin, '保存分集', id, { seriesId, number: input.number, assetId: asset.id }); return this.detail(seriesId, true);
+    this.audit(admin, '保存分集', id, { seriesId,seriesTitle:series.title,number:input.number,episodeTitle:this.db.prepare('SELECT title FROM content_episodes WHERE id=?').get(id).title,assetId:asset.id,fileName:asset.name }); linkUploadAudit(this,asset.id); return this.detail(seriesId, true);
   }
   publish(admin, id, status) {
     if (!['draft', 'published'].includes(status)) throw new AccountError(400, '发布状态无效');
@@ -104,14 +112,17 @@ export class ContentStore {
   }
   removeEpisode(admin, seriesId, episodeId) {
     if (this.row(seriesId)?.status !== 'draft') throw new AccountError(409, '请先下架再调整分集');
+    const episode=this.db.prepare('SELECT * FROM content_episodes WHERE id=? AND series_id=?').get(episodeId,seriesId);
+    if (!episode) throw new AccountError(404,'分集不属于此短剧');
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='comment_content'").get()) this.db.prepare('UPDATE comment_content SET episode_number=?,episode_title=?,series_title=? WHERE series_id=? AND episode_id=?').run(episode.number,episode.title,this.row(seriesId).title,seriesId,episodeId);
     this.db.prepare('DELETE FROM content_episodes WHERE id=? AND series_id=?').run(episodeId, seriesId);
-    this.audit(admin, '移除分集', episodeId, { seriesId }); return this.detail(seriesId, true);
+    this.audit(admin, '移除分集', episodeId, { seriesId,seriesTitle:this.row(seriesId).title,number:episode.number,episodeTitle:episode.title }); return this.detail(seriesId, true);
   }
   reorder(admin, seriesId, ids) {
     const detail = this.detail(seriesId, true);
     if (!detail || detail.status !== 'draft') throw new AccountError(409, '请先下架再调整分集');
     if (!Array.isArray(ids) || ids.length !== detail.episodes.length || new Set(ids).size !== ids.length || ids.some(id => !detail.episodes.some(ep => ep.id === id))) throw new AccountError(400, '分集排序无效');
-    this.transaction(() => { this.db.prepare('UPDATE content_episodes SET number=-number WHERE series_id=?').run(seriesId); ids.forEach((id, index) => this.db.prepare('UPDATE content_episodes SET number=? WHERE id=?').run(index + 1, id)); this.audit(admin, '调整分集顺序', seriesId, { ids }); });
+    this.transaction(() => { this.db.prepare('UPDATE content_episodes SET number=-number WHERE series_id=?').run(seriesId); ids.forEach((id, index) => this.db.prepare('UPDATE content_episodes SET number=? WHERE id=?').run(index + 1, id)); this.audit(admin, '调整分集顺序', seriesId, { ids,order:ids.map((id,index)=>({id,number:index+1,title:detail.episodes.find(episode=>episode.id===id).title})) }); });
     return this.detail(seriesId, true);
   }
   interactions(episodeId, viewer) {

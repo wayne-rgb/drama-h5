@@ -173,7 +173,9 @@ export class ContentAnalytics {
     }
     const episodeGroups=[...new Set(episodes.map(row=>row.episodeId))].map(id=>{
       const versions=episodes.filter(row=>row.episodeId===id),metadata=versions.find(row=>row.current)||versions.at(-1),list=rows.filter(row=>row.episode_id===id);
-      return {episodeId:id,number:metadata.number,title:metadata.title,current:metadata.current,...summarize(list),...continuation(list)};
+      // 历史逻辑集使用最后确认的名称与集数，素材版本及观看事实保持原有统计归属。
+      const latest=!metadata.current ? this.db.prepare('SELECT r.episode_number AS number,r.episode_title AS title FROM content_audit_refs r JOIN content_audit a ON a.id=r.audit_id WHERE r.series_id=? AND r.episode_id=? ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1').get(seriesId,id) : null;
+      return {episodeId:id,number:latest?.number || metadata.number,title:latest?.title || metadata.title,current:metadata.current,...summarize(list),...continuation(list)};
     }).sort((a,b)=>a.number-b.number);
     const feedbackRows = this.db.prepare("SELECT f.kind,f.created_at,f.episode_id,f.asset_id FROM analytics_feedback f JOIN content_series c ON c.id=f.series_id WHERE f.created_at>=? AND f.created_at<? AND (?=1 OR c.creator_id=?) AND (?='' OR f.series_id=?) AND (?='' OR f.episode_id=?)").all(...bindings,episodeId,episodeId);
     const counts = list => ({ likesAdded: list.filter(row => row.kind === 'like').length, likesRemoved: list.filter(row => row.kind === 'unlike').length, commentsAdded: list.filter(row => row.kind === 'comment').length });
