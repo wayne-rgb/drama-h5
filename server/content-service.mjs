@@ -8,6 +8,8 @@ import { readJson } from '../shared/http-json.mjs';
 import { ContentAnalytics } from './content-analytics.mjs';
 import { CommentModeration } from './comment-moderation.mjs';
 import { ContentAudit } from './content-audit.mjs';
+import { CatalogCache } from './catalog-cache.mjs';
+import { withContentSignal } from '../shared/content-request.mjs';
 
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
@@ -15,7 +17,7 @@ export function createContentService(directory, accountStore, accounts, provider
   const isAdmin = user => isAdministrator(user, config);
   const analytics = new ContentAnalytics(store, accountStore, accounts, isAdmin);
   const requireAdmin = req => { const user = accounts.requireViewer(req); if (!isAdmin(user)) throw new AccountError(403, '需要管理员权限'); return user; };
-  const metadata = new Map(), rates = new Map();
+  const metadata = new CatalogCache(), rates = new Map();
   const limit = (req, user) => {
     const now = Date.now(); for (const [key, row] of rates) if (row.until < now) rates.delete(key);
     const key = user.id, row = rates.get(key) || { until: now + 60000, count: 0 };
@@ -24,12 +26,12 @@ export function createContentService(directory, accountStore, accounts, provider
   const detail = async (id, preview = false) => {
     if (!/^\d{1,40}$/.test(id || '')) throw new AccountError(400, '短剧标识无效');
     if (store.row(id)) { const data = store.detail(id, preview); if (!data) throw new AccountError(404, '短剧未上架'); return data; }
-    const cached = metadata.get(id);
-    if (cached && cached.until > Date.now()) return cached.value;
+    // 同一剧的目录请求由多位观众复用，取消某个播放不能取消共享详情。
+    return metadata.read(id, () => withContentSignal(undefined, async () => {
     const value = await provider.detail(id);
     if (!value || String(value.id) !== id || !Array.isArray(value.episodes)) throw new AccountError(502, '剧集信息暂不可用');
-    if (metadata.size >= 300) metadata.delete(metadata.keys().next().value);
-    metadata.set(id, { value, until: Date.now() + 60000 }); return value;
+    return value;
+    }));
   };
   const resolveEpisode = async (req, seriesId, episodeId, enforce = true) => {
     const viewer = accounts.viewer(req), series = await detail(seriesId, isAdmin(viewer));

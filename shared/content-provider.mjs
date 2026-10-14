@@ -2,7 +2,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import crypto from "node:crypto";
 import categoryContract from './category-contract.cjs';
-import { createContentClient } from './content-request.mjs';
+import { createContentClient, ContentCache } from './content-request.mjs';
 
 // Trusted, pinned GPL source. This is a compatibility wrapper, not a sandbox for user scripts.
 const source = fs.readFileSync(
@@ -17,6 +17,7 @@ const context = vm.createContext({
   Buffer,
   URL,
   URLSearchParams,
+  Map: ContentCache,
   axios: createContentClient({
     maxContentLength: 16 * 1024 * 1024,
     maxBodyLength: 1024 * 1024,

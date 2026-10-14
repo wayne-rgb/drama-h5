@@ -4,6 +4,8 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 
 export const messages = {
   ...analyticsMessages,
+  "播放流量已达保护上限，请稍后再试": ["Playback usage limit reached. Please try again later.", "Se alcanzó el límite de reproducción. Inténtalo más tarde.", "Limite de reprodução atingido. Tente novamente mais tarde.", "تم بلوغ حد استخدام التشغيل. حاول مرة أخرى لاحقًا.", "Limite de lecture atteinte. Réessayez plus tard."],
+  "内容服务繁忙，请稍后重试": ["Content service is busy. Please try again later.", "El servicio está ocupado. Inténtalo más tarde.", "O serviço está ocupado. Tente novamente mais tarde.", "خدمة المحتوى مشغولة. حاول مرة أخرى لاحقًا.", "Le service est occupé. Réessayez plus tard."],
   "请求读取超时，请稍后重试": ["Request timed out. Please retry.", "La solicitud agotó el tiempo. Inténtalo de nuevo.", "A solicitação expirou. Tente novamente.", "انتهت مهلة الطلب. حاول مجددًا.", "La requête a expiré. Réessayez."],
   "上传分块读取超时，请稍后重试": ["Upload timed out. Retry to resume.", "La carga agotó el tiempo. Reintenta para continuar.", "O envio expirou. Tente novamente para continuar.", "انتهت مهلة الرفع. أعد المحاولة للمتابعة.", "Le téléversement a expiré. Réessayez pour reprendre."],
   "上传存储额度不足，请清理无用素材后重试": ["Upload storage limit reached. Remove unused media and retry.", "Se alcanzó el límite de almacenamiento. Elimina archivos sin usar e inténtalo de nuevo.", "Limite de armazenamento atingido. Remova arquivos sem uso e tente novamente.", "تم بلوغ حد التخزين. احذف الملفات غير المستخدمة وحاول مجددًا.", "Limite de stockage atteinte. Supprimez les médias inutilisés et réessayez."],

@@ -59,7 +59,7 @@ test('一个观众切走时中止真实在途源请求，不影响另一观众�
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  const client = createContentClient({ proxy: false }), controller = new AbortController(), base = `http://127.0.0.1:${server.address().port}`;
+  const client = createContentClient({ proxy: false, allowPrivateTargets: true }), controller = new AbortController(), base = `http://127.0.0.1:${server.address().port}`;
   const playing = withContentSignal(controller.signal, () => client.get(`${base}/playing`));
   const canceled = assert.rejects(playing, error => error.code === 'ERR_CANCELED');
   await arrival;

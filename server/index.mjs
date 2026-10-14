@@ -4,7 +4,6 @@ import vm from "node:vm";
 import crypto from "node:crypto";
 import path from "node:path";
 import { URL, fileURLToPath } from "node:url";
-import axios from "axios";
 import { HistoryStore } from "./history-store.mjs";
 import { createHistoryHandler } from "./history-routes.mjs";
 import { provider as coreProvider } from "../shared/content-provider.mjs";
@@ -18,13 +17,16 @@ import { createContentService } from "./content-service.mjs";
 import { publicFailure } from "./http-error.mjs";
 import { CatalogCache } from './catalog-cache.mjs';
 import { PlaybackGuard } from './playback-guard.mjs';
-import { createContentClient, withContentSignal } from '../shared/content-request.mjs';
+import { createContentClient, withContentSignal, ContentCache } from '../shared/content-request.mjs';
 import { protectRequestBody } from '../shared/http-json.mjs';
+import { RequestGuard, positiveLimit } from './request-guard.mjs';
+import { TrafficBudget } from './traffic-budget.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
 if (fs.existsSync(environmentFile)) process.loadEnvFile(environmentFile);
 const DIST_DIR = process.env.HG_WEB_DIR || path.resolve(__dirname, "../apps/web-pc/dist");
+const axios = createContentClient({ maxContentLength: 16 * 1024 * 1024, maxBodyLength: 1024 * 1024 });
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -46,17 +48,23 @@ const MIME_TYPES = {
 function serveStatic(req, res, pathname) {
   if (!['GET', 'HEAD'].includes(req.method)) return false;
   if (!fs.existsSync(DIST_DIR)) return false;
+  try { pathname = decodeURIComponent(pathname); } catch { throw new AccountError(400, '请求格式无效'); }
+  // 只提供构建产物；隐藏文件、源码映射和越出构建目录的符号链接不能被读取。
+  if (pathname.split(/[\\/]/).some(part => part.startsWith('.')) || (path.extname(pathname) && !Object.hasOwn(MIME_TYPES, path.extname(pathname).toLowerCase()))) throw new AccountError(404, '页面不存在');
   let targetFile = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   let filePath = path.join(DIST_DIR, targetFile);
 
   const relative = path.relative(DIST_DIR, filePath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new AccountError(404, '页面不存在');
 
   // SPA 回退
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    if (path.extname(pathname)) throw new AccountError(404, '页面不存在');
     filePath = path.join(DIST_DIR, "index.html");
   }
   if (!fs.existsSync(filePath)) return false;
+  const actual = path.relative(fs.realpathSync(DIST_DIR), fs.realpathSync(filePath));
+  if (actual === '..' || actual.startsWith(`..${path.sep}`) || path.isAbsolute(actual)) throw new AccountError(404, '页面不存在');
 
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
@@ -82,7 +90,9 @@ const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
 const catalog = new CatalogCache();
-const playbackGuard = new PlaybackGuard(process.env);
+const trafficBudget = new TrafficBudget(path.join(DATA_DIR, 'resource-usage.sqlite'), process.env);
+const playbackGuard = new PlaybackGuard(process.env, trafficBudget);
+const requestGuard = new RequestGuard(process.env);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore);
@@ -120,6 +130,7 @@ try {
       Buffer,
       URL,
       URLSearchParams,
+      Map: ContentCache,
       axios: createContentClient({
         maxContentLength: 16 * 1024 * 1024,
         maxBodyLength: 1024 * 1024,
@@ -604,6 +615,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Frame-Options','DENY');
   res.setHeader('Content-Security-Policy',"frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
   let u;
+  if (req.url.length > 4096) return json(res, { error: '请求格式无效' }, 414);
   try { u = new URL(req.url, `http://${req.headers.host || "localhost"}`); }
   catch { return json(res,{error:'请求地址无效'},400); }
   const pathname = u.pathname;
@@ -619,20 +631,36 @@ const server = http.createServer(async (req, res) => {
 
   // 1. 健康检查
   if (pathname === "/health") {
-    return json(res, { service: "hongguotv-custom-bridge", version: "2.3.0", ok: true });
+    return json(res, { ok: true });
   }
 
   let playbackSignal;
-  if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
+  if (pathname.startsWith('/api/')) {
     try {
       const audience = accounts.audience(req);
-      playbackSignal = playbackGuard.acquire(req, res, audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${accounts.address(req)}`);
-    } catch (error) { return json(res, { error: error.message }, error.status || 503); }
+      const address = accounts.address(req), viewer = audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${address}`;
+      if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
+        if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
+        requestGuard.checkVideo(viewer, address);
+        playbackSignal = playbackGuard.acquire(req, res, viewer, address);
+      } else {
+        const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience);
+        requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname), upload);
+      }
+      if ([...u.searchParams].some(([key, value]) => key.length > 80 || value.length > (key === 'q' ? 200 : 1024))) throw new AccountError(400, '请求格式无效');
+    } catch (error) {
+      const failure = publicFailure(error);
+      if (failure.status === 429) res.setHeader('Retry-After', String(error.retryAfter || 1));
+      return json(res, { error: failure.message }, failure.status);
+    }
   }
   const handleRequest = async () => {
   try {
     // 静态文件也纳入异常处理，部署期间文件变化不会绕过错误边界。
-    if (!pathname.startsWith('/api/') && serveStatic(req, res, pathname)) return;
+    if (!pathname.startsWith('/api/')) {
+      requestGuard.acquireStatic(req, res, accounts.address(req));
+      if (serveStatic(req, res, pathname)) return;
+    }
     if (await accounts.handle(req, res, u)) return;
     if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
@@ -693,13 +721,14 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/rank/list" || pathname === "/api/rank/page") {
       const slug = u.searchParams.get("type") || u.searchParams.get("slug") || "hot-drama";
       const page = parseInt(u.searchParams.get("page") || "1", 10);
-      const data = await fetchOfficialRankPage(slug, page);
+      if (!OFFICIAL_RANK_TYPES.some(row => row.slug === slug || row.key === slug) || !Number.isSafeInteger(page) || page < 1 || page > 5) throw new AccountError(400, '请求格式无效');
+      const data = await catalog.read(`rank:${slug}:${page}`, () => fetchOfficialRankPage(slug, page));
       return json(res, data);
     }
 
     // 5.2 兼容旧版全量四大排行榜 (GET /api/ranks)
     if (pathname === "/api/ranks") {
-      const home = await fetchOfficialHome();
+      const home = await catalog.read('home-sections', fetchOfficialHome);
       const ranks = home.sections.map((sec) => ({
         key: sec.type,
         title: sec.name.includes("榜") ? sec.name : `${sec.name}榜`,
@@ -715,7 +744,7 @@ const server = http.createServer(async (req, res) => {
         const session=u.searchParams.get("session")||crypto.randomUUID();
         return json(res,await services.recommendations.page(session,page));
       } catch(error) {
-        return json(res,{error:error.message||'推荐读取失败'},error instanceof RecommendationError?error.status:502);
+        return json(res,{error:error instanceof RecommendationError ? error.message : '推荐读取失败'},error instanceof RecommendationError?error.status:502);
       }
     }
     if (pathname === "/api/home") {
@@ -752,8 +781,10 @@ const server = http.createServer(async (req, res) => {
     if (relMatch) {
       const seriesId = relMatch[1];
       if (content.store.row(seriesId)) { const series = await content.detail(seriesId); return json(res,{seriesId,keyword:'',page:1,items:content.list({type:series.contentType}).filter(item=>item.id!==seriesId)}); }
-      const limit = parseInt(u.searchParams.get("limit") || "16", 10);
-      const page = Math.max(1, parseInt(u.searchParams.get("page") || "1", 10));
+      const limit = Number(u.searchParams.get("limit") || "16");
+      const page = Number(u.searchParams.get("page") || "1");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50 || !Number.isInteger(page) || page < 1 || page > 1000) throw new AccountError(400, '请求格式无效');
+      const related = await catalog.read(`related:${seriesId}:${page}:${limit}`, async () => {
       try {
         const detailRes = {data: await coreProvider.detail(seriesId)};
         const seriesData = detailRes.data;
@@ -808,19 +839,21 @@ const server = http.createServer(async (req, res) => {
           } catch (_) {}
         }
 
-        return json(res, {
+        return {
           seriesId,
           keyword: firstTag,
           page,
           items: relatedItems.slice(0, limit),
-        });
+        };
       } catch (err) {
         const home = await fetchOfficialHome();
         const fallbackItems = (home.banners || [])
           .concat(home.sections?.[0]?.items || [])
           .filter((item) => String(item.id) !== String(seriesId));
-        return json(res, { seriesId, keyword: "", page, items: fallbackItems.slice(0, limit) });
+        return { seriesId, keyword: "", page, items: fallbackItems.slice(0, limit) };
       }
+      });
+      return json(res, related);
     }
 
     // 8.1 剧集详情 (GET /api/series/:id)
@@ -828,6 +861,7 @@ const server = http.createServer(async (req, res) => {
       const seriesData = await content.publicDetail(req, decodeURIComponent(pathname.slice("/api/series/".length)));
       if (seriesData && Array.isArray(seriesData.episodes)) {
         for (const ep of seriesData.episodes) {
+          if (vidToSeriesMap.size >= 10000) vidToSeriesMap.delete(vidToSeriesMap.keys().next().value);
           vidToSeriesMap.set(String(ep.id), String(seriesData.id));
         }
       }
@@ -1078,12 +1112,19 @@ const server = http.createServer(async (req, res) => {
     const failure = publicFailure(err);
     if (!(err instanceof AccountError)) console.error('[接口处理失败]:', err?.message || String(err));
     if (res.headersSent) { res.destroy(); return; }
+    if (failure.status === 429) res.setHeader('Retry-After', String(err.retryAfter || 1));
     return json(res, { error: failure.message }, failure.status);
   }
   };
   return withContentSignal(playbackSignal, handleRequest);
 });
 
+// HTTP头部尚未完整时也要有边界；正文时限兼容已有60秒上传分块读取。
+server.headersTimeout = 15000;
+server.requestTimeout = 65000;
+server.keepAliveTimeout = 5000;
+server.maxRequestsPerSocket = 1000;
+server.maxConnections = positiveLimit(process.env, 'HTTP_MAX_CONNECTIONS', 512, 65536);
 server.listen(PORT, process.env.HG_HOST || "0.0.0.0", () => {
   const actualPort = server.address().port;
   if (process.send) process.send({type:"ready",port:actualPort});
@@ -1098,7 +1139,7 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return; shuttingDown = true; librarySync.stop();
   for (const service of personalLibraries.values()) service.sync.stop();
-  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } content.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
+  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } content.close(); trafficBudget.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
   server.closeAllConnections();
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);
