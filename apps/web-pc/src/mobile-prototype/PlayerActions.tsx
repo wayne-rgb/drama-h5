@@ -57,8 +57,8 @@ export function PlayerActions(props: Props) {
   </div>;
 }
 
-export function PlayerSideAction({ icon, label, active = false, disabled = false, onClick }: { icon: React.ReactNode; label: string; active?: boolean; disabled?: boolean; onClick: () => void }) {
-  return <button className={`prototype-side-action${active ? " is-active" : ""}`} disabled={disabled} onClick={event => { event.stopPropagation(); onClick(); }} onDoubleClick={event => event.stopPropagation()}>
+export function PlayerSideAction({ icon, label, ariaLabel = label, active = false, disabled = false, onClick }: { icon: React.ReactNode; label: string; ariaLabel?: string; active?: boolean; disabled?: boolean; onClick: () => void }) {
+  return <button className={`prototype-side-action${active ? " is-active" : ""}`} aria-label={ariaLabel} disabled={disabled} onClick={event => { event.stopPropagation(); onClick(); }} onDoubleClick={event => event.stopPropagation()}>
     <span className="prototype-side-action-icon">{icon}</span><span>{label}</span>
   </button>;
 }
