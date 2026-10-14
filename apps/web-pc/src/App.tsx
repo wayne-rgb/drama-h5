@@ -242,6 +242,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   useEffect(() => () => { detailRequest.current++; streamDetailRequest.current++; navigationGeneration.current++; }, []);
 
   const [favSubTab, setFavSubTab] = useState<"overview" | "favorites" | "history" | "likes" | "settings">("overview");
+  // 手机端默认直接展示追剧内容，桌面继续使用个人概览。
+  const personalContentTab = mobilePrototype && favSubTab === 'overview' ? 'favorites' : favSubTab;
   const likesCount = useLikeCount(accountState.session?.user?.id, `${tab}:${favSubTab}:${!!activeSeries}`);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
   const [syncStatus, setSyncStatus] = useState(getSyncStatus());
@@ -3863,26 +3865,34 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         {!activeSeries && tab === "favorites" && (
           <div className={`max-w-7xl mx-auto pb-14 space-y-6 ${mobilePrototype ? "prototype-my-content" : ""} ${mobilePrototype && favSubTab === "settings" ? "prototype-my-settings-content" : ""}`}>
             {!mobilePrototype && favSubTab === "overview" && <div className="account-home-heading"><h2>{t('我的')}</h2><button aria-label={t('设置')} onClick={() => openPersonalPage('settings')}><SettingsIcon size={22}/></button></div>}
-            {favSubTab === "overview" && <AccountHome {...personalAreaProps} histories={historyList} error={accountState.error} onRetry={() => void accountState.refresh()} onResume={history => void handleSelectSeries({ id: history.seriesId, title: history.title, cover: history.cover, badge: history.badge, tags: history.tags, description: "", contentType: history.contentType }, history)} />}
+            {(mobilePrototype ? favSubTab !== 'settings' : favSubTab === 'overview') && <AccountHome {...personalAreaProps} profileOnly={mobilePrototype} histories={historyList} error={accountState.error} onRetry={() => void accountState.refresh()} onResume={history => void handleSelectSeries({ id: history.seriesId, title: history.title, cover: history.cover, badge: history.badge, tags: history.tags, description: "", contentType: history.contentType }, history)} />}
             {/* 个人内容切换栏与操作区。 */}
-            {favSubTab !== "overview" && <button className="account-text-button" onClick={() => setFavSubTab("overview")}><ArrowLeft size={16} />{t("返回我的")}</button>}
-            {favSubTab !== "overview" && favSubTab !== "settings" && <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4 ${mobilePrototype ? "prototype-my-tabs" : ""}`}>
-              <div className="account-library-tabs flex items-center gap-2 bg-[#0a0f1d] p-1.5 rounded-2xl border border-slate-800 w-fit">
+            {(mobilePrototype ? favSubTab === 'settings' : favSubTab !== 'overview') && <button className="account-text-button" onClick={() => setFavSubTab("overview")}><ArrowLeft size={16} />{t("返回我的")}</button>}
+            {personalContentTab !== "overview" && personalContentTab !== "settings" && <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4 ${mobilePrototype ? "prototype-my-tabs" : ""}`}>
+              <div role={mobilePrototype ? 'tablist' : undefined} aria-label={mobilePrototype ? t('我的') : undefined} className="account-library-tabs flex items-center gap-2 bg-[#0a0f1d] p-1.5 rounded-2xl border border-slate-800 w-fit" onKeyDown={event => {
+                if (!mobilePrototype || !['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+                const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                const current = buttons.findIndex(button => button === document.activeElement);
+                const step = (event.key === 'ArrowRight' ? 1 : -1) * (document.documentElement.dir === 'rtl' ? -1 : 1);
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + step + buttons.length) % buttons.length;
+                event.preventDefault(); buttons[next]?.focus(); buttons[next]?.click();
+              }}>
                 <button
                   type="button"
+                  role={mobilePrototype ? 'tab' : undefined} id="personal-tab-favorites" aria-selected={mobilePrototype ? personalContentTab === 'favorites' : undefined} aria-controls={mobilePrototype ? 'personal-content-panel' : undefined} tabIndex={mobilePrototype && personalContentTab !== 'favorites' ? -1 : 0}
                   onClick={() => setFavSubTab("favorites")}
                   className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs md:text-sm font-extrabold transition-all outline-none focus:ring-4 focus:ring-rose-500/50 cursor-pointer ${
-                    favSubTab === "favorites"
+                    personalContentTab === "favorites"
                       ? "bg-rose-600 text-white shadow-lg shadow-rose-900/40"
                       : "text-slate-400 hover:text-white hover:bg-slate-800/50"
                   }`}
                 >
-                  <Heart className={`w-4 h-4 ${favSubTab === "favorites" ? "fill-white" : ""}`} />
+                  <Heart className={`w-4 h-4 ${personalContentTab === "favorites" ? "fill-white" : ""}`} />
                   <span>{t("我的追剧")}</span>
                   {favorites.length > 0 && (
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                        favSubTab === "favorites" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
+                        personalContentTab === "favorites" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
                       }`}
                     >
                       {favorites.length}
@@ -3892,12 +3902,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
                 <button
                   type="button"
+                  role={mobilePrototype ? 'tab' : undefined} id="personal-tab-history" aria-selected={mobilePrototype ? personalContentTab === 'history' : undefined} aria-controls={mobilePrototype ? 'personal-content-panel' : undefined} tabIndex={mobilePrototype && personalContentTab !== 'history' ? -1 : 0}
                   onClick={() => {
                     setFavSubTab("history");
                     refreshHistory();
                   }}
                   className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs md:text-sm font-extrabold transition-all outline-none focus:ring-4 focus:ring-rose-500/50 cursor-pointer ${
-                    favSubTab === "history"
+                    personalContentTab === "history"
                       ? "bg-rose-600 text-white shadow-lg shadow-rose-900/40"
                       : "text-slate-400 hover:text-white hover:bg-slate-800/50"
                   }`}
@@ -3907,18 +3918,18 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   {historyList.length > 0 && (
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                        favSubTab === "history" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
+                        personalContentTab === "history" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
                       }`}
                     >
                       {historyList.length}
                     </span>
                   )}
                 </button>
-                <button type="button" onClick={() => setFavSubTab('likes')} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs md:text-sm font-extrabold transition-all ${favSubTab === 'likes' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/50'}`}><ThumbsUp size={16}/><span>{t('我的点赞')}</span>{!!likesCount && <span className="text-[10px]">{likesCount}</span>}</button>
+                <button type="button" role={mobilePrototype ? 'tab' : undefined} id="personal-tab-likes" aria-selected={mobilePrototype ? personalContentTab === 'likes' : undefined} aria-controls={mobilePrototype ? 'personal-content-panel' : undefined} tabIndex={mobilePrototype && personalContentTab !== 'likes' ? -1 : 0} onClick={() => setFavSubTab('likes')} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs md:text-sm font-extrabold transition-all ${personalContentTab === 'likes' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800/50'}`}><ThumbsUp size={16}/><span>{t('我的点赞')}</span>{!!likesCount && <span className="text-[10px]">{likesCount}</span>}</button>
               </div>
 
               {/* 右侧操作按钮：仅在历史记录页且有记录时展示清空全部按钮 */}
-              {favSubTab === "history" && historyList.length > 0 && (
+              {personalContentTab === "history" && historyList.length > 0 && (
                 <div className="flex items-center gap-3">
                   {showClearHistoryConfirm ? (
                     <div className="flex items-center gap-2 bg-slate-900 border border-rose-500/40 p-1.5 rounded-xl text-xs">
@@ -3951,9 +3962,10 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 </div>
               )}
             </div>}
-            {favSubTab === 'likes' && <LikedEpisodes key={accountState.session?.user?.id || 'guest'} loggedIn={!!accountState.session?.user} onLogin={() => setAccountPanel('login')} onPlay={(series,episodeId) => void handleSelectSeries(series,undefined,episodeId)}/>}
+            {personalContentTab !== 'overview' && personalContentTab !== 'settings' && <div role={mobilePrototype ? 'tabpanel' : undefined} id="personal-content-panel" aria-labelledby={mobilePrototype ? `personal-tab-${personalContentTab}` : undefined}>
+            {personalContentTab === 'likes' && <LikedEpisodes key={accountState.session?.user?.id || 'guest'} loggedIn={!!accountState.session?.user} onLogin={() => setAccountPanel('login')} onPlay={(series,episodeId) => void handleSelectSeries(series,undefined,episodeId)}/>}
             {/* A. 我的追剧列表 */}
-            {favSubTab === "favorites" && (
+            {personalContentTab === "favorites" && (
               <div>
                 {favorites.length === 0 ? (
                   <div className="text-center py-28 text-slate-500 text-sm space-y-3">
@@ -4001,9 +4013,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
             )}
 
             {/* B. 观看历史列表 (带进度条、集数、时间百分比、一键续播、悬浮单条删除) */}
-            {favSubTab === "history" && (
+            {personalContentTab === "history" && (
               <div>
-                <p className="mb-5 text-sm text-slate-400">{t("从最近观看的位置继续，记录保存在本地并按远程配置自动同步。")}</p>
+                {!mobilePrototype && <p className="mb-5 text-sm text-slate-400">{t("从最近观看的位置继续，记录保存在本地并按远程配置自动同步。")}</p>}
                 {historyError && <div className="mb-5 text-rose-300">{localizeError(historyError)} <button className="underline" onClick={() => void refreshHistory()}>{t("重试")}</button></div>}
                 {historyList.length === 0 ? (
                   <div className="text-center py-28 text-slate-500 text-sm space-y-3">
@@ -4117,6 +4129,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 )}
               </div>
             )}
+            </div>}
           </div>
         )}
 
