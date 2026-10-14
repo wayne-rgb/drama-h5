@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Film, Upload, Users, MessageSquare, History, Menu, X } from 'lucide-react';
 import axios from 'axios';
 import { Account, accountRequest, changeAccount, accountError } from './account';
 import { useAccountSession } from './AccountArea';
@@ -16,6 +17,14 @@ export default function AdminApp() {
   const account = useAccountSession();
   const [email,setEmail] = useState(''), [password,setPassword] = useState(''), [busy,setBusy] = useState(false), [error,setError] = useState('');
   const [tab,setTab] = useState<'series'|'uploads'|'accounts'|'comments'|'audit'>('series');
+  const [sidebarOpen,setSidebarOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const closeSidebar = () => { setSidebarOpen(false); menuButton.current?.focus(); };
+  useEffect(()=>{
+    if(!sidebarOpen)return;
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')closeSidebar();};
+    document.addEventListener('keydown',escape);return()=>document.removeEventListener('keydown',escape);
+  },[sidebarOpen]);
   const [page,setPage] = useState(1), [pageSize,setPageSize] = useState(0), [uploadRows,setUploadRows] = useState<Asset[]>([]), [uploadFinished,setUploadFinished] = useState(false);
   const [loading,setLoading] = useState(true);
   const [series,setSeries] = useState<AdminDetail[]>([]), [selected,setSelected] = useState<AdminDetail|null>(null), [assets,setAssets] = useState<Asset[]>([]);
@@ -34,6 +43,7 @@ export default function AdminApp() {
   useEffect(()=>{if(uploadId && assets.find(asset=>asset.id===uploadId)?.status==='failed')setUploadFinished(false);},[assets,uploadId]);
   const defaultVipEnd = (user:Account) => { const date=new Date(Math.max(Date.now()+30*86400000,user.membership.periodEnd||0)); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
   const labels: Record<typeof tab,MessageKey> = {series:'短剧管理',uploads:'素材上传',accounts:'用户与会员',comments:'评论管理',audit:'操作记录'};
+  const navigationIcons = {series:Film,uploads:Upload,accounts:Users,comments:MessageSquare,audit:History};
   const statusLabels: Record<string,MessageKey> = {draft:'草稿',published:'已上架',uploading:'上传中',processing:'处理中',ready:'可用',failed:'失败',visible:'可见',hidden:'已隐藏',deleted:'已删除'};
   const run = async (action:()=>Promise<void>) => { if(busy)return; setBusy(true);setError('');try{await action();}catch(error){setError(accountError(error));}finally{setBusy(false);} };
   const rememberAssets = (rows:Asset[]) => setAssets(current=>[...rows,...current].filter((row,index,all)=>all.findIndex(asset=>asset.id===row.id)===index));
@@ -75,8 +85,15 @@ export default function AdminApp() {
   if(!account.session)return <main className="admin-shell"><p>{t('账户加载中...')}</p>{account.error&&<p role="alert">{localizeError(account.error)}</p>}<button onClick={()=>void account.refresh()}>{t('重试')}</button></main>;
   if(!account.session.user)return <main className="admin-login"><h1>{t('内容后台')}</h1><form onSubmit={event=>{event.preventDefault();void run(()=>changeAccount('/api/auth/login',{email,password},'/admin'));}}><label>{t('邮箱')}<input type="email" required autoComplete="username" value={email} onChange={event=>setEmail(event.target.value)}/></label><label>{t('密码')}<input type="password" required autoComplete="current-password" value={password} onChange={event=>setPassword(event.target.value)}/></label><button disabled={busy}>{t('登录')}</button>{error&&<p role="alert">{localizeError(error)}</p>}</form><a href="/">{t('返回')}</a></main>;
   if(!account.session.capabilities.admin)return <main className="admin-shell"><h1>{t('需要管理员权限')}</h1><p>{t('请使用已配置的管理员账户登录')}</p><button onClick={()=>void run(()=>changeAccount('/api/auth/logout',{},'/admin'))}>{t('退出登录')}</button><a href="/">{t('返回')}</a></main>;
-  return <div className="admin-shell"><header className="admin-header"><h1>{t('内容后台')}</h1><span>{account.session.user.name}</span><select aria-label={t('界面语言')} value={language} onChange={event=>setLanguage(event.target.value as Language)}>{languages.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select><a href="/">{t('返回产品')}</a><button disabled={busy} onClick={()=>void run(()=>changeAccount('/api/auth/logout',{},'/admin'))}>{t('退出登录')}</button></header>
-    <nav className="admin-tabs">{(Object.keys(labels) as (typeof tab)[]).map(key=><button key={key} aria-pressed={tab===key} onClick={()=>{setTab(key);setPage(1);setQuery('');setError('');}}>{t(labels[key])}</button>)}</nav>
+  return <div className="admin-shell admin-layout">
+    {sidebarOpen&&<div className="admin-sidebar-backdrop" aria-hidden="true" onClick={closeSidebar}/>}
+    <aside className={`admin-sidebar${sidebarOpen?' is-open':''}`}>
+      <div className="admin-sidebar-brand"><Film size={23}/><strong>{t('内容后台')}</strong><button className="admin-sidebar-close" aria-label={t('关闭导航')} onClick={closeSidebar}><X size={21}/></button></div>
+      <nav className="admin-tabs" aria-label={t('内容后台')}>{(Object.keys(labels) as (typeof tab)[]).map(key=>{const Icon=navigationIcons[key];return <button key={key} aria-current={tab===key?'page':undefined} aria-pressed={tab===key} onClick={()=>{setTab(key);setPage(1);setQuery('');setError('');if(sidebarOpen)closeSidebar();}}><Icon size={19}/><span>{t(labels[key])}</span></button>;})}</nav>
+    </aside>
+    <div className="admin-workspace">
+    <header className="admin-header"><button ref={menuButton} className="admin-menu-toggle" aria-label={t('打开导航')} aria-expanded={sidebarOpen} onClick={()=>setSidebarOpen(true)}><Menu size={22}/></button><h1>{t(labels[tab])}</h1><span>{account.session.user.name}</span><select aria-label={t('界面语言')} value={language} onChange={event=>setLanguage(event.target.value as Language)}>{languages.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select><a href="/">{t('返回产品')}</a><button disabled={busy} onClick={()=>void run(()=>changeAccount('/api/auth/logout',{},'/admin'))}>{t('退出登录')}</button></header>
+    <main className="admin-main">
     {error&&<p role="alert" className="account-error">{localizeError(error)}</p>}
     {(tab==='series'||tab==='accounts')&&<form className="admin-search" onSubmit={event=>{event.preventDefault();if(page!==1)setPage(1);else void run(load);}}><input aria-label={t('搜索')} placeholder={t('搜索')} value={query} onChange={event=>setQuery(event.target.value)}/><button disabled={busy}>{t('搜索')}</button></form>}
     {tab==='series'&&<div className="admin-content-columns"><section className="admin-panel">
@@ -105,5 +122,7 @@ export default function AdminApp() {
     {tab==='comments'&&<section className="admin-panel"><div className="admin-panel-title"><h2>{t('评论管理')}</h2><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button></div>{comments.map(row=><article className="admin-comment-row" key={row.id}><strong>{row.author}</strong><p dir="auto">{row.body}</p><small>{row.series_id} / {row.episode_id} · {t(statusLabels[row.status])} · {t('举报')} {row.reports}</small>{(['visible','hidden','deleted'] as const).map(status=><button key={status} disabled={busy||row.status===status} onClick={()=>void run(async()=>{await adminRequest(`comments/${row.id}`,{status});await load();})}>{t(statusLabels[status])}</button>)}</article>)}</section>}
     {tab==='audit'&&<section className="admin-panel"><h2>{t('操作记录')}</h2><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button>{audit.map(row=><article className="admin-comment-row" key={row.id}><strong>{localizeLabel(row.action)}</strong><p>{row.target_id}</p><small>{row.admin_id} · {formatDate(row.created_at,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small><pre>{row.detail}</pre></article>)}</section>}
     <nav className="admin-pagination"><button disabled={busy||page<=1} onClick={()=>setPage(value=>value-1)}>{t('上一页')}</button><span>{t('第{{number}}页',{number:page})}</span><button disabled={busy||pageSize<(tab==='series'?24:100)} onClick={()=>setPage(value=>value+1)}>{t('下一页')}</button></nav>
+    </main>
+    </div>
   </div>;
 }

@@ -1,6 +1,8 @@
 // 每行依次为英语、西班牙语、巴西葡萄牙语、阿拉伯语、加拿大法语；中文使用键名。
 // 界面翻译不改变内容服务的分类标识、搜索词或剧集元数据。
 export const messages = {
+  "打开导航": ["Open navigation", "Abrir navegación", "Abrir navegação", "فتح التنقل", "Ouvrir la navigation"],
+  "关闭导航": ["Close navigation", "Cerrar navegación", "Fechar navegação", "إغلاق التنقل", "Fermer la navigation"],
   "我的点赞": ["Liked episodes", "Mis me gusta", "Curtidas", "إعجاباتي", "Mes mentions J’aime"],
   "登录后查看点赞的剧集": ["Sign in to view your liked episodes", "Inicia sesión para ver los episodios que te gustan", "Entre para ver os episódios curtidos", "سجّل الدخول لعرض الحلقات التي أعجبتك", "Connectez-vous pour voir les épisodes aimés"],
   "还没有点赞的剧集": ["No liked episodes yet", "Aún no te gusta ningún episodio", "Nenhum episódio curtido ainda", "لم تعجبك أي حلقة بعد", "Aucun épisode aimé pour le moment"],
