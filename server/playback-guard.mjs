@@ -13,14 +13,14 @@ export class PlaybackGuard {
     const count = this.viewers.get(viewer) || 0;
     const ipCount = this.addresses.get(address) || 0;
     if (this.active >= this.maximum || count >= this.perViewer || ipCount >= this.perIp) throw new AccountError(429, '操作过于频繁，请稍后重试');
-    if (req.method !== 'HEAD') this.budget?.check(viewer, address);
-    const meter = req.method !== 'HEAD' ? this.budget?.meter(viewer, address) : null;
+    if (req.method !== 'HEAD') this.budget?.check(viewer, address,!!req.playbackPrivileged);
+    const meter = req.method !== 'HEAD' ? this.budget?.meter(viewer, address,!!req.playbackPrivileged) : null;
     this.active++; this.viewers.set(viewer, count + 1); this.addresses.set(address, ipCount + 1);
     const controller = new AbortController(); let released = false;
     if (meter) {
       const consume = (chunk, encoding) => {
         if (chunk === undefined || chunk === null || !/^video\//i.test(String(res.getHeader('Content-Type') || '')) || ![200, 206].includes(res.statusCode)) return true;
-        try { req.revalidatePlayback?.(); meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
+        try { req.revalidatePlayback?.(); meter.setPrivileged?.(req.playbackPrivileged); meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
         catch { res.destroy(); return false; }
       };
       const write = res.write, end = res.end;

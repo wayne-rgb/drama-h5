@@ -44,8 +44,9 @@ export function createHistoryHandler(store) {
       } else throw new HistoryError(405, 'unsupported history route or method');
     } catch (error) {
       const known = error instanceof HistoryError || error instanceof AccountError;
+      const full = error.errcode === 13 || error.code === 'SQLITE_FULL';
       if (!known) console.error('观看记录处理失败:', error.message);
-      json(res, { error: known ? error.message : 'history storage unavailable' }, known ? error.status : 500);
+      json(res, { error: full ? '个人资料存储额度不足，请稍后重试' : known ? error.message : 'history storage unavailable' }, full ? 507 : known ? error.status : 500);
     }
     return true;
   };

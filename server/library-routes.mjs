@@ -18,6 +18,6 @@ export function createLibraryHandler(store,sync){return async(req,res,url)=>{
       }
       sendJson(res,{ok:true});
     }else throw new LibraryError(404,'unknown library route');
-  }catch(error){const known=error instanceof LibraryError || error instanceof AccountError;sendJson(res,{error:known?error.message:'本地资料保存失败'},known?error.status:500);}
+  }catch(error){const full=error.errcode===13 || error.code==='SQLITE_FULL';const known=error instanceof LibraryError || error instanceof AccountError;sendJson(res,{error:full?'个人资料存储额度不足，请稍后重试':known?error.message:'本地资料保存失败'},full?507:known?error.status:500);}
   return true;
 };}

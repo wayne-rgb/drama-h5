@@ -96,3 +96,11 @@
 .mobile-prototype-mode .account-dialog { top: auto; bottom: 0; width: 100%; max-height: 92dvh; margin: 0; border-radius: 24px 24px 0 0; padding-bottom: env(safe-area-inset-bottom); }
 .mobile-prototype-preview .account-dialog { width: min(100vw, 430px); margin-inline: auto; }
 [dir="rtl"] .account-home .lucide-arrow-right, [dir="rtl"] .account-menu .lucide-arrow-right { transform: scaleX(-1); }
+.account-security { display:grid; gap:14px; min-width:0; }
+.account-security form,.account-security label,.account-security article { display:grid; gap:10px; }
+.account-security input { min-width:0; padding:12px; border-radius:10px; background:#111827; border:1px solid #334155; color:#f8fafc; }
+.account-security article { padding:14px; border:1px solid #334155; border-radius:12px; }
+.account-security small { color:#94a3b8; overflow-wrap:anywhere; }
+.account-mfa-secret { user-select:text; overflow-wrap:anywhere; padding:14px; background:#111827; border:1px solid #334155; border-radius:10px; }
+.account-recovery-codes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; user-select:text; }
+.account-recovery-codes code { overflow-wrap:anywhere; padding:10px; background:#111827; border-radius:8px; }

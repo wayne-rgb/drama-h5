@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
 import { LibraryError } from '../shared/library-store.mjs';
+import { AccountError } from './account-store.mjs';
+import { createContentClient } from '../shared/content-request.mjs';
 
 function origin(input){let url;try{url=new URL(input);}catch{throw new LibraryError(400,'远程地址无效');}if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new LibraryError(400,'远程地址必须为 HTTP(S) 服务地址');return url.toString().replace(/\/+$/,'');}
 export class LibrarySync {
-  constructor(store){this.store=store;this.running=false;this.nextAttempt=0;this.failures=0;this.generation=0;this.status={state:store.getMeta('syncConfig')?'pending':'unconfigured',pending:0,lastSyncedAt:null,error:''};}
-  async request(config,path,body){const response=await fetch(config.url+path,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${config.key}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(10000)});const data=await response.json();if(!response.ok)throw new LibraryError(response.status,data.error||'远程请求失败');return data;}
+  constructor(store,{allowPrivateTargets=false,guardWrite}={}){this.store=store;this.guardWrite=guardWrite;this.allowPrivateTargets=allowPrivateTargets;this.client=createContentClient({allowPrivateTargets,timeout:10000,maxRedirects:0,maxContentLength:8*1024**2,maxBodyLength:8*1024**2});this.running=false;this.nextAttempt=0;this.failures=0;this.generation=0;this.status={state:store.getMeta('syncConfig')?'pending':'unconfigured',pending:0,lastSyncedAt:null,error:''};}
+  receive(events,options){const finish=events?.length?this.guardWrite?.(Buffer.byteLength(JSON.stringify(events))*4+262144):undefined;try{return this.store.receive(events,options);}finally{finish?.();}}
+  async request(config,path,body){
+    try{if(!this.allowPrivateTargets&&new URL(config.url).protocol!=='https:')throw Error();const response=await this.client.request({url:config.url+path,method:body?'POST':'GET',headers:{Authorization:`Bearer ${config.key}`},data:body});if(!response.data||typeof response.data!=='object')throw Error();return response.data;}
+    catch(error){throw new LibraryError([400,401,403,409,413,429].includes(error.response?.status)?error.response.status:502,'远程同步失败，请检查地址与密钥');}
+  }
   async configure(input,revalidate){
     revalidate?.();
     const generation=++this.generation;
@@ -29,16 +35,16 @@ export class LibrarySync {
     this.running=true;const generation=this.generation;this.status.state='syncing';
     try{
       const events=this.store.pending(config.target);
-      if(events.length){const ack=await this.request(config,'/api/sync/push',{events,instanceId:config.instanceId});if(generation!==this.generation)return;if(ack.instanceId!==config.instanceId)throw new LibraryError(409,'远程实例已更换，请重新验证连接');this.store.receive(ack.events,{canonical:true});this.store.acknowledge(config.target,ack.acked);}
+      if(events.length){const ack=await this.request(config,'/api/sync/push',{events,instanceId:config.instanceId});if(generation!==this.generation)return;if(ack.instanceId!==config.instanceId)throw new LibraryError(409,'远程实例已更换，请重新验证连接');this.receive(ack.events,{canonical:true});this.store.acknowledge(config.target,ack.acked);}
       let cursor=this.store.getMeta(`cursor:${config.target}`)||0;
       for(let batch=0;batch<16;batch++){
         const started=Date.now();const result=await this.request(config,`/api/sync/pull?cursor=${cursor}`);if(generation!==this.generation)return;
         if(result.instanceId!==config.instanceId)throw new LibraryError(409,'远程实例已更换，请重新验证连接');
-        this.store.receive(result.events,{canonical:true});cursor=result.cursor;this.store.setMeta(`cursor:${config.target}`,cursor);this.store.setMeta('clockOffset',result.serverTime-(started+Date.now())/2);
+        this.receive(result.events,{canonical:true});cursor=result.cursor;this.store.setMeta(`cursor:${config.target}`,cursor);this.store.setMeta('clockOffset',result.serverTime-(started+Date.now())/2);
         if(!result.hasMore)break;
       }
       this.failures=0;this.nextAttempt=0;this.status={state:this.store.pending(config.target).length?'pending':'synced',pending:0,lastSyncedAt:Date.now(),error:''};
-    }catch(error){if(generation===this.generation){this.failures++;this.nextAttempt=Date.now()+Math.min(30000,1000*2**Math.min(this.failures,5));this.status.state='offline';this.status.error=error.message;}}
+    }catch(error){if(generation===this.generation){this.failures++;this.nextAttempt=Date.now()+Math.min(30000,1000*2**Math.min(this.failures,5));this.status.state='offline';this.status.error=error instanceof LibraryError || error instanceof AccountError?error.message:'远程同步失败，请检查地址与密钥';}}
     finally{this.running=false;}
   }
 }

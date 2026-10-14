@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import {SessionList} from './AccountSecurity';
 import { ArrowRight, Camera, Check, ChevronRight, Clock, Crown, Heart, ThumbsUp, LogOut, Mail, Settings, ShieldCheck, UserRound, X } from "lucide-react";
 import { Account, AccountSession, accountError, accountRequest, changeAccount } from "./account";
 import { languages, MessageKey, useI18n } from "./i18n";
@@ -61,7 +62,7 @@ export function AccountMenu(props: AreaProps) {
       <div className="account-menu-links"><button onClick={() => select(props.onFavorites)}><Heart size={18} /><span>{t("我的追剧")}</span><small>{props.favoritesCount}</small></button><button onClick={() => select(props.onHistory)}><Clock size={18} /><span>{t("观看历史")}</span><small>{props.historyCount}</small></button></div>
       <button className="account-menu-setting" onClick={() => select(props.onLikes)}><ThumbsUp size={18}/>{t('我的点赞')}<small className="ms-auto">{props.likesCount ?? '—'}</small></button>
       <button className="account-menu-setting" onClick={() => select(props.onSettings)}><Settings size={18} />{t("设置")}<ChevronRight size={16} /></button>
-      {props.session?.capabilities.admin && <a className="account-menu-setting" href="/admin"><ShieldCheck size={18}/>{t('内容后台')}<ChevronRight size={16}/></a>}
+      {(props.session?.capabilities.adminAccount || props.session?.capabilities.admin) && <a className="account-menu-setting" href="/admin"><ShieldCheck size={18}/>{t('内容后台')}<ChevronRight size={16}/></a>}
       {props.session?.capabilities.creator && <a className="account-menu-setting" href="/creator"><ShieldCheck size={18}/>{t('创作者工作台')}<ChevronRight size={16}/></a>}
       {error && <div role="alert" className="account-error">{localizeError(error)}</div>}
       {user && <button className="account-menu-setting" disabled={signingOut} onClick={() => { setSigningOut(true); setError(""); void changeAccount("/api/auth/logout", {}).catch(error => setError(accountError(error))).finally(() => setSigningOut(false)); }}><LogOut size={18} />{t("退出登录")}</button>}
@@ -149,8 +150,10 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
           {!user?.emailVerified && <div className="account-verification"><span>{t("邮箱尚未验证")}</span><button type="button" disabled={busy || !capabilities?.email} onClick={() => void perform(async () => { await accountRequest("/api/auth/verification", {}); setNotice("验证邮件已发送，请检查邮箱"); })}>{t("发送验证邮件")}</button></div>}
           {!capabilities?.email && <p className="account-service-note">{t("邮件服务尚未配置")}</p>}
           <button className="account-primary" type="submit" disabled={busy}>{t("保存资料")}</button>
-          <button type="button" className="account-google" disabled={!capabilities?.google || busy || user?.googleLinked} onClick={() => window.location.assign("/api/auth/google/start?link=1")}>{t(user?.googleLinked ? "Google已绑定" : "绑定Google账号")}</button>
+          {capabilities?.adminAccount&&!capabilities.admin&&<a className="account-text-button" href="/admin">{t('管理员二次验证')}</a>}
+          <button type="button" className="account-google" disabled={!capabilities?.google || busy || user?.googleLinked || !!capabilities?.adminAccount && !!capabilities.adminMfaEnabled && !capabilities.admin} onClick={() => window.location.assign("/api/auth/google/start?link=1")}>{t(user?.googleLinked ? "Google已绑定" : "绑定Google账号")}</button>
           <button type="button" className="account-text-button" onClick={() => void perform(() => changeAccount("/api/auth/logout", {}))}><LogOut size={16} />{t("退出登录")}</button>
+          <SessionList/>
         </> : <>
           {panel === "register" && <label>{t("昵称")}<input required autoComplete="nickname" maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>}
           {panel !== "reset" && <label>{t("邮箱")}<input type="email" required autoComplete="email" autoCapitalize="none" spellCheck={false} value={email} onChange={event => setEmail(event.target.value)} /></label>}

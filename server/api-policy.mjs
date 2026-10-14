@@ -1,5 +1,5 @@
 import { AccountError } from './account-store.mjs';
-import { isAdministrator } from './account-role.mjs';
+import { isAdministrator, isAdministratorAccount } from './account-role.mjs';
 
 // 每条对外路由都声明方法及身份边界；对象归属和VIP仍由业务处理器校验真实数据。
 const rules = [
@@ -15,6 +15,10 @@ const rules = [
   [/^\/api\/account\/session$/, ['GET'], 'public'],
   [/^\/api\/account\/profile$/, ['POST'], 'viewer'],
   [/^\/api\/account\/avatar$/, ['GET'], 'viewer'],
+  [/^\/api\/account\/sessions$/, ['GET'], 'viewer'],
+  [/^\/api\/account\/sessions\/revoke$/, ['POST'], 'viewer'],
+  [/^\/api\/account\/mfa$/, ['GET'], 'admin-account'],
+  [/^\/api\/account\/mfa\/(setup|enable|verify)$/, ['POST'], 'admin-account'],
   [/^\/api\/auth\/(register|login|recover|reset|verify)$/, ['POST'], 'public'],
   [/^\/api\/auth\/logout$/, ['POST'], 'public'],
   [/^\/api\/auth\/verification$/, ['POST'], 'viewer'],
@@ -67,9 +71,11 @@ export function createApiPolicy(accounts, store, config = process.env) {
         if (!user) throw new AccountError(401, '请刷新页面后重试');
         return user;
       }
-      if (['viewer','admin','creator'].includes(permission) || permission === 'comments' && writes) {
-        const user = accounts.requireViewer(req);
+      if (['viewer','admin','admin-account','creator'].includes(permission) || permission === 'comments' && writes) {
+        const sensitive=/^\/api\/billing\/(checkout|portal|confirm)$/.test(url.pathname)||url.pathname==='/api/account/sessions/revoke';
+        const user = sensitive ? accounts.requireSecurityViewer(req) : accounts.requireViewer(req);
         if (permission === 'admin' && !isAdministrator(user,config)) throw new AccountError(403, '需要管理员权限');
+        if (permission === 'admin-account' && !isAdministratorAccount(user,config)) throw new AccountError(403,'需要管理员权限');
         if (permission === 'creator' && !isAdministrator(user,config) && !store.isCreator(user.id)) throw new AccountError(403, '需要创作者权限');
         return user;
       }

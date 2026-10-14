@@ -37,6 +37,7 @@ export const membershipPlans = [
 
 export class AccountStore {
   constructor(filename) {
+    this.filename = filename;
     if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(filename);
     if (filename !== ':memory:') chmodSync(filename, 0o600);
@@ -50,6 +51,8 @@ export class AccountStore {
       CREATE TABLE IF NOT EXISTS account_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS account_creators(account_id TEXT PRIMARY KEY REFERENCES accounts(id),admin_id TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_manual_vip(account_id TEXT PRIMARY KEY REFERENCES accounts(id),period_end INTEGER NOT NULL,admin_id TEXT NOT NULL,reason TEXT NOT NULL,updated_at INTEGER NOT NULL);`);
+    for(const [column,type] of [['created_at','INTEGER NOT NULL DEFAULT 0'],['mfa_at','INTEGER NOT NULL DEFAULT 0'],['device','TEXT NOT NULL DEFAULT \'\'']])if(!this.db.prepare('PRAGMA table_info(account_sessions)').all().some(row=>row.name===column))this.db.exec(`ALTER TABLE account_sessions ADD COLUMN ${column} ${type}`);
+    this.db.exec('CREATE TABLE IF NOT EXISTS account_mfa(account_id TEXT PRIMARY KEY REFERENCES accounts(id),secret TEXT NOT NULL,last_counter INTEGER NOT NULL,recovery TEXT NOT NULL,enabled_at INTEGER NOT NULL);');
   }
   close() { this.db.close(); }
   guest(token) {
@@ -87,15 +90,15 @@ export class AccountStore {
     try { this.db.prepare('UPDATE accounts SET google_sub=?,email_verified=1,updated_at=? WHERE id=?').run(sub, Date.now(), id); }
     catch { throw new AccountError(409, '此Google账号已绑定其他账户'); }
   }
-  session(id) {
+  session(id,{mfa=false,device=''}={}) {
     const token = secret();
     this.db.prepare('DELETE FROM account_sessions WHERE expires_at<?').run(Date.now());
-    this.db.prepare('INSERT INTO account_sessions VALUES(?,?,?)').run(digest(token), id, Date.now() + 30 * 86400000);
+    this.db.prepare('INSERT INTO account_sessions(token_hash,account_id,expires_at,created_at,mfa_at,device) VALUES(?,?,?,?,?,?)').run(digest(token), id, Date.now() + 30 * 86400000,Date.now(),mfa?Date.now():0,String(device).slice(0,160));
     return token;
   }
   viewer(token) {
     if (!token || token.length > 256) return null;
-    return this.db.prepare('SELECT a.* FROM accounts a JOIN account_sessions s ON s.account_id=a.id WHERE s.token_hash=? AND s.expires_at>?').get(digest(token), Date.now()) || null;
+    return this.db.prepare('SELECT a.*,s.created_at AS session_created_at,s.mfa_at AS session_mfa_at,EXISTS(SELECT 1 FROM account_mfa m WHERE m.account_id=a.id) AS mfa_enabled FROM accounts a JOIN account_sessions s ON s.account_id=a.id WHERE s.token_hash=? AND s.expires_at>?').get(digest(token), Date.now()) || null;
   }
   logout(token) { if (token) this.db.prepare('DELETE FROM account_sessions WHERE token_hash=?').run(digest(token)); }
   token(purpose, accountId, payload = {}, ttl = 1800000) {
@@ -117,7 +120,7 @@ export class AccountStore {
     this.transaction(() => {
       this.db.prepare('UPDATE accounts SET password_hash=?,email_verified=1,updated_at=? WHERE id=?').run(hash, Date.now(), id);
       this.db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(id);
-      this.db.prepare('DELETE FROM account_tokens WHERE account_id=? AND purpose=?').run(id, 'reset');
+      this.db.prepare("DELETE FROM account_tokens WHERE account_id=? AND purpose IN ('reset','mfa-setup')").run(id);
     });
   }
   verifyEmail(id) { this.db.prepare('UPDATE accounts SET email_verified=1,updated_at=? WHERE id=?').run(Date.now(), id); }

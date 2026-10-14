@@ -22,6 +22,7 @@ import { protectRequestBody } from '../shared/http-json.mjs';
 import { RequestGuard, positiveLimit } from './request-guard.mjs';
 import { TrafficBudget } from './traffic-budget.mjs';
 import { createApiPolicy } from './api-policy.mjs';
+import { PersonalStorage } from './personal-storage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -90,6 +91,7 @@ const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
 const authorizeApi = createApiPolicy(accounts, accountStore);
+const personalStorage = new PersonalStorage(DATA_DIR,process.env);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
 const catalog = new CatalogCache();
 const trafficBudget = new TrafficBudget(path.join(DATA_DIR, 'resource-usage.sqlite'), process.env);
@@ -97,7 +99,7 @@ const playbackGuard = new PlaybackGuard(process.env, trafficBudget);
 const requestGuard = new RequestGuard(process.env);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
-const librarySync = new LibrarySync(libraryStore);
+const librarySync = new LibrarySync(libraryStore,{allowPrivateTargets:process.env.HG_MANAGED==='1',guardWrite:()=>personalStorage.ensureFree()});
 const handleLibrary = createLibraryHandler(libraryStore, librarySync);
 if (!libraryStore.getMeta("legacyBackendMigrated")) {
   for (const item of historyStore.list()) libraryStore.write({kind:"history", key:item.seriesId, op:"set", at:item.updatedAt, value:item});
@@ -223,6 +225,12 @@ const recommendations = createRecommendations(libraryStore);
 const personalLibraries = new Map();
 function personalServices(account, res, req) {
   if (!account) return { handleLibrary, handleHistory, recommendations };
+  const previous=personalLibraries.get(account.id);
+  if(previous?.ephemeral && !['GET','HEAD'].includes(req.method)){
+    personalStorage.open(previous.directory,!!account.guest);
+    personalLibraries.delete(account.id);previous.retired=true;
+    if(!previous.active){previous.sync.stop();previous.library.close();previous.history.close();}
+  }
   if (!personalLibraries.has(account.id)) {
     // 缓存只限制同时打开的数据库；关闭空闲连接不删除用户资料。
     if (personalLibraries.size >= 128) {
@@ -231,15 +239,21 @@ function personalServices(account, res, req) {
       idle[1].sync.stop();idle[1].library.close();idle[1].history.close();personalLibraries.delete(idle[0]);
     }
     const directory = path.join(DATA_DIR, account.guest ? 'guests' : 'accounts', account.id);
-    const library = new LibraryStore(path.join(directory, 'library.sqlite'));
-    const history = new HistoryStore(path.join(directory, 'history.sqlite'));
-    const sync = new LibrarySync(library);
+    // 空资料的读取仅用内存；首次实际写入才创建磁盘库，访问页面不会积累游客文件。
+    const ephemeral=['GET','HEAD'].includes(req.method) && !fs.existsSync(directory);
+    if(!ephemeral)personalStorage.open(directory,!!account.guest);
+    const library = new LibraryStore(ephemeral?':memory:':path.join(directory, 'library.sqlite'));
+    const history = new HistoryStore(ephemeral?':memory:':path.join(directory, 'history.sqlite'));
+    if(!ephemeral){fs.chmodSync(directory,0o700);for(const name of ['library.sqlite','history.sqlite'])fs.chmodSync(path.join(directory,name),0o600);}
+    const sync = new LibrarySync(library,{allowPrivateTargets:accounts.isLocal(req),guardWrite:bytes=>{personalStorage.check(directory,!!account.guest,bytes);return()=>personalStorage.refresh(directory);}});
     if (!account.guest && accounts.canConfigureSync(account,req)) sync.start();
-    personalLibraries.set(account.id, { active:0, library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
+    personalLibraries.set(account.id, { active:0, directory, ephemeral, library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
+    if(!ephemeral)personalStorage.refresh(directory);
   }
   const service = personalLibraries.get(account.id);
+  personalStorage.attach(req,res,service.directory,!!account.guest,[service.library.db,service.history.db]);
   personalLibraries.delete(account.id);personalLibraries.set(account.id,service);service.active++;
-  let released=false;const release=()=>{if(!released){released=true;service.active--;}};
+  let released=false;const release=()=>{if(!released){released=true;service.active--;if(service.retired&&!service.active){service.sync.stop();service.library.close();service.history.close();}}};
   res.once('finish',release);res.once('close',release);
   return service;
 }
@@ -617,7 +631,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
   res.setHeader('X-Frame-Options','DENY');
-  res.setHeader('Content-Security-Policy',"frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; frame-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+  res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   let u;
   if (req.url.length > 4096) return json(res, { error: '请求格式无效' }, 414);
   try { u = new URL(req.url, `http://${req.headers.host || "localhost"}`); }
@@ -641,6 +656,7 @@ const server = http.createServer(async (req, res) => {
   if (isApi) {
     try {
       const audience = accounts.audience(req);
+      req.playbackPrivileged = !!audience && !audience.guest && (accounts.canConfigureSync(audience,req) || accountStore.membership(audience.id).active);
       const address = accounts.address(req), viewer = audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${address}`;
       if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
@@ -648,7 +664,7 @@ const server = http.createServer(async (req, res) => {
         playbackSignal = playbackGuard.acquire(req, res, viewer, address);
       } else {
         const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience,req);
-        requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname), upload);
+        requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
       }
       if ([...u.searchParams].some(([key, value]) => key.length > 80 || value.length > (key === 'q' ? 200 : 1024))) throw new AccountError(400, '请求格式无效');
     } catch (error) {
@@ -665,6 +681,13 @@ const server = http.createServer(async (req, res) => {
       if (serveStatic(req, res, pathname)) return;
     }
     if (isApi) authorizeApi(req,res,u);
+    const securityAction=['/api/auth/login','/api/auth/logout','/api/auth/reset','/api/auth/verify','/api/account/sessions/revoke','/api/account/mfa/setup','/api/account/mfa/enable','/api/account/mfa/verify'].includes(pathname);
+    // 保留空间不足时，仍允许登录、退出及验证，便于用户保护账户和管理员处理故障。
+    if(isApi && ['POST','PUT'].includes(req.method) && !securityAction){
+      const previous=req.revalidateAccess;
+      req.revalidateAccess=()=>{previous?.();personalStorage.ensureFree();};
+      req.revalidateAccess();
+    }
     if (await accounts.handle(req, res, u)) return;
     if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';

@@ -66,7 +66,7 @@ export class LibraryStore {
   close(){this.db.close();}
   getMeta(key){const row=this.db.prepare('SELECT value FROM library_meta WHERE key=?').get(key);return row?JSON.parse(row.value):null;}
   setMeta(key,value){this.db.prepare('INSERT INTO library_meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));}
-  transaction(fn){this.db.exec('BEGIN IMMEDIATE');try{const result=fn();this.db.exec('COMMIT');return result;}catch(error){this.db.exec('ROLLBACK');throw error;}}
+  transaction(fn){this.db.exec('BEGIN IMMEDIATE');try{const result=fn();this.db.exec('COMMIT');return result;}catch(error){try{this.db.exec('ROLLBACK');}catch{/* SQLite满额时可能已自动回滚，保留原始错误供调用方识别。 */}throw error;}}
   write(input) {
     return this.transaction(()=>{
       if(input.id){const previous=this.db.prepare('SELECT * FROM library_events WHERE id=?').get(input.id);if(previous){const saved=JSON.parse(previous.event_json);const retry=validateEvent({...input,deviceId:saved.deviceId,seq:saved.seq,at:input.at??saved.at});if(fingerprint(retry)!==previous.fingerprint&&fingerprint(retry)!==fingerprint(saved))throw new LibraryError(409,'operation ID was reused');return saved;}}

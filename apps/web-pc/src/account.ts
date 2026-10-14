@@ -3,7 +3,7 @@ import { flushPersonalLibrary, getSettings } from "./api";
 
 export type Membership = { active: boolean; status: string; planId: string | null; periodEnd: number | null; cancelAtPeriodEnd: boolean; billingSubscription?: { status: string; planId: string; periodEnd: number; cancelAtPeriodEnd: boolean } | null };
 export type Account = { id: string; name: string; email: string; creator?: boolean; emailVerified: boolean; googleLinked: boolean; avatarUrl: string | null; membership: Membership };
-export type AccountSession = { user: Account | null; libraryOwner?: string; capabilities: { google: boolean; email: boolean; billing: boolean; billingProvider: string | null; admin?: boolean; creator?: boolean; librarySync?: boolean }; plans: { id: string; currency: string; amount: number; interval: string }[]; siteUrl: string };
+export type AccountSession = { user: Account | null; libraryOwner?: string; capabilities: { google: boolean; email: boolean; billing: boolean; billingProvider: string | null; admin?: boolean; adminAccount?: boolean; adminMfaEnabled?: boolean; adminMfaRequired?: boolean; creator?: boolean; librarySync?: boolean }; plans: { id: string; currency: string; amount: number; interval: string }[]; siteUrl: string };
 let sessionRequest: Promise<any> | null = null;
 
 export async function accountRequest<T = any>(path: string, body?: unknown): Promise<T> {

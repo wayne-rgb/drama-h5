@@ -1,4 +1,4 @@
-FROM node:22.20.0-bookworm-slim AS web-build
+FROM node:22.23.3-bookworm-slim AS web-build
 WORKDIR /app
 COPY apps/web-pc/package*.json apps/web-pc/.npmrc ./apps/web-pc/
 # 本地安全补丁必须先于npm ci进入构建上下文。
@@ -8,9 +8,9 @@ COPY apps/web-pc/ ./apps/web-pc/
 COPY shared/ ./shared/
 RUN npm --prefix apps/web-pc run build
 
-FROM node:22.20.0-bookworm-slim
+FROM node:22.23.3-bookworm-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg util-linux && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY LICENSE ./LICENSE

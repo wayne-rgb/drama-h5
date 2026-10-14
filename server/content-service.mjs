@@ -49,6 +49,7 @@ export function createContentService(directory, accountStore, accounts, provider
         const now = Date.now();
         if (!force && now - checkedAt < 1000) return;
         const current = accounts.viewer(req);
+        req.playbackPrivileged = isAdmin(current) || !!current && accountStore.membership(current.id).active;
         if (series.owned && store.row(series.id)?.status !== 'published' && !isAdmin(current)) throw new AccountError(404, '短剧未上架');
         if (required && !isAdmin(current) && (!current || current.id !== viewer?.id || !accountStore.membership(current.id).active)) throw new AccountError(403, 'VIP_REQUIRED');
         checkedAt = now;

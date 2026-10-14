@@ -14,7 +14,7 @@ test('replacement remote instance rejects upload before writing or acknowledging
  }finally{await fixture.close();}
 });
 test('independent local libraries merge all shared data, work offline, and retain data when disconnected',async()=>{
- const fixture=await setup();const first=new LibraryStore(':memory:');const second=new LibraryStore(':memory:');const a=new LibrarySync(first),b=new LibrarySync(second);
+ const fixture=await setup();const first=new LibraryStore(':memory:');const second=new LibraryStore(':memory:');const a=new LibrarySync(first,{allowPrivateTargets:true}),b=new LibrarySync(second,{allowPrivateTargets:true});
  try{
   first.write({kind:'favorite',key:favorite.id,op:'set',value:favorite});
   second.write({kind:'search',key:'搜索',op:'set',value:{query:'搜索'}});

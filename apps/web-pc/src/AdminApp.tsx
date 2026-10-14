@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Film, Users, MessageSquare, History, Menu, X, BarChart3 } from 'lucide-react';
+import { Film, Users, MessageSquare, History, Menu, X, BarChart3, ShieldCheck } from 'lucide-react';
+import AdminSecurity from './AccountSecurity';
 import axios from 'axios';
 import { Account, accountRequest, changeAccount, accountError } from './account';
 import { useAccountSession } from './AccountArea';
@@ -21,7 +22,7 @@ export default function AdminApp() {
   const { t, localizeLabel, localizeError, formatDate, language, setLanguage } = useI18n();
   const account = useAccountSession();
   const [email,setEmail] = useState(''), [password,setPassword] = useState(''), [busy,setBusy] = useState(false), [error,setError] = useState('');
-  const [tab,setTab] = useState<'series'|'accounts'|'comments'|'audit'|'analytics'>('series');
+  const [tab,setTab] = useState<'series'|'accounts'|'comments'|'audit'|'analytics'|'security'>('series');
   const [analyticsSeriesId,setAnalyticsSeriesId] = useState('');
   const [sidebarOpen,setSidebarOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -54,8 +55,8 @@ export default function AdminApp() {
   const [member,setMember] = useState<Account|null>(null), [end,setEnd] = useState(''), [reason,setReason] = useState('');
   const selectedAssets=assets.filter(asset=>asset.id===selected?.coverId||selected?.episodes.some(episode=>episode.assetId===asset.id));
   const defaultVipEnd = (user:Account) => { const date=new Date(Math.max(Date.now()+30*86400000,user.membership.periodEnd||0)); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
-  const labels: Record<typeof tab,MessageKey> = {series:'短剧管理',accounts:'用户与会员',comments:'评论管理',audit:'操作记录',analytics:'内容分析'};
-  const navigationIcons = {series:Film,accounts:Users,comments:MessageSquare,audit:History,analytics:BarChart3};
+  const labels: Record<typeof tab,MessageKey> = {series:'短剧管理',accounts:'用户与会员',comments:'评论管理',audit:'操作记录',analytics:'内容分析',security:'账户安全'};
+  const navigationIcons = {series:Film,accounts:Users,comments:MessageSquare,audit:History,analytics:BarChart3,security:ShieldCheck};
   const statusLabels: Record<string,MessageKey> = {draft:'草稿',published:'已上架',uploading:'上传中',processing:'处理中',ready:'可用',failed:'失败',visible:'可见',hidden:'已隐藏',deleted:'已删除'};
   const run = async (action:()=>Promise<void>) => { if(busy)return; setBusy(true);setError('');try{await action();}catch(error){setError(accountError(error));}finally{setBusy(false);} };
   const rememberAssets = (rows:Asset[]) => setAssets(current=>[...rows,...current].filter((row,index,all)=>all.findIndex(asset=>asset.id===row.id)===index));
@@ -66,7 +67,7 @@ export default function AdminApp() {
     if(tab==='accounts'){const rows=(await adminRequest(`accounts?q=${encodeURIComponent(query)}&page=${page}`)).items;setAccounts(rows);setPageSize(rows.length);}
     } finally { setLoading(false); }
   };
-  useEffect(()=>{if(account.session?.capabilities.admin)void load().catch(error=>setError(accountError(error)));},[tab,page,account.session?.user?.id]);
+  useEffect(()=>{if(account.session?.capabilities.admin)void load().catch(error=>setError(accountError(error)));},[tab,page,account.session?.user?.id,account.session?.capabilities.admin]);
   const edit = (data:AdminDetail|null) => {if(data?.assets)rememberAssets(data.assets);setSelected(data);setTitle(data?.title||'');setDescription(data?.description||'');setTags(data?.tags||'');setGenreIds(data?.categoryIds||[]);setContentType(data?.contentType||'real-drama');setContentLanguage(data?.language||'en');setCoverId(data?.coverId||'');setNumber((data?.episodes.length||0)+1);setEpisodeTitle('');setAssetId('');};
   useEffect(()=>{
     const id=account.session?.user?.id;
@@ -81,6 +82,7 @@ export default function AdminApp() {
   const save = async()=>{const data=await adminRequest(selected?`series/${selected.id}`:'series',{title,description,tags,categoryIds:genreIds,contentType,language:contentLanguage,coverId});edit(data);await load();};
   if(!account.session)return <main className="admin-shell"><p>{t('账户加载中...')}</p>{account.error&&<p role="alert">{localizeError(account.error)}</p>}<button onClick={()=>void account.refresh()}>{t('重试')}</button></main>;
   if(!account.session.user)return <main className="admin-login"><h1>{t('内容后台')}</h1><form onSubmit={event=>{event.preventDefault();void run(()=>changeAccount('/api/auth/login',{email,password},'/admin'));}}><label>{t('邮箱')}<input type="email" required autoComplete="username" value={email} onChange={event=>setEmail(event.target.value)}/></label><label>{t('密码')}<input type="password" required autoComplete="current-password" value={password} onChange={event=>setPassword(event.target.value)}/></label><button disabled={busy}>{t('登录')}</button>{error&&<p role="alert">{localizeError(error)}</p>}</form><a href="/">{t('返回')}</a></main>;
+  if(account.session.capabilities.adminAccount&&!account.session.capabilities.admin)return <main className="admin-shell"><AdminSecurity session={account.session} onRefresh={account.refresh}/><button onClick={()=>void changeAccount('/api/auth/logout',{},'/admin')}>{t('退出登录')}</button></main>;
   if(!account.session.capabilities.admin)return <main className="admin-shell"><h1>{t('需要管理员权限')}</h1><p>{t('请使用已配置的管理员账户登录')}</p><button onClick={()=>void run(()=>changeAccount('/api/auth/logout',{},'/admin'))}>{t('退出登录')}</button><a href="/">{t('返回')}</a></main>;
   return <div className="admin-shell admin-layout">
     {sidebarOpen&&<div className="admin-sidebar-backdrop" aria-hidden="true" onClick={closeSidebar}/>}
@@ -91,6 +93,7 @@ export default function AdminApp() {
     <div className="admin-workspace">
     <header className="admin-header"><button ref={menuButton} className="admin-menu-toggle" aria-label={t('打开导航')} aria-expanded={sidebarOpen} onClick={()=>setSidebarOpen(true)}><Menu size={22}/></button><h1>{t(labels[tab])}</h1><span>{account.session.user.name}</span><select aria-label={t('界面语言')} value={language} onChange={event=>setLanguage(event.target.value as Language)}>{languages.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select><a href="/">{t('返回产品')}</a><button disabled={busy} onClick={()=>void run(()=>changeAccount('/api/auth/logout',{},'/admin'))}>{t('退出登录')}</button></header>
     <main className="admin-main">
+    {tab==='security'&&<AdminSecurity session={account.session} onRefresh={account.refresh}/>}
     {error&&<p role="alert" className="account-error">{localizeError(error)}</p>}
     {(tab==='series'||tab==='accounts')&&<form className="admin-search" onSubmit={event=>{event.preventDefault();if(page!==1)setPage(1);else void run(load);}}><input aria-label={t('搜索')} placeholder={t('搜索')} value={query} onChange={event=>setQuery(event.target.value)}/><button disabled={busy}>{t('搜索')}</button></form>}
     <div hidden={tab!=='series'} className="admin-content-columns admin-series-editor"><section className="admin-panel">

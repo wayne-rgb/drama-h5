@@ -3,7 +3,8 @@ import nodemailer from 'nodemailer';
 import { OAuth2Client } from 'google-auth-library';
 import { AccountError, digest, emailAddress, membershipPlans, passwordHash, passwordMatches, secret } from './account-store.mjs';
 import { createBilling } from './account-billing.mjs';
-import { isAdministrator } from './account-role.mjs';
+import { isAdministrator, isAdministratorAccount } from './account-role.mjs';
+import { AccountMfa } from './account-mfa.mjs';
 import { safeAccountReturn } from './account-return.mjs';
 import { readJson as readInput, readBody } from '../shared/http-json.mjs';
 import { AuthenticationLimits, clientAddress } from './auth-limits.mjs';
@@ -29,11 +30,13 @@ export function createAccountService(store, config = process.env) {
   const mail = config.SMTP_HOST && config.SMTP_FROM ? nodemailer.createTransport({ host: config.SMTP_HOST, port: Number(config.SMTP_PORT || 587), secure: config.SMTP_SECURE === 'true', requireTLS: config.SMTP_SECURE !== 'true', auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASSWORD } : undefined, connectionTimeout: 15000, socketTimeout: 20000, disableFileAccess: true, disableUrlAccess: true }) : null;
   const billing = createBilling(store, config, origin);
   const rates = new AuthenticationLimits(config);
+  const mfa = new AccountMfa(store,config);
   const viewer = req => store.viewer(cookies(req).hg_account_session);
   const localAccess = createLocalAccess(config, origin);
   const requireViewer = req => { const account = viewer(req); if (!account) throw new AccountError(401, '请先登录'); return account; };
+  const requireSecurityViewer = req => {const account=requireViewer(req);if(account.mfa_enabled && isAdministratorAccount(account,config) && !isAdministrator(account,config))throw new AccountError(403,'请先完成二次验证');return account;};
   const setCookie = (res, name, value, maxAge) => res.setHeader('Set-Cookie', `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
-  const login = (res, account) => { setCookie(res, 'hg_account_session', store.session(account.id), 2592000); reply(res, { user: store.publicAccount(account) }); };
+  const login = (res, account,req,verified=false,extra={}) => { setCookie(res, 'hg_account_session', store.session(account.id,{mfa:verified,device:req.headers['user-agent']}), 2592000); reply(res, { user: store.publicAccount(account),...extra }); };
   const sameOrigin = localAccess.sameOrigin;
   const rateLimit = (req, scope, limit = 20) => {
     rates.request(req, scope, limit);
@@ -46,7 +49,8 @@ export function createAccountService(store, config = process.env) {
   };
   const capabilities = { google: !!oauth, email: !!mail, billing: billing.ready, billingProvider: billing.provider };
   return {
-    viewer, sameOrigin, requireViewer,
+    viewer, sameOrigin, requireViewer, requireSecurityViewer,
+    isLocal: req => localAccess.local(req),
     address: req => clientAddress(req, rates.trusted),
     audience: req => viewer(req) || store.guest(cookies(req).hg_guest_session),
     canConfigureSync: (account, req) => !!req && localAccess.local(req) || isAdministrator(account,config),
@@ -86,13 +90,13 @@ export function createAccountService(store, config = process.env) {
             const session = store.guestSession();guest={id:session.id,guest:true};setCookie(res,'hg_guest_session',session.token,31536000);
           }
           if (!account && local) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), creator: store.isCreator(account?.id), librarySync: local || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
+          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), adminAccount:isAdministratorAccount(account,config), adminMfaEnabled:!!account?.mfa_enabled, adminMfaRequired:config.ADMIN_REQUIRE_MFA==='1', creator: store.isCreator(account?.id), librarySync: local || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);
           const input = await readJson(req), email = emailAddress(input.email), hash = await passwordHash(input.password);
           const account = store.create({ email, name: input.name || email.split('@')[0], hash });
-          login(res, account);
+          login(res, account,req);
         } else if (route === '/api/auth/login' && req.method === 'POST') {
           // 请求总量保护允许正常成功登录；失败次数分别按账户、地址及两者组合计算。
           rateLimit(req, 'login', 300);
@@ -103,9 +107,30 @@ export function createAccountService(store, config = process.env) {
           if (!current || current.password_hash !== account.password_hash) { rates.failedLogin(req,email); throw new AccountError(401,'邮箱或密码不正确'); }
           rates.successfulLogin(req, email);
           store.logout(cookies(req).hg_account_session);
-          login(res, current);
+          login(res, current,req);
         } else if (route === '/api/auth/logout' && req.method === 'POST') {
           store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', '', 0); reply(res, { ok: true });
+        } else if (route === '/api/account/sessions' && req.method==='GET') {
+          const account=requireViewer(req),current=digest(cookies(req).hg_account_session);
+          reply(res,{items:store.db.prepare('SELECT token_hash AS id,created_at AS createdAt,expires_at AS expiresAt,device FROM account_sessions WHERE account_id=? AND expires_at>? ORDER BY created_at DESC LIMIT 100').all(account.id,Date.now()).map(row=>({...row,current:row.id===current}))});
+        } else if (route === '/api/account/sessions/revoke' && req.method==='POST') {
+          const input=await readJson(req),account=requireSecurityViewer(req),current=digest(cookies(req).hg_account_session);
+          if(input.others===true)store.db.prepare('DELETE FROM account_sessions WHERE account_id=? AND token_hash<>?').run(account.id,current);
+          else{if(typeof input.id!=='string'||!/^[a-f0-9]{64}$/.test(input.id)||input.id===current)throw new AccountError(400,'会话选择无效');store.db.prepare('DELETE FROM account_sessions WHERE account_id=? AND token_hash=?').run(account.id,input.id);}
+          reply(res,{ok:true});
+        } else if (route==='/api/account/mfa'||/^\/api\/account\/mfa\/(setup|enable|verify)$/.test(route)) {
+          const account=requireViewer(req);if(!isAdministratorAccount(account,config))throw new AccountError(403,'需要管理员权限');
+          if(req.method==='GET'&&route==='/api/account/mfa')reply(res,{enabled:!!account.mfa_enabled,verified:isAdministrator(account,config)});
+          else if(req.method==='POST'){
+            rateLimit(req,'mfa',30);const input=await readJson(req),scope=`mfa:${account.id}`;rates.checkLogin(req,scope);
+            try{
+              if(route.endsWith('/setup'))reply(res,await mfa.setup(account,input.password,req.revalidateAccess));
+              else if(route.endsWith('/enable')){const recoveryCodes=mfa.enable(account,input.token,input.code);login(res,account,req,true,{recoveryCodes});}
+              else if(route.endsWith('/verify')){mfa.verify(account,input.code);store.logout(cookies(req).hg_account_session);login(res,account,req,true);}
+              else throw new AccountError(405,'请求方式无效');
+              rates.successfulLogin(req,scope);
+            }catch(error){if([400,401].includes(error.status))rates.failedLogin(req,scope);throw error;}
+          }else throw new AccountError(405,'请求方式无效');
         } else if (route === '/api/account/profile' && req.method === 'POST') reply(res, { user: store.publicAccount(store.updateProfile(requireViewer(req).id, await readJson(req))) });
         else if (route === '/api/account/avatar' && req.method === 'GET') {
           const account = requireViewer(req);
@@ -128,7 +153,7 @@ export function createAccountService(store, config = process.env) {
         } else if (route === '/api/auth/google/start' && req.method === 'GET') {
           rateLimit(req, 'google', 300);
           if (!oauth) throw new AccountError(503, 'Google登录尚未配置');
-          const linking = url.searchParams.get('link') === '1', account = linking ? requireViewer(req) : null;
+          const linking = url.searchParams.get('link') === '1', account = linking ? requireSecurityViewer(req) : null;
           const nonce = secret(), codeVerifier = secret(), state = store.token('google', account?.id || null, { nonce, codeVerifier, returnTo: safeAccountReturn(url.searchParams.get('returnTo'),origin) }, 600000);
           setCookie(res, 'hg_google_state', state, 600);
           res.writeHead(302, { Location: oauth.generateAuthUrl({ scope: ['openid', 'email', 'profile'], state, nonce, code_challenge: crypto.createHash('sha256').update(codeVerifier).digest('base64url'), code_challenge_method: 'S256' }), 'Cache-Control': 'no-store' }); res.end();
@@ -145,15 +170,15 @@ export function createAccountService(store, config = process.env) {
           if (!payload?.sub || !payload.email_verified || payload.nonce !== token.payload.nonce) throw new AccountError(403, 'Google登录验证失败，请重试');
           let account = store.googleAccount(payload.sub);
           if (token.accountId) {
-            const current = requireViewer(req);
+            const current = requireSecurityViewer(req);
             if (current.id !== token.accountId || current.email !== emailAddress(payload.email)) throw new AccountError(403, '请选择与账户邮箱一致的Google账号');
             store.linkGoogle(current.id, payload.sub); account = store.byId(current.id);
           } else if (!account) account = store.create({ email: payload.email, name: payload.name || payload.email.split('@')[0], googleSub: payload.sub, avatar: typeof payload.picture === 'string' && /^https:\/\/[^/]+\.googleusercontent\.com\//.test(payload.picture) ? payload.picture : null, verified: true });
-          store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', store.session(account.id), 2592000);
+          store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', store.session(account.id,{device:req.headers['user-agent']}), 2592000);
           res.writeHead(302, { Location: `${origin}${callbackReturn}`, 'Cache-Control': 'no-store' }); res.end();
-        } else if (route === '/api/billing/checkout' && req.method === 'POST') { const input=await readJson(req), result=await billing.checkout(requireViewer(req),input.planId,input.returnTo); req.revalidateAccess?.(); reply(res,result); }
-        else if (route === '/api/billing/portal' && req.method === 'POST') { const result=await billing.portal(requireViewer(req),(await readJson(req)).returnTo); req.revalidateAccess?.(); reply(res,result); }
-        else if (route === '/api/billing/confirm' && req.method === 'POST') { await billing.confirm(requireViewer(req), (await readJson(req)).sessionId); req.revalidateAccess?.(); reply(res, { ok: true }); }
+        } else if (route === '/api/billing/checkout' && req.method === 'POST') { const input=await readJson(req), result=await billing.checkout(requireSecurityViewer(req),input.planId,input.returnTo); req.revalidateAccess?.(); reply(res,result); }
+        else if (route === '/api/billing/portal' && req.method === 'POST') { const result=await billing.portal(requireSecurityViewer(req),(await readJson(req)).returnTo); req.revalidateAccess?.(); reply(res,result); }
+        else if (route === '/api/billing/confirm' && req.method === 'POST') { await billing.confirm(requireSecurityViewer(req), (await readJson(req)).sessionId); req.revalidateAccess?.(); reply(res, { ok: true }); }
         else throw new AccountError(404, '页面不存在');
       } catch (error) {
         if (url.pathname === '/api/auth/google/callback') {

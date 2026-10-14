@@ -9,6 +9,9 @@ export class TrafficBudget {
   constructor(filename, config = {}, clock = Date.now) {
     this.clock = clock;
     this.limits = [positiveLimit(config, 'CONTENT_DAILY_BYTES', 100 * 1024 ** 3), positiveLimit(config, 'CONTENT_VIEWER_DAILY_BYTES', 5 * 1024 ** 3), positiveLimit(config, 'CONTENT_IP_DAILY_BYTES', 50 * 1024 ** 3)];
+    this.vipReserve = Math.min(Number(config.CONTENT_VIP_RESERVED_BYTES ?? Math.floor(this.limits[0]/5)),this.limits[0]);
+    if(!Number.isSafeInteger(this.vipReserve)||this.vipReserve<0)throw new Error('会员流量保留额度配置无效');
+    this.warnedDay=-1;
     if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(filename);
     if (filename !== ':memory:') chmodSync(filename, 0o600);
@@ -24,12 +27,12 @@ export class TrafficBudget {
     if (this.day !== day) { this.db.prepare('DELETE FROM traffic_budget WHERE day<?').run(day - 1); this.day = day; }
     return day;
   }
-  keys(viewer, address) { return ['global', `viewer:${digest(viewer)}`, `ip:${digest(address)}`]; }
-  available(day, keys) { return Math.min(...keys.map((key, index) => this.limits[index] - (this.read.get(day, key)?.bytes || 0))); }
+  keys(viewer, address, privileged=false) { return ['global', `viewer:${digest(viewer)}`, `ip:${digest(address)}`,...(!privileged && this.vipReserve ? ['public'] : [])]; }
+  available(day, keys) { return Math.min(...keys.map((key, index) => (key==='public'?this.limits[0]-this.vipReserve:this.limits[index]) - (this.read.get(day, key==='public'?'global':key)?.bytes || 0))); }
   exhausted() { const error = new AccountError(429, '播放流量已达保护上限，请稍后再试'); error.retryAfter = Math.max(1, Math.ceil((86400000 - this.clock() % 86400000) / 1000)); return error; }
-  check(viewer, address) { if (this.available(this.currentDay(), this.keys(viewer, address)) <= 0) throw this.exhausted(); }
-  meter(viewer, address) {
-    const keys = this.keys(viewer, address); let day = this.currentDay(), remaining = 0, closed = false;
+  check(viewer, address, privileged=false) { if (this.available(this.currentDay(), this.keys(viewer, address,privileged)) <= 0) throw this.exhausted(); }
+  meter(viewer, address, privileged=false) {
+    let keys = this.keys(viewer, address,privileged), day = this.currentDay(), remaining = 0, closed = false;
     const release = () => {
       if (!remaining) return;
       this.db.exec('BEGIN IMMEDIATE');
@@ -37,6 +40,7 @@ export class TrafficBudget {
       catch (error) { this.db.exec('ROLLBACK'); throw error; }
     };
     return {
+      setPrivileged: value => { const next=this.keys(viewer,address,!!value);if(next.length!==keys.length){release();keys=next;} },
       consume: size => {
         if (closed) throw this.exhausted();
         if (day !== this.currentDay()) { release(); day = this.currentDay(); }
@@ -51,6 +55,7 @@ export class TrafficBudget {
             const reserved = Math.min(available, Math.max(1024 * 1024, needed));
             for (const key of keys) this.add.run(day, key, reserved);
             this.db.exec('COMMIT'); remaining += reserved;
+            if(this.warnedDay!==day && (this.read.get(day,'global')?.bytes||0)>=this.limits[0]*0.8){this.warnedDay=day;console.warn(JSON.stringify({event:'播放流量保护预警',remainingBytes:this.limits[0]-(this.read.get(day,'global')?.bytes||0)}));}
           } catch (error) { this.db.exec('ROLLBACK'); throw error; }
         }
         remaining -= size;

@@ -87,7 +87,7 @@ test('local HTTP operations and authenticated remote sync accept identical recom
   const second = new LibraryStore(':memory:');
   const key = 'recommendation-fixture-shared-key';
   const syncServer = createSyncServer(remote, key);
-  const a = new LibrarySync(first), b = new LibrarySync(second);
+  const a = new LibrarySync(first,{allowPrivateTargets:true}), b = new LibrarySync(second,{allowPrivateTargets:true});
   const handler = createLibraryHandler(first, a);
   const localServer = http.createServer(async (req, res) => { if (!await handler(req, res, new URL(req.url, 'http://localhost'))) { res.writeHead(404);res.end(); } });
   const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

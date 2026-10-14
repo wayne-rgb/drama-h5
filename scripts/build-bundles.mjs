@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const output=path.join(root,'outputs','bundles');fs.mkdirSync(output,{recursive:true});
-const version='22.20.0';
+const version='22.23.3';
 const platforms=(process.argv.find(arg=>arg.startsWith('--platforms='))?.split('=')[1]||'win-x64,linux-x64,linux-arm64,darwin-x64,darwin-arm64').split(',');
 const cache=path.join(root,'outputs','runtime-cache');fs.mkdirSync(cache,{recursive:true});
 function pruneLegacyLayout(directory){
@@ -55,12 +55,13 @@ async function stage(platform,remote=false){
   const notices=['react','react-dom','scheduler','lucide-react','axios'].map(name=>`${name}\n${fs.readFileSync(path.join(root,'apps','web-pc','node_modules',name,'LICENSE'),'utf8')}`).join('\n\n');
   fs.writeFileSync(path.join(directory,'THIRD_PARTY_NOTICES.txt'),notices);
   for(const name of fs.readdirSync(path.join(root,'server')).filter(name=>name.endsWith('.mjs')))copy(path.join(root,'server',name),path.join(directory,'server',name));
-  copy(path.join(root,'shared','content-provider.mjs'),path.join(directory,'shared','content-provider.mjs'));
+  for(const name of fs.readdirSync(path.join(root,'shared')).filter(name=>name.endsWith('.mjs')))copy(path.join(root,'shared',name),path.join(directory,'shared',name));
   copy(path.join(root,'shared','content-core'),path.join(directory,'shared','content-core'));for(const name of ['recommendation-core.cjs','category-contract.cjs'])copy(path.join(root,'shared',name),path.join(directory,'shared',name));copy(path.join(root,'apps','web-pc','dist'),path.join(directory,'apps','web-pc','dist'));
-  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({private:true,type:'module',dependencies:{axios:'1.13.6'}},null,2));
+  // 使用已审计的锁定依赖，独立包不能退回旧Axios或遗漏账户、邮件及支付模块。
+  for(const name of ['package.json','package-lock.json'])copy(path.join(root,name),path.join(directory,name));
   const accidentalLink=path.join(directory,'node_modules','hongguotv');
   if(fs.existsSync(accidentalLink)&&fs.lstatSync(accidentalLink).isSymbolicLink())fs.unlinkSync(accidentalLink);
-  run(process.execPath,[process.env.npm_execpath||path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js'),'install','--omit=dev','--no-audit','--no-fund'],{cwd:directory});
+  run(process.execPath,[process.env.npm_execpath||path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js'),'ci','--omit=dev','--no-audit','--no-fund'],{cwd:directory});
  }
  scripts(directory,remote);
  copy(path.join(root,'docs','LOCAL_REMOTE_SERVICES.md'),path.join(directory,'DEPLOYMENT.md'));

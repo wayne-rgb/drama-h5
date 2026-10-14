@@ -17,6 +17,9 @@ services:
       - local-data:/data
     restart: unless-stopped
     init: true
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 128
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

@@ -56,7 +56,7 @@ export class HistoryStore {
   transaction(operation) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const result = operation(); this.db.exec('COMMIT'); return result; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    catch (error) { try { this.db.exec('ROLLBACK'); } catch { /* 满额时SQLite可能已回滚，保留原始错误。 */ } throw error; }
   }
   registerSession(value) {
     const sessionId = string(value.sessionId, 'sessionId');
