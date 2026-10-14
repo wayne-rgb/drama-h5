@@ -5,12 +5,20 @@ import { toggleMediaFullscreen } from '../apps/web-pc/src/playback-fullscreen.mj
 
 function fixture(paused = false) {
   const page = new EventTarget(), surface = new EventTarget(), video = new EventTarget();
+  const pendingPauses = new Map(); let nextTimer = 0, now = 0;
+  surface.setTimeout = (callback, delay) => { const id = ++nextTimer; pendingPauses.set(id, { callback, at: now + delay }); return id; };
+  surface.clearTimeout = id => pendingPauses.delete(id);
   page.visibilityState = 'visible';
   Object.assign(video, { paused, ended: false, currentTime: 88, plays: 0 });
   video.pause = () => { video.paused = true; video.dispatchEvent(new Event('pause')); };
   video.play = () => { video.paused = false; video.plays++; video.dispatchEvent(new Event('play')); return Promise.resolve(); };
   const cleanup = bindPlaybackLifecycle(video, page, surface);
-  return { page, surface, video, cleanup };
+  const advancePause = milliseconds => {
+    now += milliseconds;
+    for (const [id, timer] of [...pendingPauses]) if (timer.at <= now) { pendingPauses.delete(id); timer.callback(); }
+  };
+  const settlePause = () => { const timers = [...pendingPauses.values()]; pendingPauses.clear(); for (const timer of timers) timer.callback(); };
+  return { page, surface, video, cleanup, settlePause, advancePause, pendingPauses };
 }
 const emit = (target, name) => target.dispatchEvent(new Event(name));
 
@@ -30,6 +38,48 @@ test('用户手动暂停的播放器经历挂起和页面恢复后不自动播�
   const { page, surface, video, cleanup } = fixture(true);
   emit(page, 'freeze'); emit(surface, 'pagehide'); emit(page, 'resume'); emit(surface, 'pageshow');
   assert.equal(video.paused, true); assert.equal(video.plays, 0); cleanup();
+});
+
+test('iPhone 先暂停媒体后通知隐藏页面时，返回前台仍按原进度续播', async () => {
+  const { page, video, cleanup, advancePause, pendingPauses } = fixture();
+  video.pause();
+  assert.equal(page.visibilityState, 'visible'); assert.equal(pendingPauses.size, 1);
+  // 实际侧键锁屏中，隐藏通知比媒体暂停晚约 192 毫秒。
+  advancePause(200); assert.equal(pendingPauses.size, 1);
+  page.visibilityState = 'hidden'; emit(page, 'visibilitychange');
+  assert.equal(pendingPauses.size, 0); assert.equal(video.plays, 0);
+  page.visibilityState = 'visible'; emit(page, 'visibilitychange');
+  await Promise.resolve();
+  assert.equal(video.paused, false); assert.equal(video.plays, 1); assert.equal(video.currentTime, 88);
+  cleanup();
+});
+
+test('页面控件和键盘主动暂停后立即切后台，不会被当成系统暂停恢复', async () => {
+  for (const event of ['pointerup', 'click', 'keydown']) {
+    const { page, video, cleanup } = fixture();
+    page.addEventListener(event, () => video.pause(), { once: true });
+    emit(page, event); await Promise.resolve();
+    page.visibilityState = 'hidden'; emit(page, 'visibilitychange');
+    page.visibilityState = 'visible'; emit(page, 'visibilitychange');
+    await Promise.resolve();
+    assert.equal(video.paused, true, event); assert.equal(video.plays, 0, event);
+    cleanup();
+  }
+});
+
+test('持续可见时的外部暂停与结束不会在下次返回前台时重播，解绑清理延迟任务', () => {
+  const { page, video, cleanup, settlePause, pendingPauses } = fixture();
+  video.pause(); settlePause();
+  page.visibilityState = 'hidden'; emit(page, 'visibilitychange');
+  page.visibilityState = 'visible'; emit(page, 'visibilitychange');
+  assert.equal(video.paused, true); assert.equal(video.plays, 0);
+  video.paused = false; emit(video, 'play'); video.ended = true; emit(video, 'ended');
+  page.visibilityState = 'hidden'; emit(page, 'visibilitychange');
+  page.visibilityState = 'visible'; emit(page, 'visibilitychange');
+  assert.equal(video.plays, 0);
+  video.ended = false; video.paused = false; emit(video, 'play'); video.pause();
+  assert.equal(pendingPauses.size, 1); cleanup(); assert.equal(pendingPauses.size, 0);
+  settlePause(); assert.equal(video.plays, 0);
 });
 
 test('后台才完成加载的视频及时暂停，返回时可恢复且旧播放器解绑后不再续播', async () => {
