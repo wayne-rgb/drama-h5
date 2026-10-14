@@ -194,17 +194,27 @@ function createRecommendations(libraryStore) { return new RecommendationService(
 }); }
 const recommendations = createRecommendations(libraryStore);
 const personalLibraries = new Map();
-function personalServices(account) {
+function personalServices(account, res) {
   if (!account) return { handleLibrary, handleHistory, recommendations };
   if (!personalLibraries.has(account.id)) {
-    const directory = path.join(DATA_DIR, 'accounts', account.id);
+    // 缓存只限制同时打开的数据库；关闭空闲连接不删除用户资料。
+    if (personalLibraries.size >= 128) {
+      const idle = [...personalLibraries.entries()].find(([,service])=>!service.active && !service.sync.running);
+      if (!idle) throw new AccountError(429,'操作过于频繁，请稍后重试');
+      idle[1].sync.stop();idle[1].library.close();idle[1].history.close();personalLibraries.delete(idle[0]);
+    }
+    const directory = path.join(DATA_DIR, account.guest ? 'guests' : 'accounts', account.id);
     const library = new LibraryStore(path.join(directory, 'library.sqlite'));
     const history = new HistoryStore(path.join(directory, 'history.sqlite'));
     const sync = new LibrarySync(library);
-    sync.start();
-    personalLibraries.set(account.id, { library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
+    if (!account.guest && accounts.canConfigureSync(account)) sync.start();
+    personalLibraries.set(account.id, { active:0, library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
   }
-  return personalLibraries.get(account.id);
+  const service = personalLibraries.get(account.id);
+  personalLibraries.delete(account.id);personalLibraries.set(account.id,service);service.active++;
+  let released=false;const release=()=>{if(!released){released=true;service.active--;}};
+  res.once('finish',release);res.once('close',release);
+  return service;
 }
 
 // 官方四大排行榜类别定义
@@ -573,7 +583,14 @@ function json(res, data, status = 200) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  // 浏览器页面与接口统一设置安全边界，生产静态页面也不能被外站嵌入。
+  res.setHeader('X-Content-Type-Options','nosniff');
+  res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options','DENY');
+  res.setHeader('Content-Security-Policy',"frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+  let u;
+  try { u = new URL(req.url, `http://${req.headers.host || "localhost"}`); }
+  catch { return json(res,{error:'请求地址无效'},400); }
   const pathname = u.pathname;
 
   if (req.method === "OPTIONS") {
@@ -601,7 +618,7 @@ const server = http.createServer(async (req, res) => {
     if (await accounts.handle(req, res, u)) return;
     if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
-    const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null);
+    const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null,res);
     if (await services.handleLibrary(req, res, u)) return;
     if (await services.handleHistory(req, res, u)) return;
     // 2. 官方大轮播 Banner API

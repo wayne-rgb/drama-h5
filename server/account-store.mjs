@@ -47,9 +47,26 @@ export class AccountStore {
       CREATE TABLE IF NOT EXISTS account_subscriptions (id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), plan_id TEXT NOT NULL, status TEXT NOT NULL, period_end INTEGER NOT NULL, cancel_at_period_end INTEGER NOT NULL, event_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS account_subscriptions_owner ON account_subscriptions(account_id);
       CREATE TABLE IF NOT EXISTS account_billing_events (id TEXT PRIMARY KEY, received_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS account_manual_vip(account_id TEXT PRIMARY KEY REFERENCES accounts(id),period_end INTEGER NOT NULL,admin_id TEXT NOT NULL,reason TEXT NOT NULL,updated_at INTEGER NOT NULL);`);
   }
   close() { this.db.close(); }
+  guest(token) {
+    const key = this.db.prepare('SELECT value FROM account_meta WHERE key=?').get('guestSigningKey')?.value;
+    const match = typeof token === 'string' && /^([a-f0-9-]{36})\.(\d{13})\.([a-f0-9]{64})$/.exec(token);
+    if (!key || !match || Number(match[2]) <= Date.now()) return null;
+    const expected = crypto.createHmac('sha256',key).update(`guest:${match[1]}.${match[2]}`).digest();
+    if (!crypto.timingSafeEqual(expected,Buffer.from(match[3],'hex'))) return null;
+    return { id: match[1], guest: true };
+  }
+  guestSession() {
+    // 签名密钥持久化；游客身份只由服务端签发，不能通过请求中的用户编号冒充。
+    this.db.prepare('INSERT OR IGNORE INTO account_meta VALUES(?,?)').run('guestSigningKey',secret());
+    const key = this.db.prepare('SELECT value FROM account_meta WHERE key=?').get('guestSigningKey').value;
+    const id = crypto.randomUUID(), expires = Date.now()+365*86400000;
+    const signature = crypto.createHmac('sha256',key).update(`guest:${id}.${expires}`).digest('hex');
+    return { id, token: `${id}.${expires}.${signature}` };
+  }
   transaction(operation) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const value = operation(); this.db.exec('COMMIT'); return value; }

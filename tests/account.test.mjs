@@ -43,6 +43,19 @@ test('验证与重置令牌限目的、限有效期且只能使用一次', () =>
   } finally { store.close(); }
 });
 
+test('游客签名不能伪造、修改或跨服务使用',()=>{
+  const first=new AccountStore(':memory:'),second=new AccountStore(':memory:');
+  try {
+    const guest=first.guestSession();
+    assert.equal(first.guest(guest.token).id,guest.id);
+    assert.equal(first.guest(guest.token).guest,true);
+    assert.equal(second.guest(guest.token),null);
+    assert.equal(first.guest(guest.token.slice(0,-1)+(guest.token.endsWith('a')?'b':'a')),null);
+    assert.equal(first.guest(guest.token.replace(guest.id,'00000000-0000-0000-0000-000000000000')),null);
+    assert.equal(first.guest('任意游客编号'),null);
+  } finally {first.close();second.close();}
+});
+
 test('会员取消续费后保留有效期，过期与其他账号没有权益', () => {
   const store = new AccountStore(':memory:');
   try {
@@ -85,9 +98,25 @@ test('真实账号接口隔离个人资料，拒绝跨来源修改和未配置�
     const response = await fetch(`http://127.0.0.1:${port}${route}`, { method: body === undefined ? 'GET' : 'POST', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json', Origin: requestOrigin }), ...(actor.cookie ? { Cookie: actor.cookie } : {}), ...(actor.owner ? { 'X-Library-Owner': actor.owner } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0], cookieHeader: response.headers.get('set-cookie') };
   };
+  const guestA=await request('/api/account/session'),guestB=await request('/api/account/session');
+  assert.notEqual(guestA.data.libraryOwner,guestB.data.libraryOwner);
+  assert.match(guestA.cookieHeader,/hg_guest_session=.*HttpOnly.*SameSite=Lax/);
+  const anonymousA={cookie:guestA.cookie,owner:guestA.data.libraryOwner},anonymousB={cookie:guestB.cookie,owner:guestB.data.libraryOwner};
+  const guestFavorite={id:'7503745441910017049',title:'游客隔离验收',cover:''};
+  const guestOperation={id:'guest-isolation',kind:'favorite',key:guestFavorite.id,op:'set',at:Date.now(),value:guestFavorite};
+  assert.equal((await request('/api/library/operations',guestOperation,anonymousA)).status,200);
+  assert.equal((await request('/api/library',undefined,anonymousA)).data.favorites.length,1);
+  assert.equal((await request('/api/library',undefined,anonymousB)).data.favorites.length,0);
+  assert.equal((await request('/api/library')).status,409);
+  assert.equal((await request('/api/library',undefined,{...anonymousB,owner:anonymousA.owner})).status,409);
+  assert.equal((await request('/api/library',undefined,{cookie:anonymousA.cookie})).status,409);
+  assert.equal((await request('/api/library/operations',{...guestOperation,id:'cross-guest'},anonymousA,'https://untrusted.example')).status,403);
+  assert.equal((await request('/api/library/operations',{...guestOperation,id:'null-origin'},anonymousA,'null')).status,403);
+  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},anonymousA)).status,403);
   const first = await request('/api/auth/register', { email: 'a@example.invalid', name: '测试账户一', password: '测试账户一的独立密码-2026' });
   assert.equal(first.status, 200); assert.match(first.cookieHeader, /HttpOnly/); assert.match(first.cookieHeader, /SameSite=Lax/);
   const actorA = { cookie: first.cookie, owner: first.data.user.id };
+  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},actorA)).status,403);
   const second = await request('/api/auth/register', { email: 'b@example.invalid', name: '测试账户二', password: '测试账户二的独立密码-2026' });
   const actorB = { cookie: second.cookie, owner: second.data.user.id };
   assert.equal(second.status, 200); assert.notEqual(actorA.owner, actorB.owner);
@@ -120,4 +149,9 @@ test('真实账号接口隔离个人资料，拒绝跨来源修改和未配置�
   assert.equal(login.status, 200); assert.equal(login.data.user.id, actorA.owner);
   const recovered = await request('/api/library', undefined, { owner: actorA.owner, cookie: login.cookie });
   assert.equal(recovered.data.favorites.length, 1);
+  assert.equal((await request('/api/library',undefined,anonymousA)).data.favorites.length,1);
+  const health=await fetch(`http://127.0.0.1:${port}/health`);
+  assert.equal(health.headers.get('x-content-type-options'),'nosniff');
+  assert.equal(health.headers.get('x-frame-options'),'DENY');
+  assert.match(health.headers.get('content-security-policy'),/frame-ancestors 'none'/);
 });

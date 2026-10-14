@@ -84,6 +84,8 @@ import {
   Tv
 } from "lucide-react";
 
+const playbackFailure = (error:any) => error?.response?.data?.error === 'VIP_REQUIRED' ? 'VIP_REQUIRED' : error?.isAxiosError && !error.response ? '网络连接中断，请检查网络后重试' : '当前剧集没有可用的视频源，请稍后重试';
+
 export default function App({ mobilePrototype: forceMobileLayout }: { mobilePrototype?: boolean } = {}) {
   const mobilePrototype = useMobileLayout(forceMobileLayout);
   const accountState = useAccountSession();
@@ -95,7 +97,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     if (languages.some(item => item.id === value)) setLanguageSaved(setLanguage(value as Language));
   };
   // 顶层主标签：首页 | 推荐刷剧 | 分类 | 榜单 | 搜索 | 追剧 | 设置
-  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(accountPanel && !readPlaybackLocation(window.location.href).seriesId ? "favorites" : mobilePrototype ? "recommend" : "home");
+  // 有播放链接时先加载目标剧集，不能在等待期间播放推荐并产生无关历史。
+  const [tab, setTabState] = useState<"home" | "recommend" | "category" | "rank" | "search" | "favorites" | "settings">(readPlaybackLocation(window.location.href).seriesId ? 'home' : accountPanel ? "favorites" : mobilePrototype ? "recommend" : "home");
 
   // 1. 首页状态
   const [selectedHomeSection, setSelectedHomeSection] = useState<string>("all");
@@ -629,7 +632,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       const quality = response.qualities.some(item => item.key === preferred) ? preferred : response.defaultQuality || response.qualities[0].key;
       setStreamQualities(response.qualities); setStreamQuality(quality);
       setStreamQualityEpisodeId(streamCurrentEpisode.id);
-    }).catch(error => { if (active) setStreamError(error?.response?.data?.error === 'VIP_REQUIRED' ? 'VIP_REQUIRED' : "当前剧集没有可用的视频源，请稍后重试"); })
+    }).catch(error => { if (active) setStreamError(playbackFailure(error)); })
       .finally(() => { if (active) setStreamQualitiesLoading(false); });
     return () => { active = false; };
   }, [streamCurrentEpisode?.id, streamDetail?.id, streamPlaybackAttempt, hasVipAccess]);
@@ -930,7 +933,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         }
       })
       .catch((err) => {
-        if (isMounted) setPlaybackError(err?.response?.data?.error === 'VIP_REQUIRED' ? 'VIP_REQUIRED' : "当前剧集没有可用的视频源，请稍后重试");
+        if (isMounted) setPlaybackError(playbackFailure(err));
         console.warn("加载官方画质失败:", err);
       })
       .finally(() => {
@@ -1577,7 +1580,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const todayStr = t("更新日期", { date: formatDate(new Date(), { month: "short", day: "numeric" }) });
 
   useEffect(() => {
-    if (activeSeries) return;
+    // 播放链接的异步详情请求尚未完成时，响应式导航不能取消它。
+    if (activeSeries || readPlaybackLocation(window.location.href).seriesId) return;
     if (mobilePrototype && tab === "home") {
       setTab("category");
       if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage);
@@ -2803,7 +2807,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 <div ref={mobilePrototype ? streamPlayerContainerRef : undefined} className={`relative w-full h-full overflow-clip bg-black flex flex-col justify-between group ${mobilePrototype ? "prototype-watch-stage" : ""}`}>
                   {streamLocked && <VipGate cover={currentItem.cover} loading={!accountState.session} onSubscribe={() => setAccountPanel('membership')} />}
                   {streamError && !streamLocked && <div role="alert" className="absolute top-3 start-3 z-50 bg-black/80 rounded-xl p-3 text-rose-200">{localizeError(streamError)} <button className="underline ms-3" onClick={() => {
-                    if (streamCurrentEpisode && (streamError === "无法播放媒体" || streamError === "当前剧集没有可用的视频源，请稍后重试")) {
+                    if (streamCurrentEpisode && ["无法播放媒体", "当前剧集没有可用的视频源，请稍后重试", '网络连接中断，请检查网络后重试'].includes(streamError)) {
                       streamQualitySwitchTimeRef.current = streamCurrentTime;
                       setStreamPlaybackAttempt(attempt => attempt + 1);
                     } else if (!streamCurrentEpisode) void loadStreamDetail(currentItem);
@@ -3050,7 +3054,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                   {/* 👉 右侧纵向操作栏（严格参考图二排布：头像/追剧、爱心、评论、收藏、分享、切剧） */}
                   <div className="absolute end-3 md:end-6 bottom-20 z-20 flex flex-col items-center gap-4">
                     {/* 1. 作者/剧集头像 + 追剧加号小标 */}
-                    <div 
+                    <button type="button" data-gesture-exclude aria-label={t(isFav ? "已追剧" : "点击追剧")} aria-pressed={isFav}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleToggleFav(currentItem);
@@ -3066,7 +3070,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       }`}>
                         {isFav ? "✓" : "+"}
                       </div>
-                    </div>
+                    </button>
 
                     {/* 点赞、评论和分享对应当前分集；封面入口继续负责追剧。 */}
                     {streamCurrentEpisode && <EpisodeInteractions key={streamCurrentEpisode.id} seriesId={currentItem.id} episodeId={streamCurrentEpisode.id} title={currentItem.title} session={accountState.session} onLogin={() => setAccountPanel('login')} />}
@@ -4169,7 +4173,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               <p className="text-xs text-slate-400">{t("混合推荐包含真人剧、漫剧与 AI 剧，根据观看兴趣调整，并保留新内容探索。")}</p>
               {showRecommendationResetConfirm ? <div className="space-y-3 text-sm"><p>{t("确定重新学习推荐偏好？收藏和观看历史会保留。")}</p><div className="flex gap-3"><button className="px-4 py-2 rounded-xl bg-rose-600" onClick={() => {streamWatchRef.current.leave();resetRecommendationPreferences();setShowRecommendationResetConfirm(false);showToast("推荐偏好已重置，下次进入推荐页生效");}}>{t("确认重置")}</button><button className="px-4 py-2 rounded-xl bg-slate-800" onClick={() => setShowRecommendationResetConfirm(false)}>{t("取消")}</button></div></div> : <button className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={() => setShowRecommendationResetConfirm(true)}>{t("重置推荐偏好")}</button>}
             </div>
-            <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
+            {accountState.session?.capabilities.librarySync ? <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
               <p className="text-sm text-slate-400">{t("收藏、历史、搜索记录与播放偏好先保存在本地。配置远程服务后，连接同一家庭的设备可互相续播。")}</p>
               <div role="status" className="p-4 rounded-xl bg-slate-950 text-sm">
                 <span className="text-rose-400 font-semibold">{localizeLabel({unconfigured:"未配置远程",pending:"待同步",syncing:"同步中",synced:"已同步",offline:"离线待同步"}[syncStatus.state] || "连接失败")}</span>
@@ -4183,7 +4187,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                 {syncStatus.enabled && <button disabled={syncSaving} onClick={async()=>{try{await configureSync("","",false);setSyncStatus(getSyncStatus());showToast("已关闭远程同步，本地数据保留")}catch{showToast("配置保存失败")}}} className="px-4 py-3 rounded-xl bg-slate-800">{t("关闭同步")}</button>}
               </div>
               <p className="text-xs text-slate-500">{t("关闭同步后继续使用本地数据；更换地址需要重新验证连接。")}</p>
-            </div>
+            </div> : <p className="text-sm text-slate-400 p-5 bg-[#0a0f1d] border border-slate-800 rounded-2xl">{t(accountState.session?.user ? '追剧、观看历史和偏好自动保存到你的账户' : '游客的追剧、观看历史和偏好仅属于当前浏览器')}</p>}
           </div>
         )}
       </main>

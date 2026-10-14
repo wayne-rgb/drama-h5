@@ -28,6 +28,7 @@ export function createAccountService(store, config = process.env) {
   const billing = createBilling(store, config, origin);
   const rates = new Map();
   const viewer = req => store.viewer(cookies(req).hg_account_session);
+  const localMode = config.HG_MANAGED === '1';
   const requireViewer = req => { const account = viewer(req); if (!account) throw new AccountError(401, '请先登录'); return account; };
   const setCookie = (res, name, value, maxAge) => res.setHeader('Set-Cookie', `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
   const login = (res, account) => { setCookie(res, 'hg_account_session', store.session(account.id), 2592000); reply(res, { user: store.publicAccount(account) }); };
@@ -52,13 +53,17 @@ export function createAccountService(store, config = process.env) {
   const capabilities = { google: !!oauth, email: !!mail, billing: billing.ready, billingProvider: billing.provider };
   return {
     viewer, sameOrigin, requireViewer,
+    canConfigureSync: account => localMode || isAdministrator(account,config),
     guardLibrary(req) {
-      const account = viewer(req), owner = account?.id || 'guest';
+      const account = viewer(req), guest = !account && !localMode ? store.guest(cookies(req).hg_guest_session) : null;
+      const owner = account?.id || (guest ? `guest:${guest.id}` : 'guest');
       const requested = req.headers['x-library-owner'];
-      if (account ? requested !== owner : requested && requested !== owner) throw new AccountError(409, '登录状态已变化，请刷新页面');
+      if (!account && !localMode && !guest) throw new AccountError(409, '登录状态已变化，请刷新页面');
+      if (account || guest ? requested !== owner : requested && requested !== owner) throw new AccountError(409, '登录状态已变化，请刷新页面');
       // 原桌面文件入口沿用游客资料；账户资料始终要求站点来源与会话匹配。
-      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (account || req.headers.origin !== 'null')) sameOrigin(req);
-      return account;
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (account || !localMode || req.headers.origin !== 'null')) sameOrigin(req);
+      if (req.method === 'POST' && new URL(req.url,origin).pathname === '/api/library/sync' && !localMode && !isAdministrator(account,config)) throw new AccountError(403,'需要管理员权限');
+      return account || guest;
     },
     async handle(req, res, url) {
       if (!url.pathname.startsWith('/api/auth/') && !url.pathname.startsWith('/api/account/') && !url.pathname.startsWith('/api/billing/')) return false;
@@ -77,8 +82,13 @@ export function createAccountService(store, config = process.env) {
         }
         if (route === '/api/account/session' && req.method === 'GET') {
           const account = viewer(req);
-          if (!account) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), capabilities: { ...capabilities, admin: isAdministrator(account, config) }, plans: membershipPlans, siteUrl: origin });
+          let guest = !account && !localMode ? store.guest(cookies(req).hg_guest_session) : null;
+          if (!account && !localMode && !guest) {
+            sameOrigin(req); rateLimit(req,'guest',120);
+            const session = store.guestSession();guest={id:session.id,guest:true};setCookie(res,'hg_guest_session',session.token,31536000);
+          }
+          if (!account && localMode) res.setHeader('Access-Control-Allow-Origin', '*');
+          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), librarySync: localMode || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);

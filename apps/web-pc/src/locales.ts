@@ -1,6 +1,10 @@
 // 每行依次为英语、西班牙语、巴西葡萄牙语、阿拉伯语、加拿大法语；中文使用键名。
 // 界面翻译不改变内容服务的分类标识、搜索词或剧集元数据。
 export const messages = {
+  "请求地址无效": ["Invalid request address", "Dirección de solicitud no válida", "Endereço da solicitação inválido", "عنوان الطلب غير صالح", "Adresse de requête non valide"],
+  "网络连接中断，请检查网络后重试": ["Connection interrupted. Check your network and retry.", "Conexión interrumpida. Revisa la red e inténtalo de nuevo.", "Conexão interrompida. Verifique a rede e tente novamente.", "انقطع الاتصال. تحقق من الشبكة وأعد المحاولة.", "Connexion interrompue. Vérifiez le réseau et réessayez."],
+  "追剧、观看历史和偏好自动保存到你的账户": ["Your watchlist, history and preferences are saved to your account", "Tu lista, historial y preferencias se guardan en tu cuenta", "Sua lista, histórico e preferências são salvos na sua conta", "تُحفظ قائمة المتابعة والسجل والتفضيلات في حسابك", "Votre liste, historique et préférences sont enregistrés dans votre compte"],
+  "游客的追剧、观看历史和偏好仅属于当前浏览器": ["Guest watchlists, history and preferences belong only to this browser", "La lista, historial y preferencias de invitado pertenecen sólo a este navegador", "A lista, histórico e preferências de visitante pertencem apenas a este navegador", "قائمة الضيف وسجله وتفضيلاته تخص هذا المتصفح فقط", "La liste, l’historique et les préférences d’invité appartiennent uniquement à ce navigateur"],
   "网络连接中断，请检查网络后继续上传": ["Connection interrupted. Check your network and resume upload.", "Conexión interrumpida. Revisa la red y continúa la carga.", "Conexão interrompida. Verifique a rede e retome o envio.", "انقطع الاتصال. تحقق من الشبكة ثم استأنف الرفع.", "Connexion interrompue. Vérifiez le réseau et reprenez l’envoi."],
   "已完成{{done}}／{{total}}个文件": ["{{done}} / {{total}} files saved", "{{done}} / {{total}} archivos guardados", "{{done}} / {{total}} arquivos salvos", "تم حفظ {{done}} / {{total}} ملفات", "{{done}} / {{total}} fichiers enregistrés"],
   "收起已完成记录": ["Hide completed uploads", "Ocultar cargas completas", "Ocultar envios concluídos", "إخفاء المهام المكتملة", "Masquer les envois terminés"],
