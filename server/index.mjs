@@ -17,6 +17,9 @@ import { createAccountService } from "./account-routes.mjs";
 import { createContentService } from "./content-service.mjs";
 import { publicFailure } from "./http-error.mjs";
 import { CatalogCache } from './catalog-cache.mjs';
+import { PlaybackGuard } from './playback-guard.mjs';
+import { createContentClient, withContentSignal } from '../shared/content-request.mjs';
+import { protectRequestBody } from '../shared/http-json.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -79,6 +82,7 @@ const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
 const catalog = new CatalogCache();
+const playbackGuard = new PlaybackGuard(process.env);
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore);
@@ -116,7 +120,7 @@ try {
       Buffer,
       URL,
       URLSearchParams,
-      axios: axios.create({
+      axios: createContentClient({
         maxContentLength: 16 * 1024 * 1024,
         maxBodyLength: 1024 * 1024,
       }),
@@ -593,6 +597,7 @@ function json(res, data, status = 200) {
 }
 
 const server = http.createServer(async (req, res) => {
+  protectRequestBody(req, res);
   // 浏览器页面与接口统一设置安全边界，生产静态页面也不能被外站嵌入。
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
@@ -617,6 +622,14 @@ const server = http.createServer(async (req, res) => {
     return json(res, { service: "hongguotv-custom-bridge", version: "2.3.0", ok: true });
   }
 
+  let playbackSignal;
+  if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
+    try {
+      const audience = accounts.audience(req);
+      playbackSignal = playbackGuard.acquire(req, res, audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${accounts.address(req)}`);
+    } catch (error) { return json(res, { error: error.message }, error.status || 503); }
+  }
+  const handleRequest = async () => {
   try {
     // 静态文件也纳入异常处理，部署期间文件变化不会绕过错误边界。
     if (!pathname.startsWith('/api/') && serveStatic(req, res, pathname)) return;
@@ -951,7 +964,7 @@ const server = http.createServer(async (req, res) => {
             return json(res, { error: "当前视频不支持所选画质", availableQuality: playback.key }, 400);
           return await proxyWebVideo(req, res, playback);
         }
-      } catch (error) { console.warn("[网页视频读取失败]:", error.message); }
+      } catch (error) { if (playbackSignal?.aborted || res.destroyed) return; console.warn("[网页视频读取失败]:", error.message); }
 
       // 分支 A: 用户选择 720P 时，若官方 App 端该流属于 bytevc2（不可解码），自动优先调度官方 Web 端原生 H.264 零报错直链
       let preferWeb720p = false;
@@ -966,6 +979,7 @@ const server = http.createServer(async (req, res) => {
               preferWeb720p = true;
             }
           } catch (_) {
+            if (playbackSignal?.aborted || res.destroyed) return;
             preferWeb720p = true;
           }
         } else {
@@ -980,6 +994,7 @@ const server = http.createServer(async (req, res) => {
             return await proxyWebVideo(req, res, playback);
           }
         } catch (err) {
+          if (playbackSignal?.aborted || res.destroyed) return;
           console.warn("[Web 720p Stream Error]:", err.message);
         }
       }
@@ -987,8 +1002,11 @@ const server = http.createServer(async (req, res) => {
       // 分支 B: 走本地解密引擎调度官方 HEVC (bytevc1) 视频流
       if (hgEngine) {
         try {
-          const stream = await hgEngine.resolveStream(episodeId, quality);
+          const cachedStream = await hgEngine.resolveStream(episodeId, quality);
+          // 在途头部请求不共享取消状态；已完成的真实头部仍回填原缓存复用。
+          const stream = { ...cachedStream }; delete stream.preparePromise;
           const prepared = await hgEngine.prepareHeader(stream);
+          cachedStream.prepared ||= prepared;
           const range = byteRange(req.headers.range, prepared.total);
           if (!range) {
             res.writeHead(416, {
@@ -1032,6 +1050,7 @@ const server = http.createServer(async (req, res) => {
           }
           return res.end();
         } catch (err) {
+          if (playbackSignal?.aborted || res.destroyed) return;
           console.warn(`[Stream Engine Error for ${quality}]:`, err.message);
         }
       }
@@ -1045,6 +1064,7 @@ const server = http.createServer(async (req, res) => {
             return await proxyWebVideo(req, res, playback);
           }
         } catch (err) {
+          if (playbackSignal?.aborted || res.destroyed) return;
           console.warn("[Web Stream Fallback Error]:", err.message);
         }
       }
@@ -1054,11 +1074,14 @@ const server = http.createServer(async (req, res) => {
 
     return json(res, { error: "404 Not Found" }, 404);
   } catch (err) {
+    if (playbackSignal?.aborted || res.destroyed) return;
     const failure = publicFailure(err);
     if (!(err instanceof AccountError)) console.error('[接口处理失败]:', err?.message || String(err));
     if (res.headersSent) { res.destroy(); return; }
     return json(res, { error: failure.message }, failure.status);
   }
+  };
+  return withContentSignal(playbackSignal, handleRequest);
 });
 
 server.listen(PORT, process.env.HG_HOST || "0.0.0.0", () => {

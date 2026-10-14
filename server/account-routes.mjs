@@ -5,11 +5,12 @@ import { AccountError, digest, emailAddress, membershipPlans, passwordHash, pass
 import { createBilling } from './account-billing.mjs';
 import { isAdministrator } from './account-role.mjs';
 import { safeAccountReturn } from './account-return.mjs';
-import { readJson as readInput } from '../shared/http-json.mjs';
+import { readJson as readInput, readBody } from '../shared/http-json.mjs';
+import { AuthenticationLimits, clientAddress } from './auth-limits.mjs';
 
 async function readJson(req) {
   try { return await readInput(req); }
-  catch (error) { throw new AccountError(error.status || 400, '请求格式无效'); }
+  catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); }
 }
 
 function cookies(req) {
@@ -26,7 +27,7 @@ export function createAccountService(store, config = process.env) {
   const oauth = config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET ? new OAuth2Client(config.GOOGLE_CLIENT_ID, config.GOOGLE_CLIENT_SECRET, `${origin}/api/auth/google/callback`) : null;
   const mail = config.SMTP_HOST && config.SMTP_FROM ? nodemailer.createTransport({ host: config.SMTP_HOST, port: Number(config.SMTP_PORT || 587), secure: config.SMTP_SECURE === 'true', requireTLS: config.SMTP_SECURE !== 'true', auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASSWORD } : undefined, connectionTimeout: 15000, socketTimeout: 20000, disableFileAccess: true, disableUrlAccess: true }) : null;
   const billing = createBilling(store, config, origin);
-  const rates = new Map();
+  const rates = new AuthenticationLimits(config);
   const viewer = req => store.viewer(cookies(req).hg_account_session);
   const localMode = config.HG_MANAGED === '1';
   const requireViewer = req => { const account = viewer(req); if (!account) throw new AccountError(401, '请先登录'); return account; };
@@ -37,12 +38,7 @@ export function createAccountService(store, config = process.env) {
     if (req.headers['sec-fetch-site'] === 'cross-site') throw new AccountError(403, '请求来源无效');
   };
   const rateLimit = (req, scope, limit = 20) => {
-    const now = Date.now();
-    for (const [key, value] of rates) if (value.until < now) rates.delete(key);
-    const key = `${scope}:${req.socket.remoteAddress}`;
-    const value = rates.get(key) || { count: 0, until: now + 900000 };
-    if (++value.count > limit || rates.size >= 10000) throw new AccountError(429, '操作过于频繁，请稍后重试');
-    rates.set(key, value);
+    rates.request(req, scope, limit);
   };
   const sendToken = async (account, purpose) => {
     if (!mail) throw new AccountError(503, '邮件服务尚未配置');
@@ -53,6 +49,7 @@ export function createAccountService(store, config = process.env) {
   const capabilities = { google: !!oauth, email: !!mail, billing: billing.ready, billingProvider: billing.provider };
   return {
     viewer, sameOrigin, requireViewer,
+    address: req => clientAddress(req, rates.trusted),
     audience: req => viewer(req) || store.guest(cookies(req).hg_guest_session),
     canConfigureSync: account => localMode || isAdministrator(account,config),
     guardLibrary(req) {
@@ -72,9 +69,10 @@ export function createAccountService(store, config = process.env) {
       try {
         const route = url.pathname;
         if (route === '/api/billing/webhook' && req.method === 'POST') {
-          const parts = []; let size = 0;
-          for await (const part of req) { size += part.length; if (size > 262144) throw new AccountError(413, '请求内容过大'); parts.push(part); }
-          reply(res, await billing.webhook(Buffer.concat(parts), req.headers['stripe-signature']));
+          let body;
+          try { body = await readBody(req, { maximum: 262144 }); }
+          catch (error) { throw new AccountError(error.status || 400, '请求格式无效'); }
+          reply(res, await billing.webhook(body, req.headers['stripe-signature']));
           return true;
         }
         if (req.method === 'POST') {
@@ -97,9 +95,12 @@ export function createAccountService(store, config = process.env) {
           const account = store.create({ email, name: input.name || email.split('@')[0], hash });
           login(res, account);
         } else if (route === '/api/auth/login' && req.method === 'POST') {
-          rateLimit(req, 'login');
-          const input = await readJson(req), account = store.byEmail(emailAddress(input.email));
-          if (!await passwordMatches(input.password, account?.password_hash)) throw new AccountError(401, '邮箱或密码不正确');
+          // 请求总量保护允许正常成功登录；失败次数分别按账户、地址及两者组合计算。
+          rateLimit(req, 'login', 300);
+          const input = await readJson(req), email = emailAddress(input.email), account = store.byEmail(email);
+          rates.checkLogin(req, email);
+          if (!await passwordMatches(input.password, account?.password_hash)) { rates.failedLogin(req, email); throw new AccountError(401, '邮箱或密码不正确'); }
+          rates.successfulLogin(req, email);
           store.logout(cookies(req).hg_account_session);
           login(res, account);
         } else if (route === '/api/auth/logout' && req.method === 'POST') {
@@ -124,7 +125,7 @@ export function createAccountService(store, config = process.env) {
         } else if (route === '/api/auth/verify' && req.method === 'POST') {
           const token = store.consumeToken((await readJson(req)).token, 'verify'); store.verifyEmail(token.accountId); reply(res, { ok: true });
         } else if (route === '/api/auth/google/start' && req.method === 'GET') {
-          rateLimit(req, 'google');
+          rateLimit(req, 'google', 300);
           if (!oauth) throw new AccountError(503, 'Google登录尚未配置');
           const linking = url.searchParams.get('link') === '1', account = linking ? requireViewer(req) : null;
           const nonce = secret(), codeVerifier = secret(), state = store.token('google', account?.id || null, { nonce, codeVerifier, returnTo: safeAccountReturn(url.searchParams.get('returnTo'),origin) }, 600000);

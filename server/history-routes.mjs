@@ -1,16 +1,13 @@
 import { HistoryError } from './history-store.mjs';
+import { readBody } from '../shared/http-json.mjs';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 async function body(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size <= MAX_BODY_BYTES) chunks.push(chunk);
-  }
-  if (size > MAX_BODY_BYTES) throw new HistoryError(413, 'history request exceeds 2 MiB');
+  let data;
+  try { data = await readBody(req, { maximum: MAX_BODY_BYTES }); }
+  catch (error) { throw new HistoryError(error.status || 400, error.status === 413 ? 'history request exceeds 2 MiB' : '请求读取超时，请稍后重试'); }
   let value;
-  try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  try { value = JSON.parse(data.toString('utf8')); }
   catch { throw new HistoryError(400, 'request body must be valid JSON'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new HistoryError(400, 'request body must be a JSON object');
   return value;

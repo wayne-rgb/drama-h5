@@ -4,6 +4,10 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 
 export const messages = {
   ...analyticsMessages,
+  "请求读取超时，请稍后重试": ["Request timed out. Please retry.", "La solicitud agotó el tiempo. Inténtalo de nuevo.", "A solicitação expirou. Tente novamente.", "انتهت مهلة الطلب. حاول مجددًا.", "La requête a expiré. Réessayez."],
+  "上传分块读取超时，请稍后重试": ["Upload timed out. Retry to resume.", "La carga agotó el tiempo. Reintenta para continuar.", "O envio expirou. Tente novamente para continuar.", "انتهت مهلة الرفع. أعد المحاولة للمتابعة.", "Le téléversement a expiré. Réessayez pour reprendre."],
+  "上传存储额度不足，请清理无用素材后重试": ["Upload storage limit reached. Remove unused media and retry.", "Se alcanzó el límite de almacenamiento. Elimina archivos sin usar e inténtalo de nuevo.", "Limite de armazenamento atingido. Remova arquivos sem uso e tente novamente.", "تم بلوغ حد التخزين. احذف الملفات غير المستخدمة وحاول مجددًا.", "Limite de stockage atteinte. Supprimez les médias inutilisés et réessayez."],
+  "存储空间不足，请释放空间后重试": ["Insufficient storage. Free up space and retry.", "Espacio insuficiente. Libera espacio e inténtalo de nuevo.", "Espaço insuficiente. Libere espaço e tente novamente.", "مساحة التخزين غير كافية. أفرغ مساحة وحاول مجددًا.", "Espace insuffisant. Libérez de l’espace et réessayez."],
   "上传文件不存在，请重新上传": ["Upload file is missing. Please upload it again.", "Falta el archivo. Vuelve a cargarlo.", "Arquivo de envio não encontrado. Envie novamente.", "ملف الرفع غير موجود. يرجى رفعه مرة أخرى.", "Le fichier est introuvable. Téléversez-le de nouveau."],
   "上传文件不完整，请重新上传": ["Upload file is incomplete. Please upload it again.", "El archivo está incompleto. Vuelve a cargarlo.", "Arquivo de envio incompleto. Envie novamente.", "ملف الرفع غير مكتمل. يرجى رفعه مرة أخرى.", "Le fichier est incomplet. Téléversez-le de nouveau."],
   "分集顺序": ["Episode order", "Orden de episodios", "Ordem dos episódios", "ترتيب الحلقات", "Ordre des épisodes"],

@@ -1,11 +1,12 @@
 import http from 'node:http';
 import { LibraryError } from '../../shared/library-store.mjs';
-import { readJson,sendJson } from '../../shared/http-json.mjs';
+import { readJson,sendJson,protectRequestBody } from '../../shared/http-json.mjs';
 import { serveAdminAsset,adminSnapshot,adminOperation } from './admin.mjs';
 import { SharedKey } from './shared-key.mjs';
 export function createSyncServer(store,key,options={}){
   const authority=new SharedKey(key,options);
   return http.createServer(async(req,res)=>{
+    protectRequestBody(req,res);
     try {
       const url=new URL(req.url,'http://localhost');
       if(serveAdminAsset(req,res,url.pathname))return;

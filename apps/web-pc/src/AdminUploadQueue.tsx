@@ -85,6 +85,8 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
       const file=files.current.get(id);
       if(asset?.status==='failed') {
         if(!file){patch(id,{state:'needsFile',error:asset.error});return;}
+        // 清理成功后才放弃旧编号，避免失败重试留下无法从队列移除的文件。
+        await axios.delete(`/api/admin/uploads/${asset.id}`);
         asset=null;patch(id,{assetId:undefined});
       }
       if(!asset || asset.status==='uploading') {

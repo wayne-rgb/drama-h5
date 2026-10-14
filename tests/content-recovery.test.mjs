@@ -36,6 +36,31 @@ async function fixture(t) {
     },
   };
 }
+
+test('失败处理会清理原文件和处理副本，保留任务记录且不删除正常断点', async t => {
+  const saved = await fixture(t), bytes = Buffer.from('格式无效的实际文件');
+  const failed = await saved.add(bytes);
+  const pending = saved.uploads.create(admin,{name:'未完成.mp4',kind:'video',mime:'video/mp4',size:video.length});
+  await fs.writeFile(saved.uploads.filePath(pending.id,'.part'),video.subarray(0,20));
+  saved.store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(20,pending.id);
+  saved.reopen(); await waitFor(saved,[failed],'failed');
+  await saved.uploads.cancel(admin,failed);
+  for (const suffix of ['', '.part', '.processing']) await assert.rejects(fs.stat(saved.uploads.filePath(failed,suffix)), error => error.code==='ENOENT');
+  assert.equal(saved.store.asset(failed).status,'failed');
+  assert.equal(saved.store.asset(pending.id).offset,20); assert.equal((await fs.stat(saved.uploads.filePath(pending.id,'.part'))).size,20);
+});
+
+test('存储额度按实际占用和处理副本预留，拒绝时不创建孤立文件', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(),'drama-upload-quota-'));
+  const store = new ContentStore(directory), uploads = createUploads(store,directory,{CONTENT_MAX_STORAGE_BYTES:'200'});
+  t.after(async()=>{uploads.close();store.close();await fs.rm(directory,{recursive:true,force:true});});
+  const first = uploads.create(admin,{name:'分集.mp4',kind:'video',mime:'video/mp4',size:100});
+  assert.throws(()=>uploads.create(admin,{name:'封面.png',kind:'image',mime:'image/png',size:1}), error=>error.status===507);
+  assert.equal((await fs.readdir(path.join(directory,'media'))).length,1);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM content_assets').get().count,1);
+  await uploads.cancel(admin,first.id);
+  assert.doesNotThrow(()=>uploads.create(admin,{name:'分集.mp4',kind:'video',mime:'video/mp4',size:100}));
+});
 async function waitFor(fixture, ids, state='ready') {
   const deadline = Date.now()+10000;
   while (ids.some(id=>fixture.store.asset(id).status!==state) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,25));

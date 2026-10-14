@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { AccountError } from './account-store.mjs';
+import { readBody } from '../shared/http-json.mjs';
 const execute = promisify(execFile);
 
 export function createUploads(store, directory, config = process.env) {
@@ -14,6 +15,32 @@ export function createUploads(store, directory, config = process.env) {
   const queue = [];
   const filePath = (id, suffix = '') => path.join(media, `${id}${suffix}`);
   const maximum = Math.min(10 * 1024 ** 3, Math.max(1024 ** 2, Number(config.CONTENT_MAX_VIDEO_BYTES) || 2 * 1024 ** 3));
+  const storageMaximum = Number(config.CONTENT_MAX_STORAGE_BYTES || 100 * 1024 ** 3);
+  if (!Number.isSafeInteger(storageMaximum) || storageMaximum <= 0) throw new Error('上传存储额度配置无效');
+  const failedFiles = asset => {
+    const referenced = store.db.prepare('SELECT 1 FROM content_episodes WHERE asset_id=? UNION SELECT 1 FROM content_series WHERE cover_id=?').get(asset.id, asset.id);
+    return [filePath(asset.id, '.part'), filePath(asset.id, '.processing'), ...(!referenced ? [filePath(asset.id)] : [])];
+  };
+  const clearFailed = async asset => {
+    for (const filename of failedFiles(asset)) await files.unlink(filename).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  };
+  const checkStorage = input => {
+    // 计算实际文件占用，并为未完成的视频预留上传原文件和处理副本；不删除有效素材或断点。
+    const sizes = new Map(fs.readdirSync(media).map(name => {
+      try { return [name, fs.statSync(path.join(media, name)).size]; }
+      catch (error) { if (error.code === 'ENOENT') return [name, 0]; throw error; }
+    }));
+    const occupied = [...sizes.values()].reduce((total, size) => total + size, 0);
+    let reserved = 0;
+    for (const asset of store.db.prepare("SELECT id,kind,size FROM content_assets WHERE status IN ('uploading','processing')").all()) {
+      const actual = ['', '.part', '.processing'].reduce((total, suffix) => total + (sizes.get(`${asset.id}${suffix}`) || 0), 0);
+      reserved += Math.max(0, asset.size * (asset.kind === 'video' ? 2 : 1) - actual);
+    }
+    const requested = input.size * (input.kind === 'video' ? 2 : 1);
+    if (occupied + reserved + requested > storageMaximum) throw new AccountError(507, '上传存储额度不足，请清理无用素材后重试');
+    const disk = fs.statfsSync(media, { bigint: true });
+    if (disk.bavail * disk.bsize < BigInt(reserved + requested + 64 * 1024 ** 2)) throw new AccountError(507, '存储空间不足，请释放空间后重试');
+  };
   const sourcePath = asset => {
     const part = filePath(asset.id, '.part');
     const source = fs.existsSync(part) ? part : filePath(asset.id);
@@ -44,7 +71,7 @@ export function createUploads(store, directory, config = process.env) {
       if (closing) return;
       const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^(请上传|上传文件不)/.test(error.message) ? error.message : '视频处理失败，请检查文件后重新上传';
       store.db.prepare("UPDATE content_assets SET status='failed',error=? WHERE id=?").run(message, asset.id);
-      await files.unlink(filePath(asset.id, '.processing')).catch(() => {});
+      await clearFailed(asset).catch(() => console.warn('失败上传文件清理失败，请检查存储权限'));
     } finally { processing.delete(controller); runQueue(); }
   };
   const processImage = async asset => {
@@ -62,6 +89,7 @@ export function createUploads(store, directory, config = process.env) {
       if (closing) return;
       const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^上传文件不/.test(error.message) ? error.message : '封面文件格式无效';
       store.db.prepare("UPDATE content_assets SET status='failed',error=? WHERE id=?").run(message, asset.id);
+      await clearFailed(asset).catch(() => console.warn('失败上传文件清理失败，请检查存储权限'));
     } finally { processing.delete(controller); runQueue(); }
   };
   const runQueue = () => {
@@ -81,6 +109,12 @@ export function createUploads(store, directory, config = process.env) {
     store.db.prepare("UPDATE content_assets SET status='processing',error=NULL WHERE id=?").run(asset.id);
     queue.push(asset);
   }
+  // 先保留并恢复旧重启中断记录，其余失败任务只清理文件，数据库与操作记录继续保留。
+  for (const asset of store.db.prepare("SELECT * FROM content_assets WHERE status='failed'").all()) {
+    for (const filename of failedFiles(asset)) {
+      try { fs.unlinkSync(filename); } catch (error) { if (error.code !== 'ENOENT') console.warn('失败上传文件清理失败，请检查存储权限'); }
+    }
+  }
   runQueue();
   return {
     filePath, maximum,
@@ -93,8 +127,7 @@ export function createUploads(store, directory, config = process.env) {
         store.db.prepare("UPDATE content_assets SET status='failed',error='上传已取消' WHERE id=?").run(id);
       }
       if (['uploading','failed'].includes(asset.status)) {
-        await files.unlink(filePath(id, '.part')).catch(() => {});
-        await files.unlink(filePath(id, '.processing')).catch(() => {});
+        await clearFailed(asset);
       }
       return store.asset(id);
     },
@@ -105,6 +138,7 @@ export function createUploads(store, directory, config = process.env) {
       if (input.seriesId!==undefined && input.kind==='video' && (!Number.isInteger(input.number) || input.number<1 || input.number>10000)) throw new AccountError(400,'集数无效');
       const pending = store.db.prepare("SELECT COUNT(*) AS count FROM content_assets WHERE status IN ('uploading','processing')").get().count;
       if (pending >= 20) throw new AccountError(429, '待处理上传过多，请先完成已有上传');
+      checkStorage(input);
       const id = crypto.randomUUID();
       fs.writeFileSync(filePath(id, '.part'), Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
       try {
@@ -126,11 +160,12 @@ export function createUploads(store, directory, config = process.env) {
       if (start !== asset.offset || total !== asset.size || end < start || end >= total || end - start + 1 > 1048576) throw new AccountError(409, '上传位置已变化，请恢复上传');
       active.add(id);
       try {
-        const chunks = []; let size = 0;
-        for await (const chunk of req) { size += chunk.length; if (size > end - start + 1) throw new AccountError(413, '上传分块过大'); chunks.push(chunk); }
-        if (size !== end - start + 1) throw new AccountError(400, '上传分块不完整');
+        let data;
+        try { data = await readBody(req, { maximum: end - start + 1, timeoutMs: 60000 }); }
+        catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '上传分块读取超时，请稍后重试' : error.status === 413 ? '上传分块过大' : '上传分块不完整'); }
+        if (data.length !== end - start + 1) throw new AccountError(400, '上传分块不完整');
         const handle = await files.open(filePath(id, '.part'), 'r+');
-        try { const data = Buffer.concat(chunks); let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
+        try { let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
         store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(end + 1, id);
         if (end + 1 === total) {
           store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id);

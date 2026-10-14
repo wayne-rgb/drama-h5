@@ -84,7 +84,7 @@ export function createContentService(directory, accountStore, accounts, provider
       if (myLikes && req.method === 'GET') { const user = accounts.requireViewer(req); reply(res, store.likedEpisodes(user.id,url.searchParams.get('before'),url.searchParams.get('summary') === '1')); return true; }
       if (removeLike && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req,user); const episode = store.db.prepare('SELECT series_id FROM content_episodes WHERE id=?').get(removeLike[1]); store.transaction(()=>{const removed=store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(removeLike[1],user.id); if(removed.changes && episode)analytics.feedback(episode.series_id,removeLike[1],'unlike');}); reply(res,{count:store.likedEpisodes(user.id,null,true).count}); return true; }
       if (myLikes || removeLike) throw new AccountError(405,'请求方式无效');
-      const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch { throw new AccountError(400, '请求格式无效'); } };
+      const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); } };
       if (analyticsRoute) {
         if (route === '/api/analytics/sessions' && req.method === 'POST') reply(res, analytics.start(req, await input()));
         else if (route === '/api/analytics/progress' && req.method === 'POST') reply(res, analytics.progress(req, await input()));
