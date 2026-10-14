@@ -53,7 +53,7 @@ test('视频额度只保留已消费字节，独立数据库重开不清零，UT
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'drama-traffic-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   let now = 86400000;
-  const filename = path.join(directory, 'resource-usage.sqlite'), config = { CONTENT_DAILY_BYTES: 12, CONTENT_VIEWER_DAILY_BYTES: 8, CONTENT_IP_DAILY_BYTES: 10 };
+  const filename = path.join(directory, 'resource-usage.sqlite'), config = { CONTENT_ENFORCE_DAILY_LIMITS:'1', CONTENT_DAILY_BYTES: 12, CONTENT_VIEWER_DAILY_BYTES: 8, CONTENT_IP_DAILY_BYTES: 10 };
   let budget = new TrafficBudget(filename, config, () => now);
   const meter = budget.meter('甲', '地址'); meter.consume(4);
   assert.throws(() => meter.consume(5), error => error.status === 429);
@@ -69,7 +69,7 @@ test('视频额度只保留已消费字节，独立数据库重开不清零，UT
 });
 
 test('同时播放共享来源额度，小块预留不超额，中途关闭退回未发出的字节', () => {
-  const budget = new TrafficBudget(':memory:', { CONTENT_DAILY_BYTES: 20, CONTENT_VIEWER_DAILY_BYTES: 20, CONTENT_IP_DAILY_BYTES: 20, CONTENT_VIP_RESERVED_BYTES:0 });
+  const budget = new TrafficBudget(':memory:', { CONTENT_ENFORCE_DAILY_LIMITS:'1', CONTENT_DAILY_BYTES: 20, CONTENT_VIEWER_DAILY_BYTES: 20, CONTENT_IP_DAILY_BYTES: 20, CONTENT_VIP_RESERVED_BYTES:0 });
   try {
     const first = budget.meter('甲', '同一地址'), second = budget.meter('乙', '同一地址');
     first.consume(4);
@@ -80,7 +80,7 @@ test('同时播放共享来源额度，小块预留不超额，中途关闭退�
 });
 
 test('真实小尺寸HTTP媒体响应计量包含write和end，HEAD及JSON不扣视频字节', async t => {
-  const budget = new TrafficBudget(':memory:', { CONTENT_DAILY_BYTES: 8, CONTENT_VIEWER_DAILY_BYTES: 8, CONTENT_IP_DAILY_BYTES: 8, CONTENT_VIP_RESERVED_BYTES:0 });
+  const budget = new TrafficBudget(':memory:', { CONTENT_ENFORCE_DAILY_LIMITS:'1', CONTENT_DAILY_BYTES: 8, CONTENT_VIEWER_DAILY_BYTES: 8, CONTENT_IP_DAILY_BYTES: 8, CONTENT_VIP_RESERVED_BYTES:0 });
   const guard = new PlaybackGuard({}, budget);
   const server = http.createServer((req, res) => {
     try {

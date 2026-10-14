@@ -8,40 +8,54 @@ import { positiveLimit } from './request-guard.mjs';
 export class TrafficBudget {
   constructor(filename, config = {}, clock = Date.now) {
     this.clock = clock;
+    // 日流量默认仅统计与告警；必须明确打开紧急开关，额度才会拒绝播放。
+    this.enforce = config.CONTENT_ENFORCE_DAILY_LIMITS === '1';
     this.limits = [positiveLimit(config, 'CONTENT_DAILY_BYTES', 100 * 1024 ** 3), positiveLimit(config, 'CONTENT_VIEWER_DAILY_BYTES', 5 * 1024 ** 3), positiveLimit(config, 'CONTENT_IP_DAILY_BYTES', 50 * 1024 ** 3)];
     this.vipReserve = Math.min(Number(config.CONTENT_VIP_RESERVED_BYTES ?? Math.floor(this.limits[0]/5)),this.limits[0]);
     if(!Number.isSafeInteger(this.vipReserve)||this.vipReserve<0)throw new Error('会员流量保留额度配置无效');
-    this.warnedDay=-1;
-    if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
-    this.db = new DatabaseSync(filename);
-    if (filename !== ':memory:') chmodSync(filename, 0o600);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS traffic_budget(day INTEGER NOT NULL, identity TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(day,identity));');
-    this.read = this.db.prepare('SELECT bytes FROM traffic_budget WHERE day=? AND identity=?');
-    this.add = this.db.prepare('INSERT INTO traffic_budget VALUES(?,?,?) ON CONFLICT(day,identity) DO UPDATE SET bytes=bytes+excluded.bytes');
-    this.refund = this.db.prepare('UPDATE traffic_budget SET bytes=MAX(0,bytes-?) WHERE day=? AND identity=?');
-    this.count = this.db.prepare('SELECT COUNT(*) AS count FROM traffic_budget WHERE day=?');
-    this.day = -1;
+    this.warnedDay=-1;this.failureWarned=false;this.detailWarnedDay=-1;this.suspendedUntil=0;
+    try {
+      if (filename !== ':memory:') mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+      this.db = new DatabaseSync(filename);
+      if (filename !== ':memory:') chmodSync(filename, 0o600);
+      this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000; CREATE TABLE IF NOT EXISTS traffic_budget(day INTEGER NOT NULL, identity TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(day,identity));');
+      this.read = this.db.prepare('SELECT bytes FROM traffic_budget WHERE day=? AND identity=?');
+      this.add = this.db.prepare('INSERT INTO traffic_budget VALUES(?,?,?) ON CONFLICT(day,identity) DO UPDATE SET bytes=bytes+excluded.bytes');
+      this.refund = this.db.prepare('UPDATE traffic_budget SET bytes=MAX(0,bytes-?) WHERE day=? AND identity=?');
+      this.count = this.db.prepare('SELECT COUNT(*) AS count FROM traffic_budget WHERE day=?');
+      this.day = -1;
+    } catch(error) {
+      try{this.db?.close();}catch{}
+      if(this.enforce)throw error;
+      this.db=null;this.warnFailure();
+    }
   }
+  warnFailure(){this.suspendedUntil=this.clock()+60000;if(!this.failureWarned){this.failureWarned=true;console.warn('播放流量统计暂不可用，保留正常播放');}}
   currentDay() {
     const day = Math.floor(this.clock() / 86400000);
     if (this.day !== day) { this.db.prepare('DELETE FROM traffic_budget WHERE day<?').run(day - 1); this.day = day; }
     return day;
   }
-  keys(viewer, address, privileged=false) { return ['global', `viewer:${digest(viewer)}`, `ip:${digest(address)}`,...(!privileged && this.vipReserve ? ['public'] : [])]; }
-  available(day, keys) { return Math.min(...keys.map((key, index) => (key==='public'?this.limits[0]-this.vipReserve:this.limits[index]) - (this.read.get(day, key==='public'?'global':key)?.bytes || 0))); }
+  keys(viewer, address, privileged=false) { return ['global', `viewer:${digest(viewer)}`, `ip:${digest(address)}`,...(this.enforce && !privileged && this.vipReserve ? ['public'] : [])]; }
+  available(day, keys) { if(!this.enforce)return Infinity;return Math.min(...keys.map((key, index) => (key==='public'?this.limits[0]-this.vipReserve:this.limits[index]) - (this.read.get(day, key==='public'?'global':key)?.bytes || 0))); }
   exhausted() { const error = new AccountError(429, '播放流量已达保护上限，请稍后再试'); error.retryAfter = Math.max(1, Math.ceil((86400000 - this.clock() % 86400000) / 1000)); return error; }
-  check(viewer, address, privileged=false) { if (this.available(this.currentDay(), this.keys(viewer, address,privileged)) <= 0) throw this.exhausted(); }
+  check(viewer, address, privileged=false) { if (this.enforce && this.available(this.currentDay(), this.keys(viewer, address,privileged)) <= 0) throw this.exhausted(); }
   meter(viewer, address, privileged=false) {
-    let keys = this.keys(viewer, address,privileged), day = this.currentDay(), remaining = 0, closed = false;
+    if(!this.db || !this.enforce && this.clock()<this.suspendedUntil)return null;
+    let day;try{day=this.currentDay();}catch(error){if(this.enforce)throw error;this.warnFailure();return null;}
+    let keys = this.keys(viewer, address,privileged), remaining = 0, closed = false, disabled = false;
     const release = () => {
       if (!remaining) return;
       this.db.exec('BEGIN IMMEDIATE');
       try { for (const key of keys) this.refund.run(remaining, day, key); this.db.exec('COMMIT'); remaining = 0; }
-      catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      catch (error) { try{this.db.exec('ROLLBACK');}catch{}throw error; }
     };
     return {
-      setPrivileged: value => { const next=this.keys(viewer,address,!!value);if(next.length!==keys.length){release();keys=next;} },
+      setPrivileged: value => { if(!this.enforce)return;const next=this.keys(viewer,address,!!value);if(next.length!==keys.length){release();keys=next;} },
       consume: size => {
+        if(disabled)return;
+        if(!this.enforce&&this.clock()<this.suspendedUntil){disabled=true;return;}
+        try {
         if (closed) throw this.exhausted();
         if (day !== this.currentDay()) { release(); day = this.currentDay(); }
         if (remaining < size) {
@@ -51,17 +65,26 @@ export class TrafficBudget {
             const available = this.available(day, keys), needed = size - remaining;
             if (available < needed) throw this.exhausted();
             const missing = keys.filter(key => !this.read.get(day, key)).length;
-            if (missing && this.count.get(day).count + missing > 10000) throw this.exhausted();
+            if (missing && this.count.get(day).count + missing > 10000) {
+              if(this.enforce)throw this.exhausted();
+              // 明细数量有界，超出后只更新现有计数与全站汇总，不阻止新观众。
+              keys=keys.filter(key=>key==='global'||this.read.get(day,key));
+              if(this.detailWarnedDay!==day){this.detailWarnedDay=day;console.warn('播放流量身份明细已达统计上限，保留汇总与正常播放');}
+            }
             const reserved = Math.min(available, Math.max(1024 * 1024, needed));
             for (const key of keys) this.add.run(day, key, reserved);
             this.db.exec('COMMIT'); remaining += reserved;
-            if(this.warnedDay!==day && (this.read.get(day,'global')?.bytes||0)>=this.limits[0]*0.8){this.warnedDay=day;console.warn(JSON.stringify({event:'播放流量保护预警',remainingBytes:this.limits[0]-(this.read.get(day,'global')?.bytes||0)}));}
-          } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+            if(this.warnedDay!==day && (this.read.get(day,'global')?.bytes||0)>=this.limits[0]*0.8){this.warnedDay=day;console.warn(JSON.stringify({event:this.enforce?'播放流量保护预警':'播放流量监测预警',enforced:this.enforce,remainingBytes:Math.max(0,this.limits[0]-(this.read.get(day,'global')?.bytes||0))}));}
+          } catch (error) { try{this.db.exec('ROLLBACK');}catch{}throw error; }
         }
         remaining -= size;
+        } catch(error) {
+          if(this.enforce)throw error;
+          disabled=true;try{release();}catch{}this.warnFailure();
+        }
       },
-      close: () => { if (closed) return; closed = true; release(); },
+      close: () => { if (closed) return; closed = true;if(!this.enforce&&this.clock()<this.suspendedUntil)return;try{release();}catch(error){if(this.enforce)throw error;this.warnFailure();} },
     };
   }
-  close() { this.db.close(); }
+  close() { this.db?.close(); }
 }

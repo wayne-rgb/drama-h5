@@ -18,10 +18,11 @@ export class PlaybackGuard {
     const meter = req.method !== 'HEAD' ? this.budget?.meter(viewer, address,!!req.playbackPrivileged) : null;
     this.active++; this.viewers.set(viewer, count + 1); this.addresses.set(address, ipCount + 1);
     const controller = new AbortController(); let released = false;
-    if (meter) {
+    // 统计不可用也继续复核播放权限；不能把计量降级变成VIP鉴权绕过。
+    {
       const consume = (chunk, encoding) => {
         if (chunk === undefined || chunk === null || !String(res.getHeader('Content-Type') || '').toLowerCase().startsWith(this.mediaPrefix) || ![200, 206].includes(res.statusCode)) return true;
-        try { req.revalidatePlayback?.(); meter.setPrivileged?.(req.playbackPrivileged); meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
+        try { req.revalidatePlayback?.(); meter?.setPrivileged?.(req.playbackPrivileged); meter?.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
         catch { res.destroy(); return false; }
       };
       const write = res.write, end = res.end;

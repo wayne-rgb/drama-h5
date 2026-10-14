@@ -37,7 +37,7 @@ test('个人库写入预留只释放一次，SQLite页数硬上限阻止连续�
 });
 
 test('视频公共额度不能消耗会员保留额度，会员仍遵守同一总额且撤销后不能继续占用保留',()=>{
-  const budget=new TrafficBudget(':memory:',{CONTENT_DAILY_BYTES:100,CONTENT_VIEWER_DAILY_BYTES:100,CONTENT_IP_DAILY_BYTES:100,CONTENT_VIP_RESERVED_BYTES:20});
+  const budget=new TrafficBudget(':memory:',{CONTENT_ENFORCE_DAILY_LIMITS:'1',CONTENT_DAILY_BYTES:100,CONTENT_VIEWER_DAILY_BYTES:100,CONTENT_IP_DAILY_BYTES:100,CONTENT_VIP_RESERVED_BYTES:20});
   try{const publicMeter=budget.meter('游客','甲');publicMeter.consume(80);publicMeter.close();assert.throws(()=>budget.check('其他游客','乙'),error=>error.status===429);
     const member=budget.meter('会员','会员地址',true);member.consume(10);member.close();assert.equal(budget.db.prepare('SELECT bytes FROM traffic_budget WHERE identity=?').get('global').bytes,90);
     const revoked=budget.meter('撤销会员','丙',true);revoked.setPrivileged(false);assert.throws(()=>revoked.consume(1),error=>error.status===429);revoked.close();
@@ -46,7 +46,7 @@ test('视频公共额度不能消耗会员保留额度，会员仍遵守同一�
 });
 
 test('旧流量账本已消耗的字节同样计入会员保留边界',()=>{
-  const budget=new TrafficBudget(':memory:',{CONTENT_DAILY_BYTES:100,CONTENT_VIEWER_DAILY_BYTES:100,CONTENT_IP_DAILY_BYTES:100,CONTENT_VIP_RESERVED_BYTES:20});
+  const budget=new TrafficBudget(':memory:',{CONTENT_ENFORCE_DAILY_LIMITS:'1',CONTENT_DAILY_BYTES:100,CONTENT_VIEWER_DAILY_BYTES:100,CONTENT_IP_DAILY_BYTES:100,CONTENT_VIP_RESERVED_BYTES:20});
   try{budget.db.prepare('INSERT INTO traffic_budget VALUES(?,?,?)').run(budget.currentDay(),'global',80);assert.throws(()=>budget.check('游客','地址'),error=>error.status===429);assert.doesNotThrow(()=>budget.check('会员','地址',true));}finally{budget.close();}
 });
 
