@@ -1,6 +1,8 @@
 FROM node:22.20.0-bookworm-slim AS web-build
 WORKDIR /app
-COPY apps/web-pc/package*.json ./apps/web-pc/
+COPY apps/web-pc/package*.json apps/web-pc/.npmrc ./apps/web-pc/
+# 本地安全补丁必须先于npm ci进入构建上下文。
+COPY apps/web-pc/vendor/ ./apps/web-pc/vendor/
 RUN npm --prefix apps/web-pc ci --no-audit --no-fund
 COPY apps/web-pc/ ./apps/web-pc/
 COPY shared/ ./shared/

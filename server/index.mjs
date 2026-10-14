@@ -16,6 +16,7 @@ import { AccountStore, AccountError } from "./account-store.mjs";
 import { createAccountService } from "./account-routes.mjs";
 import { createContentService } from "./content-service.mjs";
 import { publicFailure } from "./http-error.mjs";
+import { CatalogCache } from './catalog-cache.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -77,6 +78,7 @@ const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
+const catalog = new CatalogCache();
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
 const librarySync = new LibrarySync(libraryStore);
@@ -626,21 +628,32 @@ const server = http.createServer(async (req, res) => {
     if (await services.handleHistory(req, res, u)) return;
     // 2. 官方大轮播 Banner API
     if (pathname === "/api/banners") {
-      const data = await fetchOfficialHome();
-      return json(res, { banners: data.banners });
+      const own = content.list();
+      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0);
+      const banners = [...own.map(item => ({ ...item, backgroundCover: item.cover })), ...(data?.banners || [])];
+      return json(res, { backgroundPending: !data, banners: banners.filter((item, index) => banners.findIndex(row => row.id === item.id) === index) });
     }
 
     // 2.1 官方首页专区列表 (GET /api/sections)
     if (pathname === "/api/sections") {
-      const data = await fetchOfficialHome();
       const own = content.list();
-      return json(res, { sections: own.length ? [{ type: 'uploaded', name: '为你推荐', items: own }, ...data.sections] : data.sections });
+      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0);
+      return json(res, { backgroundPending: !data, sections: own.length ? [{ type: 'uploaded', name: '为你推荐', items: own }, ...(data?.sections || [])] : data.sections });
     }
 
     // 3. 官方分类标签池 (GET /api/category/tags)
     if (pathname === "/api/category/tags") {
-      try{return json(res,await coreProvider.categoryMetadata(u.searchParams.get("type")||"real-drama"));}
-      catch(error){return json(res,{error:error.message},error.status||502);}
+      const type = u.searchParams.get('type') || 'real-drama';
+      if (!OFFICIAL_TYPES.some(row => row.id === type)) throw new AccountError(400, '不支持的分类类型');
+      const ownTags = content.store.categoryTags(type, OFFICIAL_TAGS);
+      try {
+        const data = await catalog.read(`tags:${type}`, () => coreProvider.categoryMetadata(type), content.store.listPage({type}).pagination.total > 0);
+        const tags = [...(data?.tags || []), ...ownTags];
+        return json(res, { ...(data || {types:OFFICIAL_TYPES,type}), backgroundPending:!data, tags:tags.filter((item,index)=>tags.findIndex(row=>row.id===item.id)===index) });
+      } catch {
+        if (ownTags.length || content.store.listPage({type}).pagination.total > 0) return json(res, {types:OFFICIAL_TYPES,type,tags:ownTags});
+        throw new AccountError(502, '官网题材读取失败，请重试');
+      }
     }
 
     // 4. 官方分类短剧列表 (GET /api/category/list?type=real-drama&tag=romance&page=1)
@@ -648,8 +661,14 @@ const server = http.createServer(async (req, res) => {
       const type = u.searchParams.get("type") || "real-drama";
       const tag = u.searchParams.get("tag") || "";
       const page = Number(u.searchParams.get("page") || "1");
-      try{const data = await coreProvider.categoryList(type,tag,page); return json(res,{...data,items:content.merge(data.items || [],{type,tag,tagLabel:OFFICIAL_TAGS.find(item => item.id === tag)?.name || tag,page})});}
-      catch(error){return json(res,{error:error.message},error.status||502);}
+      if (!OFFICIAL_TYPES.some(row => row.id === type)) throw new AccountError(400, '不支持的分类类型');
+      if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new AccountError(400, '分类页码无效');
+      const options = {type,tag,tagLabel:OFFICIAL_TAGS.find(item=>item.id===tag)?.name || tag,page};
+      const own = content.store.listPage(options);
+      try {
+        const data = await catalog.read(`category:${type}:${tag}:${page}`, () => coreProvider.categoryList(type,tag,page), own.pagination.total > 0);
+        return json(res, { ...(data || {type,tag,page}), backgroundPending: !data, items:content.merge(data?.items || [],options), pagination:{...(data?.pagination || own.pagination),totalPages:Math.max(data?.pagination?.totalPages || 1,own.pagination.totalPages)} });
+      } catch (error) { throw new AccountError(error.status || 502, error.status === 400 ? error.message : '官网分类读取失败，请重试'); }
     }
 
     // 5. 官方排行榜类别 (GET /api/rank/types)
@@ -688,24 +707,31 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === "/api/home") {
       const page = parseInt(u.searchParams.get("page") || "1", 10);
+      if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new AccountError(400, '分类页码无效');
+      const own = content.list({page});
+      const data = await catalog.read(`home:${page}`, async () => {
       try {
         const upstreamRes = {data: await coreProvider.home(page)};
         if (upstreamRes.data && Array.isArray(upstreamRes.data.items) && upstreamRes.data.items.length > 0) {
-          return json(res, {...upstreamRes.data, items: content.merge(upstreamRes.data.items, {page})});
+          return upstreamRes.data;
         }
       } catch (err) {
         // 上游不可用时自动降级到官方 Web 分类推荐池
       }
       const cat = await fetchOfficialCategory("real-drama", "", page);
-      return json(res, { items: content.merge(cat.items, {page}), page });
+      return { items: cat.items, page };
+      }, own.length > 0);
+      return json(res, { ...(data || {page}), items:content.merge(data?.items || [],{page}) });
     }
 
 
     // 7. 搜索接口 (GET /api/search?q=...)
     if (pathname === "/api/search") {
       const query = u.searchParams.get("q") || "", page = Number(u.searchParams.get("page") || 1);
-      let data; try { data = await coreProvider.search(query,page); } catch(error) { if (!content.list({query,page}).length) throw error; data={items:[],page}; }
-      return json(res, {...data, items:content.merge(data.items || [], {query,page})});
+      if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new AccountError(400, '分类页码无效');
+      const own = content.list({query,page});
+      const data = await catalog.read(`search:${query}:${page}`, () => coreProvider.search(query,page), own.length > 0);
+      return json(res, { ...(data || {page}), items:content.merge(data?.items || [], {query,page}) });
     }
 
     // 8. 单剧相关推荐 / 猜你喜欢 (GET /api/series/:id/related 或 GET /api/series/:id/recommend)

@@ -5,6 +5,10 @@ services:
       dockerfile: server/Dockerfile
     ports:
       - "${HG_BIND_IP:-127.0.0.1}:${HG_PORT:-8788}:8788"
+    # Compose 2.24及以上支持可选配置文件；密钥只在运行时传入，不打进镜像。
+    env_file:
+      - path: .env
+        required: false
     environment:
       HG_HOST: 0.0.0.0
       PORT: 8788

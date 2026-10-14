@@ -84,9 +84,11 @@ export interface CategoryType {
 export interface CategoryTagsResponse {
   types: CategoryType[];
   tags: CategoryTag[];
+  backgroundPending?: boolean;
 }
 
 export interface CategoryListResponse {
+  backgroundPending?: boolean;
   pagination?: {totalPages:number;pageNum:number;pageSize:number;total:number};
   type: string;
   tag: string;

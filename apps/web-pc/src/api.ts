@@ -93,6 +93,11 @@ export async function configureSync(url:string,key:string,enabled=true){const da
 if(!migrationOnly){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
 
 export const api = {
+  // 首页先显示真实自有内容，再补齐后台完成的外部专区。
+  async getHomeSnapshot(): Promise<{ banners: BannerItem[]; sections: Section[]; backgroundPending: boolean }> {
+    const [banners, sections] = await Promise.all([client().get("/api/banners"), client().get("/api/sections")]);
+    return { banners: banners.data?.banners || [], sections: sections.data?.sections || [], backgroundPending: !!(banners.data?.backgroundPending || sections.data?.backgroundPending) };
+  },
   // 1. 官方首页大轮播 Banner
   async getBanners(): Promise<BannerItem[]> {
     const res = await client().get("/api/banners");

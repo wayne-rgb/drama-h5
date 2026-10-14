@@ -4,6 +4,8 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 
 export const messages = {
   ...analyticsMessages,
+  "上传文件不存在，请重新上传": ["Upload file is missing. Please upload it again.", "Falta el archivo. Vuelve a cargarlo.", "Arquivo de envio não encontrado. Envie novamente.", "ملف الرفع غير موجود. يرجى رفعه مرة أخرى.", "Le fichier est introuvable. Téléversez-le de nouveau."],
+  "上传文件不完整，请重新上传": ["Upload file is incomplete. Please upload it again.", "El archivo está incompleto. Vuelve a cargarlo.", "Arquivo de envio incompleto. Envie novamente.", "ملف الرفع غير مكتمل. يرجى رفعه مرة أخرى.", "Le fichier est incomplet. Téléversez-le de nouveau."],
   "选择短剧后按集审核评论": ["Choose a drama, then moderate its episodes", "Elige un drama y modera sus episodios", "Escolha um drama e modere seus episódios", "اختر مسلسلاً ثم راجع تعليقات حلقاته", "Choisissez une série, puis modérez ses épisodes"],
   "搜索剧名": ["Search drama titles", "Buscar por título", "Buscar por título", "البحث باسم المسلسل", "Rechercher par titre"],
   "选择分集": ["Choose an episode", "Elegir episodio", "Escolher episódio", "اختيار حلقة", "Choisir un épisode"],

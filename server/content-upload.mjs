@@ -11,33 +11,80 @@ export function createUploads(store, directory, config = process.env) {
   const media = path.join(directory, 'media'); fs.mkdirSync(media, { recursive: true, mode: 0o700 });
   const active = new Set();
   const processing = new Set(); let closing = false;
+  const queue = [];
   const filePath = (id, suffix = '') => path.join(media, `${id}${suffix}`);
   const maximum = Math.min(10 * 1024 ** 3, Math.max(1024 ** 2, Number(config.CONTENT_MAX_VIDEO_BYTES) || 2 * 1024 ** 3));
+  const sourcePath = asset => {
+    const part = filePath(asset.id, '.part');
+    const source = fs.existsSync(part) ? part : filePath(asset.id);
+    if (!fs.existsSync(source)) throw new Error('上传文件不存在，请重新上传');
+    if (source === part && fs.statSync(source).size !== asset.size) throw new Error('上传文件不完整，请重新上传');
+    return source;
+  };
+  const finish = async (asset, metadata) => {
+    await files.unlink(filePath(asset.id, '.part')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    if (closing) return;
+    const size = (await files.stat(filePath(asset.id))).size;
+    store.db.prepare("UPDATE content_assets SET status='ready',size=?,metadata=?,error=NULL WHERE id=?").run(size, metadata ? JSON.stringify(metadata) : null, asset.id);
+  };
   const processVideo = async asset => {
     const controller = new AbortController(); processing.add(controller);
     try {
-      const header = Buffer.alloc(12), handle = await files.open(filePath(asset.id, '.part'), 'r');
+      const source = sourcePath(asset);
+      const header = Buffer.alloc(12), handle = await files.open(source, 'r');
       try { await handle.read(header, 0, 12, 0); } finally { await handle.close(); }
       if (header.toString('ascii', 4, 8) !== 'ftyp') throw new Error('请上传有效的MP4视频');
-      const { stdout } = await execute(config.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format', '-of', 'json', filePath(asset.id, '.part')], { timeout: 120000, maxBuffer: 1048576, signal: controller.signal });
+      const { stdout } = await execute(config.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format', '-of', 'json', source], { timeout: 120000, maxBuffer: 1048576, signal: controller.signal });
       const info = JSON.parse(stdout), video = info.streams?.find(row => row.codec_type === 'video'), audio = info.streams?.filter(row => row.codec_type === 'audio') || [];
       if (!video || video.codec_name !== 'h264' || !(video.width>0 && video.height>0) || !['yuv420p','yuvj420p'].includes(video.pix_fmt) || audio.some(row => row.codec_name !== 'aac') || !Number.isFinite(Number(info.format?.duration)) || Number(info.format.duration) <= 0 || video.width > 4096 || video.height > 4096) throw new Error('请上传8位H.264视频及AAC音轨的MP4文件，分辨率不超过4096像素');
-      await execute(config.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', filePath(asset.id, '.part'), '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', '-y', filePath(asset.id, '.processing')], { timeout: 1800000, maxBuffer: 1048576, signal: controller.signal });
+      await execute(config.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-nostdin', '-protocol_whitelist', 'file,pipe', '-i', source, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', '-y', filePath(asset.id, '.processing')], { timeout: 1800000, maxBuffer: 1048576, signal: controller.signal });
       await files.rename(filePath(asset.id, '.processing'), filePath(asset.id));
-      await files.unlink(filePath(asset.id, '.part'));
-      const size = (await files.stat(filePath(asset.id))).size;
-      if (closing) return;
-      store.db.prepare("UPDATE content_assets SET status='ready',size=?,metadata=? WHERE id=?").run(size, JSON.stringify({ duration: Number(info.format.duration), width: video.width, height: video.height }), asset.id);
+      await finish(asset, { duration: Number(info.format.duration), width: video.width, height: video.height });
     } catch (error) {
       if (closing) return;
-      const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^请上传/.test(error.message) ? error.message : '视频处理失败，请检查文件后重新上传';
+      const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^(请上传|上传文件不)/.test(error.message) ? error.message : '视频处理失败，请检查文件后重新上传';
       store.db.prepare("UPDATE content_assets SET status='failed',error=? WHERE id=?").run(message, asset.id);
       await files.unlink(filePath(asset.id, '.processing')).catch(() => {});
-    } finally { processing.delete(controller); }
+    } finally { processing.delete(controller); runQueue(); }
   };
+  const processImage = async asset => {
+    const controller = new AbortController(); processing.add(controller);
+    try {
+      const source = sourcePath(asset), image = await files.readFile(source);
+      const mime = image.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : image[0] === 255 && image[1] === 216 && image[2] === 255 ? 'image/jpeg' : image.toString('ascii', 0, 4) === 'RIFF' && image.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp' : null;
+      if (mime !== asset.mime) throw Error('封面文件格式无效');
+      const {stdout} = await execute(config.FFPROBE_PATH || 'ffprobe', ['-v','error','-protocol_whitelist','file,pipe','-show_entries','stream=codec_name,width,height','-of','json',source], {timeout:15000,maxBuffer:1048576,signal:controller.signal});
+      const info = JSON.parse(stdout).streams?.[0];
+      if (!info || !['png','mjpeg','webp'].includes(info.codec_name) || !(info.width>0 && info.height>0) || info.width>4096 || info.height>4096) throw Error('封面文件格式无效');
+      if (source !== filePath(asset.id)) await files.rename(source, filePath(asset.id));
+      await finish(asset);
+    } catch (error) {
+      if (closing) return;
+      const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^上传文件不/.test(error.message) ? error.message : '封面文件格式无效';
+      store.db.prepare("UPDATE content_assets SET status='failed',error=? WHERE id=?").run(message, asset.id);
+    } finally { processing.delete(controller); runQueue(); }
+  };
+  const runQueue = () => {
+    if (closing) return;
+    while (queue.length && processing.size < 2) {
+      const asset = queue.shift();
+      void (asset.kind === 'video' ? processVideo(asset) : processImage(asset));
+    }
+  };
+  // 完整文件已落盘时只恢复处理；半途上传的分块位置继续保留，等浏览器正常续传。
+  for (const asset of store.db.prepare("SELECT * FROM content_assets WHERE status='processing' OR (status='uploading' AND offset=size) OR (status='failed' AND error='处理被服务重启中断，请重新上传' AND offset=size)").all()) {
+    const part = filePath(asset.id, '.part');
+    if (fs.existsSync(part) && fs.statSync(part).size < asset.size) {
+      store.db.prepare("UPDATE content_assets SET status='uploading',offset=?,error=NULL WHERE id=?").run(fs.statSync(part).size,asset.id);
+      continue;
+    }
+    store.db.prepare("UPDATE content_assets SET status='processing',error=NULL WHERE id=?").run(asset.id);
+    queue.push(asset);
+  }
+  runQueue();
   return {
     filePath, maximum,
-    close() { closing = true; for (const controller of processing) controller.abort(); },
+    close() { closing = true; queue.length = 0; for (const controller of processing) controller.abort(); },
     async cancel(admin, id) {
       const asset = store.asset(id);
       if (!asset || asset.owner_id !== admin.id) throw new AccountError(404, '上传不存在');
@@ -57,8 +104,12 @@ export function createUploads(store, directory, config = process.env) {
       const pending = store.db.prepare("SELECT COUNT(*) AS count FROM content_assets WHERE status IN ('uploading','processing')").get().count;
       if (pending >= 20) throw new AccountError(429, '待处理上传过多，请先完成已有上传');
       const id = crypto.randomUUID();
-      store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,created_at) VALUES(?,?,?,?,?,?,?)').run(id, admin.id, String(input.name || '').slice(0, 200), input.kind, input.mime, input.size, Date.now());
       fs.writeFileSync(filePath(id, '.part'), Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
+      try {
+        store.transaction(() => {
+          store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,created_at) VALUES(?,?,?,?,?,?,?)').run(id, admin.id, String(input.name || '').slice(0, 200), input.kind, input.mime, input.size, Date.now());
+        });
+      } catch (error) { fs.unlinkSync(filePath(id, '.part')); throw error; }
       return store.asset(id);
     },
     async chunk(req, admin, id) {
@@ -79,17 +130,8 @@ export function createUploads(store, directory, config = process.env) {
         try { const data = Buffer.concat(chunks); let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
         store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(end + 1, id);
         if (end + 1 === total) {
-          if (asset.kind === 'image') {
-            const image = await files.readFile(filePath(id, '.part'));
-            const mime = image.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : image[0] === 255 && image[1] === 216 && image[2] === 255 ? 'image/jpeg' : image.toString('ascii', 0, 4) === 'RIFF' && image.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp' : null;
-            if (mime !== asset.mime) { store.db.prepare("UPDATE content_assets SET status='failed',error='封面文件格式无效' WHERE id=?").run(id); throw new AccountError(400, '封面文件格式无效'); }
-            try {
-              const {stdout}=await execute(config.FFPROBE_PATH || 'ffprobe',['-v','error','-protocol_whitelist','file,pipe','-show_entries','stream=codec_name,width,height','-of','json',filePath(id,'.part')],{timeout:15000,maxBuffer:1048576});
-              const info=JSON.parse(stdout).streams?.[0];
-              if(!info || !['png','mjpeg','webp'].includes(info.codec_name) || !(info.width>0 && info.height>0) || info.width>4096 || info.height>4096)throw Error('封面文件格式无效');
-            }catch(error){const message=error.code==='ENOENT'?'视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传':'封面文件格式无效';store.db.prepare("UPDATE content_assets SET status='failed',error=? WHERE id=?").run(message,id);throw new AccountError(400,message);}
-            await files.rename(filePath(id, '.part'), filePath(id)); store.db.prepare("UPDATE content_assets SET status='ready' WHERE id=?").run(id);
-          } else { store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id); void processVideo(asset); }
+          store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id);
+          queue.push(asset); runQueue();
           store.audit(admin, '完成文件上传', id, { kind: asset.kind, name: asset.name });
         }
         return store.asset(id);

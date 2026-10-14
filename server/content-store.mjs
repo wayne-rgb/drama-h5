@@ -32,7 +32,6 @@ export class ContentStore {
       // 旧内容只依据真实的首次保存记录恢复归属，缺少记录时保持未分配。
       this.db.exec("UPDATE content_series SET creator_id=(SELECT admin_id FROM content_audit WHERE target_id=content_series.id AND action='保存短剧' ORDER BY created_at,id LIMIT 1)");
     }
-    this.db.prepare("UPDATE content_assets SET status='failed',error='处理被服务重启中断，请重新上传' WHERE status='processing'").run();
   }
   close() { this.db.close(); }
   transaction(action) { this.db.exec('BEGIN IMMEDIATE'); try { const result = action(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
@@ -65,6 +64,15 @@ export class ContentStore {
     if (input.coverId && (cover?.kind !== 'image' || cover.status !== 'ready')) throw new AccountError(400, '封面尚未上传完成');
     this.db.prepare(`INSERT INTO content_series(id,title,description,tags,content_type,language,cover_id,status,updated_at,category_ids) VALUES(?,?,?,?,?,?,?,'draft',?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,tags=excluded.tags,content_type=excluded.content_type,language=excluded.language,cover_id=excluded.cover_id,category_ids=excluded.category_ids,updated_at=excluded.updated_at`).run(id, title, description, tags, input.contentType, input.language, cover?.id || null, Date.now(), [...new Set(categoryIds)].join(','));
     this.audit(admin, '保存短剧', id, { title }); return this.detail(id, true);
+  }
+  listPage(options = {}) {
+    const { query = '', type = '', tag = '', tagLabel = tag, page = 1 } = options;
+    const total = this.db.prepare("SELECT COUNT(*) AS count FROM content_series WHERE status='published' AND (?='' OR title LIKE ? OR description LIKE ?) AND (?='' OR content_type=?) AND (?='' OR INSTR(','||category_ids||',',','||?||',')>0 OR tags LIKE ?)").get(query, `%${query}%`, `%${query}%`, type, type, tag, tag, `%${tagLabel}%`).count;
+    return { items: this.list(options), pagination: { pageNum: page, pageSize: 24, total, totalPages: Math.max(1, Math.ceil(total / 24)) } };
+  }
+  categoryTags(type, labels) {
+    const ids = new Set(this.db.prepare('SELECT category_ids FROM content_series WHERE content_type=?').all(type).flatMap(row => row.category_ids.split(',').filter(Boolean)));
+    return [...ids].map(id => ({ id, name: labels.find(row => row.id === id)?.name || id }));
   }
   assignCreator(admin, id, creatorId) {
     if (!this.row(id)) throw new AccountError(404, '短剧不存在');

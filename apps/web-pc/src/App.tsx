@@ -115,7 +115,11 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   ]);
   const [categoryTags, setCategoryTags] = useState<CategoryTag[]>([]);
   const categoryTagsRequest=useRef(0);
+  const categoryTagsRetry=useRef<ReturnType<typeof setTimeout> | null>(null);
   const categoryListRequest=useRef(0);
+  const categoryListRetry=useRef<ReturnType<typeof setTimeout> | null>(null);
+  const homeRequest=useRef(0);
+  const homeRetry=useRef<ReturnType<typeof setTimeout> | null>(null);
   const [categoryTagsLoading,setCategoryTagsLoading]=useState(false);
   const [categoryError,setCategoryError]=useState("");
   const [categoryTotalPages,setCategoryTotalPages]=useState(0);
@@ -486,37 +490,50 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   }, [tab, activeSeries, streamIndex, streamList, streamPage]);
 
   // 加载首页基础数据
-  const loadHomeData = async () => {
+  const loadHomeData = async (attempt=0) => {
+    const request=++homeRequest.current;
+    if (homeRetry.current) clearTimeout(homeRetry.current);
     try {
-      setLoading(true);
-      const [bannerData, sectionData] = await Promise.all([
-        api.getBanners(),
-        api.getSections(),
-      ]);
-      setBanners(bannerData);
-      setSections(sectionData);
+      const data = await api.getHomeSnapshot();
+      if (request!==homeRequest.current) return;
+      setBanners(data.banners);
+      setSections(data.sections);
+      if (data.backgroundPending && attempt < 10) homeRetry.current=setTimeout(()=>{
+        if (request===homeRequest.current) void loadHomeData(attempt+1);
+      },1000);
     } catch {
-      showToast("获取首页数据失败，请确认服务端已启动");
-    } finally {
-      setLoading(false);
+      if (request===homeRequest.current && !attempt) showToast("获取首页数据失败，请确认服务端已启动");
     }
   };
 
   // 加载分类标签
-  const loadCategoryTags = async (type="real-drama") => {
+  const loadCategoryTags = async (type="real-drama", attempt=0) => {
     const request=++categoryTagsRequest.current;
-    setCategoryTagsLoading(true);setCategoryTags([]);
+    if (categoryTagsRetry.current) clearTimeout(categoryTagsRetry.current);
+    setCategoryTagsLoading(true);if (!attempt) setCategoryTags([]);
     try {
       const res = await api.getCategoryTags(type);
       if(request!==categoryTagsRequest.current)return;
       if (res.types && res.types.length > 0) setCategoryTypes(res.types);
       setCategoryTags(res.tags||[]);
+      // 先展示自有题材，外部元数据完成后自动补齐，不让用户重复切换标签。
+      if (res.backgroundPending && attempt < 10) categoryTagsRetry.current=setTimeout(()=>{
+        if (request===categoryTagsRequest.current) void loadCategoryTags(type,attempt+1);
+      },1000);
     } catch {
       if(request===categoryTagsRequest.current)setCategoryError("官网题材读取失败，请重试");
     } finally {
       if(request===categoryTagsRequest.current)setCategoryTagsLoading(false);
     }
   };
+
+  // 页面卸载后取消目录补齐，旧请求不得覆盖新页面结果。
+  useEffect(()=>()=>{
+    categoryTagsRequest.current++;categoryListRequest.current++;homeRequest.current++;
+    if(categoryTagsRetry.current)clearTimeout(categoryTagsRetry.current);
+    if(categoryListRetry.current)clearTimeout(categoryListRetry.current);
+    if(homeRetry.current)clearTimeout(homeRetry.current);
+  },[]);
 
   // 加载榜单类别定义
   const loadRankTypes = async () => {
@@ -529,14 +546,18 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   };
 
   // 请求分类短剧列表
-  const fetchCategoryList = async (type: string, tag: string, page: number) => {
+  const fetchCategoryList = async (type: string, tag: string, page: number, attempt=0) => {
     const request=++categoryListRequest.current;
+    if (categoryListRetry.current) clearTimeout(categoryListRetry.current);
     try {
-      setCatLoading(true);setCategoryError("");setCategoryItems([]);
+      if (!attempt) {setCatLoading(true);setCategoryError("");setCategoryItems([]);}
       const res = await api.getCategoryList(type, tag, page);
       if(request!==categoryListRequest.current)return;
       setCategoryItems(res.items || []);
       setCategoryTotalPages(res.pagination?.totalPages||0);
+      if (res.backgroundPending && attempt < 10) categoryListRetry.current=setTimeout(()=>{
+        if (request===categoryListRequest.current) void fetchCategoryList(type,tag,page,attempt+1);
+      },1000);
     } catch {
       if(request===categoryListRequest.current)setCategoryError("官网分类读取失败，请重试");
     } finally {
