@@ -5,6 +5,10 @@
 .prototype-brand { display: flex; align-items: center; gap: 10px; font-size: 16px; }
 .prototype-brand-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 10px; color: white; background: linear-gradient(45deg, #e11d48, #f43f5e, #f59e0b); }
 .prototype-header > button { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: #cbd5e1; }
+.prototype-settings-header { padding-inline:6px; gap:8px; }
+.prototype-settings-header strong { flex:1; text-align:center; font-size:16px; font-weight:650; }
+.prototype-header-spacer { width:44px; flex-shrink:0; }
+[dir="rtl"] .prototype-settings-header .lucide-arrow-left { transform:scaleX(-1); }
 .prototype-bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 70px; padding: 7px 8px calc(8px + env(safe-area-inset-bottom)); flex-shrink: 0; background: #0a0f1d; border-top: 1px solid #1e293b; }
 .prototype-bottom-nav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; color: #94a3b8; font-size: 11px; min-height: 48px; border-radius: 12px; }
 .prototype-bottom-nav button.active { color: #fb7185; background: #e11d4814; }
@@ -26,7 +30,6 @@
 .prototype-my-tabs > div:first-child button > span:last-child:not(:first-of-type) { padding: 2px 4px; }
 .prototype-settings-button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 11px; border-radius: 12px; background: #0f172a; color: #94a3b8; font-size: 11px; }
 .prototype-settings-button.is-active { color: white; background: #e11d48; }
-.prototype-my-settings-content { padding-bottom: 0; }
 .mobile-prototype-mode main .grid { gap: 12px; }
 .mobile-prototype-mode main .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .mobile-prototype-mode main .lg\:flex-row,

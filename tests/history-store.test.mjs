@@ -52,7 +52,7 @@ test('all deduplicates series while each platform retains its own latest record'
   assert.equal(store.list('pc')[0].source, 'pc');
 });
 
-test('deletion tombstones sessions and delayed import cannot recreate deleted history', t => {
+test('删除标记阻止旧会话和迟到导入，删除之后的新会话能恢复历史', t => {
   const { store } = fixture(t);
   store.registerSession(session('first'));
   store.saveProgress(progress('first', 1));
@@ -60,7 +60,10 @@ test('deletion tombstones sessions and delayed import cannot recreate deleted hi
   assert.throws(() => store.saveProgress(progress('first', 2)), e => e.status === 410);
   store.importLegacy({ clientId: 'device', source: 'tv', items: [{ seriesId: '90071992547409999', title: 'old', episodeId: 'old', episodeNumber: 1, positionMs: 1, durationMs: 10, updatedAt: 1 }] });
   assert.equal(store.list().length, 0);
-  store.registerSession(session('new'));
+  const deletedAt = store.db.prepare('SELECT deleted_at FROM tombstones WHERE series_id=? AND source=?').get('90071992547409999','tv').deleted_at;
+  assert.throws(() => store.registerSession({ ...session('same-time'), startedAt: deletedAt }), e => e.status === 410);
+  // 明确使用删除之后的时间，避免执行较快时两次 Date.now() 落在同一毫秒。
+  store.registerSession({ ...session('new'), startedAt: deletedAt + 1 });
   store.saveProgress(progress('new', 1));
   assert.equal(store.list().length, 1);
   store.clear('all');
