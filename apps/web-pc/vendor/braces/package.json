@@ -1,0 +1,17 @@
+{
+  "name": "@drama-h5/braces",
+  "version": "3.0.3-h5.1",
+  "private": true,
+  "description": "基于braces 3.0.3的本地递归深度修复，保留原有展开接口",
+  "main": "index.js",
+  "license": "MIT",
+  "files": ["index.js", "lib", "LICENSE"],
+  "engines": { "node": ">=22.13.0" },
+  "dependencies": { "fill-range": "7.1.1" },
+  "upstream": {
+    "name": "braces",
+    "version": "3.0.3",
+    "repository": "https://github.com/micromatch/braces",
+    "advisory": "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"
+  }
+}
