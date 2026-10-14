@@ -6,6 +6,7 @@ import { useAccountSession } from './AccountArea';
 import { useI18n, languages, MessageKey, Language } from './i18n';
 import { Detail, CategoryTag } from './types';
 import { api } from './api';
+import AdminUploadQueue from './AdminUploadQueue';
 import './account.css';
 import './admin.css';
 
@@ -28,6 +29,13 @@ export default function AdminApp() {
   const [page,setPage] = useState(1), [pageSize,setPageSize] = useState(0), [uploadRows,setUploadRows] = useState<Asset[]>([]), [uploadFinished,setUploadFinished] = useState(false);
   const [loading,setLoading] = useState(true);
   const [series,setSeries] = useState<AdminDetail[]>([]), [selected,setSelected] = useState<AdminDetail|null>(null), [assets,setAssets] = useState<Asset[]>([]);
+  const [uploadingSeries,setUploadingSeries] = useState<string[]>([]);
+  const selectedRef=useRef(selected);selectedRef.current=selected;
+  const uploaded=(data:AdminDetail)=>{
+    if(data.assets)rememberAssets(data.assets);
+    setSeries(rows=>rows.map(row=>row.id===data.id?data:row));
+    if(selectedRef.current?.id===data.id){setSelected(data);setCoverId(data.coverId||'');setNumber(Math.max(0,...data.episodes.map(ep=>ep.number))+1);}
+  };
   const [accounts,setAccounts] = useState<Account[]>([]), [comments,setComments] = useState<any[]>([]), [audit,setAudit] = useState<any[]>([]), [query,setQuery] = useState('');
   const [title,setTitle] = useState(''), [description,setDescription] = useState(''), [tags,setTags] = useState(''), [contentType,setContentType] = useState('real-drama'), [contentLanguage,setContentLanguage] = useState('en'), [coverId,setCoverId] = useState('');
   const [genres,setGenres] = useState<CategoryTag[]>([]), [genreIds,setGenreIds] = useState<string[]>([]), [genresLoading,setGenresLoading] = useState(false);
@@ -63,6 +71,16 @@ export default function AdminApp() {
     const timer=setInterval(()=>{void adminRequest(`uploads?page=${tab==='uploads'?page:1}`).then(data=>{rememberAssets(data.items);if(tab==='uploads')setUploadRows(data.items);}).catch(error=>setError(accountError(error)));},2000);return()=>clearInterval(timer);
   },[account.session?.capabilities.admin,assets.some(asset=>asset.status==='processing'),tab,page]);
   const edit = (data:AdminDetail|null) => {if(data?.assets)rememberAssets(data.assets);setSelected(data);setTitle(data?.title||'');setDescription(data?.description||'');setTags(data?.tags||'');setGenreIds(data?.categoryIds||[]);setContentType(data?.contentType||'real-drama');setContentLanguage(data?.language||'en');setCoverId(data?.coverId||'');setNumber((data?.episodes.length||0)+1);setEpisodeTitle('');setAssetId('');};
+  useEffect(()=>{
+    const id=account.session?.user?.id;
+    if(!id||!account.session?.capabilities.admin)return;
+    const last=localStorage.getItem(`drama_admin_series:${id}`);
+    if(last)void adminRequest(`series/${last}`).then(edit).catch(error=>setError(accountError(error)));
+  },[account.session?.user?.id]);
+  useEffect(()=>{
+    const id=account.session?.user?.id;if(!id)return;
+    if(selected)localStorage.setItem(`drama_admin_series:${id}`,selected.id);
+  },[selected?.id,account.session?.user?.id]);
   const save = async()=>{const data=await adminRequest(selected?`series/${selected.id}`:'series',{title,description,tags,categoryIds:genreIds,contentType,language:contentLanguage,coverId});edit(data);await load();};
   const upload = async()=>{
     if(!file)return;
@@ -96,12 +114,13 @@ export default function AdminApp() {
     <main className="admin-main">
     {error&&<p role="alert" className="account-error">{localizeError(error)}</p>}
     {(tab==='series'||tab==='accounts')&&<form className="admin-search" onSubmit={event=>{event.preventDefault();if(page!==1)setPage(1);else void run(load);}}><input aria-label={t('搜索')} placeholder={t('搜索')} value={query} onChange={event=>setQuery(event.target.value)}/><button disabled={busy}>{t('搜索')}</button></form>}
-    {tab==='series'&&<div className="admin-content-columns"><section className="admin-panel">
+    <AdminUploadQueue key={account.session.user.id} accountId={account.session.user.id} series={selected} visible={tab==='series'&&!!selected} onUpdated={uploaded} onActivity={setUploadingSeries}/>
+    {tab==='series'&&<div className="admin-content-columns admin-series-editor"><section className="admin-panel">
       <div className="admin-panel-title"><h2>{t('短剧管理')}</h2><button onClick={()=>edit(null)}>{t('新建短剧')}</button><button disabled={busy} onClick={()=>void run(load)}>{t('刷新')}</button></div>
-      {loading ? <p role="status">{t('加载中...')}</p> : !series.length&&!error&&<p>{t('尚无上传内容')}</p>}
+      <details open={!selected}><summary>{selected?selected.title:t('选择短剧')}</summary>{loading ? <p role="status">{t('加载中...')}</p> : !series.length&&!error&&<p>{t('尚无上传内容')}</p>}
       {series.map(row=><button className="admin-series-row" key={row.id} disabled={busy} onClick={()=>void run(async()=>edit(await adminRequest(`series/${row.id}`)))}>{row.cover&&<img src={row.cover} alt={row.title}/>}<span><strong>{row.title}</strong><small>{t(statusLabels[row.status])} · {row.episodes.length} {t('集')}</small></span></button>)}
-    </section>
-      <section className="admin-panel"><h2>{t(selected?'编辑短剧':'新建短剧')}</h2><form onSubmit={event=>{event.preventDefault();void run(save);}}>
+      </details></section>
+      <section className="admin-panel"><h2>{selected?selected.title:t('新建短剧')}</h2><details open={!selected}><summary>{t('基本信息')}</summary><form onSubmit={event=>{event.preventDefault();void run(save);}}>
         <label>{t('剧名')}<input required maxLength={200} value={title} onChange={event=>setTitle(event.target.value)}/></label>
         <label>{t('简介')}<textarea maxLength={5000} value={description} onChange={event=>setDescription(event.target.value)}/></label>
         <label>{t('内容类型')}<select value={contentType} onChange={event=>{setContentType(event.target.value);setGenreIds([]);}}><option value="real-drama">{t('真人剧')}</option><option value="comic-drama">{t('漫剧')}</option><option value="ai-drama">{t('AI剧')}</option></select></label>
@@ -109,9 +128,9 @@ export default function AdminApp() {
         <label>{t('分类标签')}<input maxLength={500} value={tags} onChange={event=>setTags(event.target.value)}/></label>
         <label>{t('内容语言')}<select value={contentLanguage} onChange={event=>setContentLanguage(event.target.value)}>{languages.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
         <label>{t('封面')}<select value={coverId} onChange={event=>setCoverId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{assets.filter(asset=>asset.kind==='image'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
-        <button disabled={busy}>{t('保存')}</button><button type="button" onClick={()=>{setTab('uploads');setPage(1);}}>{t('上传素材')}</button>
-      </form>
-      {selected&&<><div className="admin-publish"><span>{t(statusLabels[selected.status])}</span><button disabled={busy} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'上架')}</button>{selected.episodes.length>0&&<a href={`/?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div><h3>{t('分集管理')}</h3>{selected.status==='published'&&<p>{t('下架后可调整分集')}</p>}<form onSubmit={event=>{event.preventDefault();void run(async()=>{const data=await adminRequest(`series/${selected.id}/episodes`,{number,title:episodeTitle,assetId});edit(data);await load();});}}><label>{t('集数')}<input type="number" min={1} max={10000} required value={number} onChange={event=>setNumber(Number(event.target.value))}/></label><label>{t('分集标题')}<input maxLength={200} value={episodeTitle} onChange={event=>setEpisodeTitle(event.target.value)}/></label><label>{t('视频')}<select required value={assetId} onChange={event=>setAssetId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{assets.filter(asset=>asset.kind==='video'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label><button disabled={busy||selected.status==='published'}>{t('保存分集')}</button></form><div className="admin-episodes">{selected.episodes.map((ep,index)=><div key={ep.id}><span>{ep.number}. {ep.title} · {t(index<3?'免费':'VIP会员')}</span><button disabled={busy||selected.status==='published'||index===0} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index-1],ids[index]]=[ids[index],ids[index-1]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('上移')}</button><button disabled={busy||selected.status==='published'||index===selected.episodes.length-1} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index],ids[index+1]]=[ids[index+1],ids[index]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('下移')}</button><button disabled={busy||selected.status==='published'} onClick={()=>{setNumber(ep.number);setEpisodeTitle(ep.title);setAssetId(ep.assetId);}}>{t('编辑')}</button><button disabled={busy||selected.status==='published'} onClick={()=>void run(async()=>{const response=await axios.delete(`/api/admin/series/${selected.id}/episodes/${ep.id}`);edit(response.data);await load();})}>{t('移除')}</button></div>)}</div></>}
+        <button disabled={busy}>{t(selected?'保存基本信息':'保存并上传')}</button>
+      </form></details>
+      {selected&&<><div className="admin-publish"><span>{t(statusLabels[selected.status])} · {selected.episodes.length} {t('集')}</span><button disabled={busy||uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'检查并发布')}</button>{selected.episodes.length>0&&<a href={`/?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div>{uploadingSeries.includes(selected.id)&&<p>{t('请先完成或移除未完成的上传任务')}</p>}<h3>{t('分集管理')}</h3>{selected.status==='published'&&<p>{t('下架后可调整分集')}</p>}<details><summary>{t('复用素材或编辑分集')}</summary><form onSubmit={event=>{event.preventDefault();void run(async()=>{const existing=selected.episodes.find(ep=>ep.number===number);if(existing&&existing.assetId!==assetId&&!window.confirm(t('确认替换第{{number}}集？',{number})))return;const data=await adminRequest(`series/${selected.id}/episodes`,{number,title:episodeTitle,assetId,mode:existing?'replace':'append',expectedEpisodeId:existing?.id,expectedAssetId:existing?.assetId});edit(data);await load();});}}><label>{t('集数')}<input type="number" min={1} max={10000} required value={number} onChange={event=>setNumber(Number(event.target.value))}/></label><label>{t('分集标题')}<input maxLength={200} value={episodeTitle} onChange={event=>setEpisodeTitle(event.target.value)}/></label><label>{t('视频')}<select required value={assetId} onChange={event=>setAssetId(event.target.value)}><option value="">{t('选择已上传素材')}</option>{assets.filter(asset=>asset.kind==='video'&&asset.status==='ready').map(asset=><option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label><button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)}>{t('保存分集')}</button></form></details><div className="admin-episodes">{selected.episodes.map((ep,index)=><div key={ep.id}><span>{ep.number}. {ep.title} · {t(index<3?'免费':'VIP会员')}</span><button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===0} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index-1],ids[index]]=[ids[index],ids[index-1]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('上移')}</button><button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===selected.episodes.length-1} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index],ids[index+1]]=[ids[index+1],ids[index]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('下移')}</button><button disabled={busy||selected.status==='published'} onClick={()=>{setNumber(ep.number);setEpisodeTitle(ep.title);setAssetId(ep.assetId);}}>{t('编辑')}</button><button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{const response=await axios.delete(`/api/admin/series/${selected.id}/episodes/${ep.id}`);edit(response.data);await load();})}>{t('移除')}</button></div>)}</div></>}
       </section></div>}
     {tab==='uploads'&&<section className="admin-panel"><h2>{t('素材上传')}</h2><p>{t('视频支持H.264与AAC的MP4，封面支持JPEG、PNG、WebP')}</p>
       <label>{t('选择文件')}<input type="file" accept="video/mp4,image/jpeg,image/png,image/webp" disabled={busy} onChange={event=>{setFile(event.target.files?.[0]||null);setUploadId('');setProgress(0);setUploadFinished(false);}}/></label>

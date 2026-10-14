@@ -67,7 +67,10 @@ export class ContentStore {
     if (series.status === 'published') throw new AccountError(409, '请先下架再调整分集');
     if (asset?.kind !== 'video' || asset.status !== 'ready') throw new AccountError(400, '视频尚未处理完成');
     if (!Number.isInteger(input.number) || input.number < 1 || input.number > 10000) throw new AccountError(400, '集数无效');
-    const existing = this.db.prepare('SELECT id FROM content_episodes WHERE series_id=? AND number=?').get(seriesId, input.number);
+    const existing = this.db.prepare('SELECT id,asset_id FROM content_episodes WHERE series_id=? AND number=?').get(seriesId, input.number);
+    // 批量导入只能新增；替换必须匹配管理员选中的原分集，重试同一素材保持幂等。
+    if (input.mode !== 'replace' && existing && existing.asset_id !== asset.id) throw new AccountError(409, '该集已存在，请选择明确替换');
+    if (input.mode === 'replace' && (!existing || (existing.asset_id !== asset.id && (existing.id !== input.expectedEpisodeId || existing.asset_id !== input.expectedAssetId)))) throw new AccountError(409, '原分集已变化，请重新选择替换');
     const id = existing?.id || contentId();
     this.db.prepare('INSERT INTO content_episodes VALUES(?,?,?,?,?) ON CONFLICT(series_id,number) DO UPDATE SET title=excluded.title,asset_id=excluded.asset_id').run(id, seriesId, input.number, textValue(input.title || `第${input.number}集`, '分集标题'), asset.id);
     this.audit(admin, '保存分集', id, { seriesId, number: input.number, assetId: asset.id }); return this.detail(seriesId, true);

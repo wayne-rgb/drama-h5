@@ -95,6 +95,7 @@ export function createContentService(directory, accountStore, accounts, provider
         else if (route === '/api/admin/uploads' && req.method === 'POST') reply(res, uploads.create(admin, await input()));
         else if (route === '/api/admin/uploads' && req.method === 'GET') reply(res, { items: store.db.prepare('SELECT id FROM content_assets ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(offset).map(row => store.asset(row.id)), maximum: uploads.maximum });
         else if (upload && req.method === 'PUT') reply(res, await uploads.chunk(req, admin, upload[1]));
+        else if (upload && req.method === 'DELETE') reply(res, await uploads.cancel(admin, upload[1]));
         else if (upload && req.method === 'GET') { const asset = store.asset(upload[1]); if (!asset) throw new AccountError(404, '上传不存在'); reply(res, asset); }
         else if (route === '/api/admin/accounts' && req.method === 'GET') { const query = String(url.searchParams.get('q') || '').slice(0, 200); reply(res, { items: accountStore.db.prepare('SELECT * FROM accounts WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(`%${query}%`, `%${query}%`,offset).map(user => accountStore.publicAccount(user)) }); }
         else if (route === '/api/admin/membership' && req.method === 'POST') {

@@ -97,6 +97,25 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   for(let number=1;number<=4;number++)assert.equal((await request(`/api/admin/series/${id}/episodes`,{actor:actors.admin,body:{number,title:`测试第${number}集`,assetId:video.id}})).status,200);
   const draft=(await request(`/api/admin/series/${id}`,{actor:actors.admin})).data;
   assert.equal(draft.assets.length,2);
+  // 使用真正处理完成的第二份视频，验证补集不会覆盖，以及替换校验和重试幂等。
+  const replacement=await upload(await fs.readFile(videoPath),'video','video/mp4');assert.equal(replacement.status,'ready');
+  const episode=draft.episodes[1],episodeRoute=`/api/admin/series/${id}/episodes`;
+  assert.equal((await request(episodeRoute,{actor:actors.admin,body:{number:2,assetId:replacement.id,mode:'append'}})).status,409);
+  assert.equal((await request(episodeRoute,{actor:actors.admin,body:{number:2,assetId:replacement.id}})).status,409);
+  assert.equal((await request(episodeRoute,{actor:actors.admin,body:{number:2,assetId:replacement.id,mode:'replace',expectedEpisodeId:episode.id,expectedAssetId:'已变化的素材'}})).status,409);
+  const replaceInput={number:2,title:'明确替换第二集',assetId:replacement.id,mode:'replace',expectedEpisodeId:episode.id,expectedAssetId:video.id};
+  for(let attempt=0;attempt<2;attempt++) {
+    const result=await request(episodeRoute,{actor:actors.admin,body:replaceInput});assert.equal(result.status,200);
+    assert.equal(result.data.episodes.length,4);assert.equal(result.data.episodes[1].id,episode.id);assert.equal(result.data.episodes[1].assetId,replacement.id);
+  }
+  assert.equal((await request(episodeRoute,{actor:actors.admin,body:{...replaceInput,assetId:video.id}})).status,409);
+  assert.equal((await request(`/api/admin/uploads/${video.id}`,{actor:actors.admin})).data.status,'ready');
+  const disposable=(await request('/api/admin/uploads',{actor:actors.admin,body:{name:'待取消.mp4',size:100,kind:'video',mime:'video/mp4'}})).data;
+  assert.equal((await request(`/api/admin/uploads/${disposable.id}`,{actor:actors.first,method:'DELETE'})).status,403);
+  assert.equal((await request(`/api/admin/uploads/${disposable.id}`,{actor:actors.admin,method:'DELETE'})).data.status,'failed');
+  await assert.rejects(fs.stat(path.join(directory,'media',`${disposable.id}.part`)),{code:'ENOENT'});
+  assert.equal((await request(`/api/admin/uploads/${video.id}`,{actor:actors.admin,method:'DELETE'})).data.status,'ready');
+  assert.ok((await fs.stat(path.join(directory,'media',video.id))).size>0);
   assert.equal((await request('/api/admin/series?page=2',{actor:actors.admin})).data.items.length,0);
   assert.equal((await request('/api/admin/uploads?page=2',{actor:actors.admin})).data.items.length,0);
   const ids=draft.episodes.map(row=>row.id);

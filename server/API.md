@@ -509,13 +509,14 @@
 | `GET /api/admin/series?q=&page=1` | 查询自有短剧、草稿及上架状态 |
 | `POST /api/admin/series`、`POST /api/admin/series/:id` | 创建及编辑真实剧名、简介、分类、语言与封面 |
 | `GET /api/admin/series/:id` | 分集详情与关联素材，供编辑和预览 |
-| `POST /api/admin/series/:id/episodes` | 按集数添加或替换已处理视频，上架期间禁止修改分集 |
+| `POST /api/admin/series/:id/episodes` | `mode:append` 新增；明确替换使用 `mode:replace`、`expectedEpisodeId` 和 `expectedAssetId` 校验原分集；重复保存同一素材可重试，上架期间禁止修改 |
 | `DELETE /api/admin/series/:id/episodes/:episodeId` | 从草稿移除分集，原文件保留 |
 | `POST /api/admin/series/:id/reorder` | 传入完整 `ids` 数组调整连续集序 |
 | `POST /api/admin/series/:id/publish` | `status` 为 `published` 或 `draft`；缺封面、缺分集、集数不连续不能发布 |
 | `POST /api/admin/uploads` | 使用文件名、大小、MIME 与 `kind` 创建真实上传记录 |
 | `PUT /api/admin/uploads/:id` | 二进制分块，每块不超过 1MB，携带 `Content-Range: bytes 起点-终点/总大小` |
 | `GET /api/admin/uploads/:id`、`GET /api/admin/uploads?page=1` | 读取断点、处理状态与错误，恢复上传或轮询处理结果 |
+| `DELETE /api/admin/uploads/:id` | 上传所属管理员取消未完成上传，释放待处理额度并清理临时文件；写入或处理期间需稍后重试，已完成素材保留 |
 | `GET /api/admin/accounts?q=&page=1` | 查询真实账户及会员状态，不返回密码和会话令牌 |
 | `POST /api/admin/membership` | `accountId`、毫秒时间戳 `periodEnd`、`reason` 开通手动会员；`revoke:true` 撤销手动权益 |
 | `GET /api/admin/comments?page=1` | 查询评论和举报数 |
@@ -531,6 +532,10 @@
 | `POST /api/comments/:id/report` | 登录账户举报评论，同账户不重复计数 |
 
 本轮媒体存于 `HG_DATA_DIR/media`，配置该目录的持久化磁盘。视频默认上限 2GB，封面上限 8MB。生产 Docker 镜像包含 FFmpeg；本机开发需提供 `FFMPEG_PATH` 与 `FFPROBE_PATH`，默认从 PATH 查找。视频限定 MP4、8位H.264的4:2:0像素格式与AAC音轨，分辨率不超过4096像素。服务端读取实际媒体信息并整理为快速起播文件，完成前不能发布。处理状态在服务重启时标为失败，需重新上传，不能假报成功。分块网络失败后重新选择同一文件即可从服务端真实偏移继续上传。
+
+剧集编辑页可直接选择封面、多选或拖入 MP4。文件按名称中的集数识别并自然排序，管理员先确认集数、标题和顺序，再开始两条并行上传。上传字节完成后仍等待服务端实际处理成功，随后自动保存封面或分集；补集默认禁止覆盖，指定替换校验原分集是否变化。发布前检查有效封面及从第1集开始的连续分集。
+
+上传队列按管理员账户保存在当前浏览器，记录剧集归属、原始文件大小、修改时间及首尾内容摘要；本地文件不会保存到浏览器持久化存储。切换后台模块时任务继续，刷新后未传完的文件需重选原文件并校验身份，已上传的素材可继续轮询与保存。断点以服务端 `offset` 为准；处理后的 `size` 可能变化，不作为原文件续传长度。清除完成记录不会删除素材或分集。
 
 手动会员和真实支付订阅独立，撤销手动权益不会取消真实收费；订阅必须通过已有支付管理入口处理。分享链接使用 `/?series=短剧编号&episode=分集编号`，接收人仍需通过同样的会员校验。
 

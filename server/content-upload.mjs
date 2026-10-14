@@ -38,6 +38,19 @@ export function createUploads(store, directory, config = process.env) {
   return {
     filePath, maximum,
     close() { closing = true; for (const controller of processing) controller.abort(); },
+    async cancel(admin, id) {
+      const asset = store.asset(id);
+      if (!asset || asset.owner_id !== admin.id) throw new AccountError(404, '上传不存在');
+      if (active.has(id) || asset.status === 'processing') throw new AccountError(409, '此上传正在写入，请稍后重试');
+      if (asset.status === 'uploading') {
+        store.db.prepare("UPDATE content_assets SET status='failed',error='上传已取消' WHERE id=?").run(id);
+      }
+      if (['uploading','failed'].includes(asset.status)) {
+        await files.unlink(filePath(id, '.part')).catch(() => {});
+        await files.unlink(filePath(id, '.processing')).catch(() => {});
+      }
+      return store.asset(id);
+    },
     create(admin, input) {
       if (!['video', 'image'].includes(input.kind) || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > (input.kind === 'image' ? 8 * 1024 ** 2 : maximum)) throw new AccountError(400, '上传类型或文件大小无效');
       if (input.kind === 'video' ? input.mime !== 'video/mp4' : !['image/jpeg', 'image/png', 'image/webp'].includes(input.mime)) throw new AccountError(400, '视频需为MP4，封面需为JPEG、PNG或WebP');
