@@ -162,10 +162,11 @@ export function createUploads(store, directory, config = process.env) {
       try {
         let data;
         try { data = await readBody(req, { maximum: end - start + 1, timeoutMs: 60000 }); }
-        catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '上传分块读取超时，请稍后重试' : error.status === 413 ? '上传分块过大' : '上传分块不完整'); }
+        catch (error) { if (error instanceof AccountError) throw error; throw new AccountError(error.status || 400, error.status === 408 ? '上传分块读取超时，请稍后重试' : error.status === 413 ? '上传分块过大' : '上传分块不完整'); }
         if (data.length !== end - start + 1) throw new AccountError(400, '上传分块不完整');
         const handle = await files.open(filePath(id, '.part'), 'r+');
-        try { let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
+        try { req.revalidateAccess?.(); let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
+        req.revalidateAccess?.();
         store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(end + 1, id);
         if (end + 1 === total) {
           store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id);

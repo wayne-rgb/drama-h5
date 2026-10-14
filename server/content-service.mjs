@@ -34,11 +34,26 @@ export function createContentService(directory, accountStore, accounts, provider
     }));
   };
   const resolveEpisode = async (req, seriesId, episodeId, enforce = true) => {
-    const viewer = accounts.viewer(req), series = await detail(seriesId, isAdmin(viewer));
+    const initial = accounts.viewer(req), series = await detail(seriesId, isAdmin(initial));
+    // 外部目录可能等待网络，权限必须以等待结束后的会话和会员状态为准。
+    const viewer = accounts.viewer(req);
+    if (initial && initial.id !== viewer?.id) throw new AccountError(409, '登录状态已变化，请刷新页面');
+    if (series.owned && series.status !== 'published' && !isAdmin(viewer)) throw new AccountError(404, '短剧未上架');
     const index = series.episodes.findIndex(ep => String(ep.id) === episodeId);
     if (index < 0) throw new AccountError(404, '分集不属于此短剧');
     const required = index >= 3;
     if (enforce && required && !isAdmin(viewer) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
+    if (enforce) {
+      let checkedAt = 0;
+      req.revalidatePlayback = (force = false) => {
+        const now = Date.now();
+        if (!force && now - checkedAt < 1000) return;
+        const current = accounts.viewer(req);
+        if (series.owned && store.row(series.id)?.status !== 'published' && !isAdmin(current)) throw new AccountError(404, '短剧未上架');
+        if (required && !isAdmin(current) && (!current || current.id !== viewer?.id || !accountStore.membership(current.id).active)) throw new AccountError(403, 'VIP_REQUIRED');
+        checkedAt = now;
+      };
+    }
     return { series, episode: series.episodes[index], viewer, required };
   };
   const commentModeration = new CommentModeration(store, detail);
@@ -52,6 +67,7 @@ export function createContentService(directory, accountStore, accounts, provider
       start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2])); end = match[1] && match[2] ? Math.min(Number(match[2]), end) : end;
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start < 0 || start >= stat.size) { res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); return res.end(); } status = 206;
     }
+    req.revalidatePlayback?.(true);
     res.writeHead(status, { 'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(quality ? {'X-Video-Quality':quality} : {}), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) });
     if (req.method === 'HEAD') return res.end();
     const stream = fs.createReadStream(filename, { start, end }); res.once('close', () => stream.destroy()); stream.once('error', () => res.destroy()); stream.pipe(res);
@@ -59,7 +75,7 @@ export function createContentService(directory, accountStore, accounts, provider
   return {
     store, detail, resolveEpisode, analytics,
     close: () => { uploads.close(); store.close(); },
-    publicDetail: async (req, id) => { const user = accounts.viewer(req), value = await detail(id,isAdmin(user)), vip = isAdmin(user) || accountStore.membership(user?.id || '').active; return { ...value, episodes: value.episodes.map((ep, index) => ({ id: ep.id, number: ep.number, title: ep.title, vipRequired: index >= 3, locked: index >= 3 && !vip })) }; },
+    publicDetail: async (req, id) => { const value = await detail(id,isAdmin(accounts.viewer(req))), user = accounts.viewer(req); if(value.owned && value.status!=='published' && !isAdmin(user))throw new AccountError(404,'短剧未上架'); const vip = isAdmin(user) || accountStore.membership(user?.id || '').active; const {creatorId,...publicValue}=value; return { ...publicValue, episodes: value.episodes.map((ep, index) => ({ id: ep.id, number: ep.number, title: ep.title, vipRequired: index >= 3, locked: index >= 3 && !vip })) }; },
     list: options => store.list(options),
     merge: (items, options = {}) => [...store.list(options), ...items].filter((item, index, all) => all.findIndex(row => row.id === item.id) === index),
     async ownPlayback(req, res, kind, resolved) {
@@ -86,7 +102,7 @@ export function createContentService(directory, accountStore, accounts, provider
       if (myLikes && req.method === 'GET') { const user = accounts.requireViewer(req); reply(res, store.likedEpisodes(user.id,url.searchParams.get('before'),url.searchParams.get('summary') === '1')); return true; }
       if (removeLike && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req,user); const episode = store.db.prepare('SELECT series_id FROM content_episodes WHERE id=?').get(removeLike[1]); store.transaction(()=>{const removed=store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(removeLike[1],user.id); if(removed.changes && episode)analytics.feedback(episode.series_id,removeLike[1],'unlike');}); reply(res,{count:store.likedEpisodes(user.id,null,true).count}); return true; }
       if (myLikes || removeLike) throw new AccountError(405,'请求方式无效');
-      const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); } };
+      const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch (error) { if (error instanceof AccountError) throw error; throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); } };
       if (analyticsRoute) {
         if (route === '/api/analytics/sessions' && req.method === 'POST') reply(res, analytics.start(req, await input()));
         else if (route === '/api/analytics/progress' && req.method === 'POST') reply(res, analytics.progress(req, await input()));

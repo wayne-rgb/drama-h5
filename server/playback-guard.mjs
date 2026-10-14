@@ -20,7 +20,7 @@ export class PlaybackGuard {
     if (meter) {
       const consume = (chunk, encoding) => {
         if (chunk === undefined || chunk === null || !/^video\//i.test(String(res.getHeader('Content-Type') || '')) || ![200, 206].includes(res.statusCode)) return true;
-        try { meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
+        try { req.revalidatePlayback?.(); meter.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
         catch { res.destroy(); return false; }
       };
       const write = res.write, end = res.end;

@@ -26,6 +26,7 @@ export async function readBody(req, { maximum = 2097152, timeoutMs = 30000 } = {
       if (size > maximum) reject(413, 'request too large');
       chunks.push(value);
     }
+    req.revalidateAccess?.();
     return Buffer.concat(chunks);
   } catch (error) {
     if (error.status === 408) reject(408, error.message);

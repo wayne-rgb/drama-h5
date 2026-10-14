@@ -79,7 +79,7 @@ export class ContentStore {
     return { items: this.list(options), pagination: { pageNum: page, pageSize: 24, total, totalPages: Math.max(1, Math.ceil(total / 24)) } };
   }
   categoryTags(type, labels) {
-    const ids = new Set(this.db.prepare('SELECT category_ids FROM content_series WHERE content_type=?').all(type).flatMap(row => row.category_ids.split(',').filter(Boolean)));
+    const ids = new Set(this.db.prepare("SELECT category_ids FROM content_series WHERE content_type=? AND status='published'").all(type).flatMap(row => row.category_ids.split(',').filter(Boolean)));
     return [...ids].map(id => ({ id, name: labels.find(row => row.id === id)?.name || id }));
   }
   assignCreator(admin, id, creatorId, creator = null) {

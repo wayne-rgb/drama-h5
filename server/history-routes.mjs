@@ -1,11 +1,12 @@
 import { HistoryError } from './history-store.mjs';
 import { readBody } from '../shared/http-json.mjs';
+import { AccountError } from './account-store.mjs';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 async function body(req) {
   let data;
   try { data = await readBody(req, { maximum: MAX_BODY_BYTES }); }
-  catch (error) { throw new HistoryError(error.status || 400, error.status === 413 ? 'history request exceeds 2 MiB' : '请求读取超时，请稍后重试'); }
+  catch (error) { if (error instanceof AccountError) throw error; throw new HistoryError(error.status || 400, error.status === 413 ? 'history request exceeds 2 MiB' : '请求读取超时，请稍后重试'); }
   let value;
   try { value = JSON.parse(data.toString('utf8')); }
   catch { throw new HistoryError(400, 'request body must be valid JSON'); }
@@ -42,8 +43,9 @@ export function createHistoryHandler(store) {
         json(res, req.method === 'GET' ? { item: store.get(id, platform) } : store.remove(id, platform));
       } else throw new HistoryError(405, 'unsupported history route or method');
     } catch (error) {
-      if (!(error instanceof HistoryError)) console.error('History storage request failed:', error.message);
-      json(res, { error: error instanceof HistoryError ? error.message : 'history storage unavailable' }, error instanceof HistoryError ? error.status : 500);
+      const known = error instanceof HistoryError || error instanceof AccountError;
+      if (!known) console.error('观看记录处理失败:', error.message);
+      json(res, { error: known ? error.message : 'history storage unavailable' }, known ? error.status : 500);
     }
     return true;
   };

@@ -77,5 +77,6 @@ if(platforms.includes('win-x64')&&!process.argv.includes('--web-only')){
  copy(path.join(output,'hongguotv-web-win-x64'),path.join(desktop,'resources','hongguotv'));
  copy(path.join(root,'apps','web-pc','dist'),path.join(desktop,'resources','app','dist'));
  copy(path.join(root,'apps','web-pc','electron','main.cjs'),path.join(desktop,'resources','app','electron','main.cjs'));
+ copy(path.join(root,'apps','web-pc','electron','desktop-proxy.cjs'),path.join(desktop,'resources','app','electron','desktop-proxy.cjs'));
  const archive=path.join(output,'hongguotv-desktop-win-x64.zip');run('powershell.exe',['-NoProfile','-Command',`Compress-Archive -LiteralPath '${desktop.replaceAll("'","''")}' -DestinationPath '${archive.replaceAll("'","''")}' -Force`]);console.log(`已生成 ${archive}`);
 }

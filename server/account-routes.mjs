@@ -7,10 +7,11 @@ import { isAdministrator } from './account-role.mjs';
 import { safeAccountReturn } from './account-return.mjs';
 import { readJson as readInput, readBody } from '../shared/http-json.mjs';
 import { AuthenticationLimits, clientAddress } from './auth-limits.mjs';
+import { createLocalAccess } from './local-access.mjs';
 
 async function readJson(req) {
   try { return await readInput(req); }
-  catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); }
+  catch (error) { if (error instanceof AccountError) throw error; throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); }
 }
 
 function cookies(req) {
@@ -29,14 +30,11 @@ export function createAccountService(store, config = process.env) {
   const billing = createBilling(store, config, origin);
   const rates = new AuthenticationLimits(config);
   const viewer = req => store.viewer(cookies(req).hg_account_session);
-  const localMode = config.HG_MANAGED === '1';
+  const localAccess = createLocalAccess(config, origin);
   const requireViewer = req => { const account = viewer(req); if (!account) throw new AccountError(401, '请先登录'); return account; };
   const setCookie = (res, name, value, maxAge) => res.setHeader('Set-Cookie', `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
   const login = (res, account) => { setCookie(res, 'hg_account_session', store.session(account.id), 2592000); reply(res, { user: store.publicAccount(account) }); };
-  const sameOrigin = req => {
-    if (req.headers.origin && req.headers.origin !== origin) throw new AccountError(403, '请求来源无效');
-    if (req.headers['sec-fetch-site'] === 'cross-site') throw new AccountError(403, '请求来源无效');
-  };
+  const sameOrigin = localAccess.sameOrigin;
   const rateLimit = (req, scope, limit = 20) => {
     rates.request(req, scope, limit);
   };
@@ -51,16 +49,16 @@ export function createAccountService(store, config = process.env) {
     viewer, sameOrigin, requireViewer,
     address: req => clientAddress(req, rates.trusted),
     audience: req => viewer(req) || store.guest(cookies(req).hg_guest_session),
-    canConfigureSync: account => localMode || isAdministrator(account,config),
+    canConfigureSync: (account, req) => !!req && localAccess.local(req) || isAdministrator(account,config),
     guardLibrary(req) {
-      const account = viewer(req), guest = !account && !localMode ? store.guest(cookies(req).hg_guest_session) : null;
+      const local = localAccess.local(req), account = viewer(req), guest = !account && !local ? store.guest(cookies(req).hg_guest_session) : null;
       const owner = account?.id || (guest ? `guest:${guest.id}` : 'guest');
       const requested = req.headers['x-library-owner'];
-      if (!account && !localMode && !guest) throw new AccountError(409, '登录状态已变化，请刷新页面');
+      if (!account && !local && !guest) throw new AccountError(409, '登录状态已变化，请刷新页面');
       if (account || guest ? requested !== owner : requested && requested !== owner) throw new AccountError(409, '登录状态已变化，请刷新页面');
-      // 原桌面文件入口沿用游客资料；账户资料始终要求站点来源与会话匹配。
-      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && (account || !localMode || req.headers.origin !== 'null')) sameOrigin(req);
-      if (req.method === 'POST' && new URL(req.url,origin).pathname === '/api/library/sync' && !localMode && !isAdministrator(account,config)) throw new AccountError(403,'需要管理员权限');
+      // 本地资料只给核实来源的本机访问；普通账户与游客资料始终绑定真实会话。
+      sameOrigin(req);
+      if (req.method === 'POST' && new URL(req.url,origin).pathname === '/api/library/sync' && !local && !isAdministrator(account,config)) throw new AccountError(403,'需要管理员权限');
       return account || guest;
     },
     async handle(req, res, url) {
@@ -80,14 +78,15 @@ export function createAccountService(store, config = process.env) {
           if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效');
         }
         if (route === '/api/account/session' && req.method === 'GET') {
-          const account = viewer(req);
-          let guest = !account && !localMode ? store.guest(cookies(req).hg_guest_session) : null;
-          if (!account && !localMode && !guest) {
+          sameOrigin(req);
+          const account = viewer(req), local = localAccess.local(req);
+          let guest = !account && !local ? store.guest(cookies(req).hg_guest_session) : null;
+          if (!account && !local && !guest) {
             sameOrigin(req); rateLimit(req,'guest',120);
             const session = store.guestSession();guest={id:session.id,guest:true};setCookie(res,'hg_guest_session',session.token,31536000);
           }
-          if (!account && localMode) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), creator: store.isCreator(account?.id), librarySync: localMode || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
+          if (!account && local) res.setHeader('Access-Control-Allow-Origin', '*');
+          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), creator: store.isCreator(account?.id), librarySync: local || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);
@@ -100,9 +99,11 @@ export function createAccountService(store, config = process.env) {
           const input = await readJson(req), email = emailAddress(input.email), account = store.byEmail(email);
           rates.checkLogin(req, email);
           if (!await passwordMatches(input.password, account?.password_hash)) { rates.failedLogin(req, email); throw new AccountError(401, '邮箱或密码不正确'); }
+          const current = store.byId(account.id);
+          if (!current || current.password_hash !== account.password_hash) { rates.failedLogin(req,email); throw new AccountError(401,'邮箱或密码不正确'); }
           rates.successfulLogin(req, email);
           store.logout(cookies(req).hg_account_session);
-          login(res, account);
+          login(res, current);
         } else if (route === '/api/auth/logout' && req.method === 'POST') {
           store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', '', 0); reply(res, { ok: true });
         } else if (route === '/api/account/profile' && req.method === 'POST') reply(res, { user: store.publicAccount(store.updateProfile(requireViewer(req).id, await readJson(req))) });
@@ -150,9 +151,9 @@ export function createAccountService(store, config = process.env) {
           } else if (!account) account = store.create({ email: payload.email, name: payload.name || payload.email.split('@')[0], googleSub: payload.sub, avatar: typeof payload.picture === 'string' && /^https:\/\/[^/]+\.googleusercontent\.com\//.test(payload.picture) ? payload.picture : null, verified: true });
           store.logout(cookies(req).hg_account_session); setCookie(res, 'hg_account_session', store.session(account.id), 2592000);
           res.writeHead(302, { Location: `${origin}${callbackReturn}`, 'Cache-Control': 'no-store' }); res.end();
-        } else if (route === '/api/billing/checkout' && req.method === 'POST') { const input=await readJson(req); reply(res, await billing.checkout(requireViewer(req),input.planId,input.returnTo)); }
-        else if (route === '/api/billing/portal' && req.method === 'POST') reply(res, await billing.portal(requireViewer(req),(await readJson(req)).returnTo));
-        else if (route === '/api/billing/confirm' && req.method === 'POST') { await billing.confirm(requireViewer(req), (await readJson(req)).sessionId); reply(res, { ok: true }); }
+        } else if (route === '/api/billing/checkout' && req.method === 'POST') { const input=await readJson(req), result=await billing.checkout(requireViewer(req),input.planId,input.returnTo); req.revalidateAccess?.(); reply(res,result); }
+        else if (route === '/api/billing/portal' && req.method === 'POST') { const result=await billing.portal(requireViewer(req),(await readJson(req)).returnTo); req.revalidateAccess?.(); reply(res,result); }
+        else if (route === '/api/billing/confirm' && req.method === 'POST') { await billing.confirm(requireViewer(req), (await readJson(req)).sessionId); req.revalidateAccess?.(); reply(res, { ok: true }); }
         else throw new AccountError(404, '页面不存在');
       } catch (error) {
         if (url.pathname === '/api/auth/google/callback') {

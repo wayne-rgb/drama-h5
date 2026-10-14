@@ -21,6 +21,7 @@ import { createContentClient, withContentSignal, ContentCache } from '../shared/
 import { protectRequestBody } from '../shared/http-json.mjs';
 import { RequestGuard, positiveLimit } from './request-guard.mjs';
 import { TrafficBudget } from './traffic-budget.mjs';
+import { createApiPolicy } from './api-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const environmentFile = process.env.HG_ENV_FILE || path.resolve(__dirname, "../.env");
@@ -88,6 +89,7 @@ const PORT = Number(process.env.PORT || 8788);
 const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
+const authorizeApi = createApiPolicy(accounts, accountStore);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
 const catalog = new CatalogCache();
 const trafficBudget = new TrafficBudget(path.join(DATA_DIR, 'resource-usage.sqlite'), process.env);
@@ -219,7 +221,7 @@ function createRecommendations(libraryStore) { return new RecommendationService(
 }); }
 const recommendations = createRecommendations(libraryStore);
 const personalLibraries = new Map();
-function personalServices(account, res) {
+function personalServices(account, res, req) {
   if (!account) return { handleLibrary, handleHistory, recommendations };
   if (!personalLibraries.has(account.id)) {
     // 缓存只限制同时打开的数据库；关闭空闲连接不删除用户资料。
@@ -232,7 +234,7 @@ function personalServices(account, res) {
     const library = new LibraryStore(path.join(directory, 'library.sqlite'));
     const history = new HistoryStore(path.join(directory, 'history.sqlite'));
     const sync = new LibrarySync(library);
-    if (!account.guest && accounts.canConfigureSync(account)) sync.start();
+    if (!account.guest && accounts.canConfigureSync(account,req)) sync.start();
     personalLibraries.set(account.id, { active:0, library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
   }
   const service = personalLibraries.get(account.id);
@@ -313,6 +315,7 @@ async function proxyWebVideo(req, res, playback) {
       if (upstream.headers[name] !== undefined) responseHeaders[name] = upstream.headers[name];
     }
     if (upstream.status === 416) responseHeaders["content-length"] = "0";
+    req.revalidatePlayback?.(true);
     res.writeHead(upstream.status, responseHeaders);
     if (req.method === "HEAD" || upstream.status === 416) { upstream.data.destroy(); res.end(); return; }
     upstream.data.once("error", () => res.destroy());
@@ -320,6 +323,7 @@ async function proxyWebVideo(req, res, playback) {
   } catch (error) {
     if (res.destroyed || controller.signal.aborted) return;
     if (res.headersSent) res.destroy();
+    else if (error instanceof AccountError) json(res, { error: error.message }, error.status);
     else json(res, { error: "视频加载超时或连接中断，请重试" }, 502);
   }
 }
@@ -619,13 +623,12 @@ const server = http.createServer(async (req, res) => {
   try { u = new URL(req.url, `http://${req.headers.host || "localhost"}`); }
   catch { return json(res,{error:'请求地址无效'},400); }
   const pathname = u.pathname;
+  const isApi = pathname === '/api' || pathname.startsWith('/api/');
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, Content-Range, X-Library-Owner",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    });
+    try { if (isApi) authorizeApi(req,res,u); }
+    catch (error) { const failure=publicFailure(error); return json(res,{error:failure.message},failure.status); }
+    res.writeHead(204);
     return res.end();
   }
 
@@ -635,7 +638,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   let playbackSignal;
-  if (pathname.startsWith('/api/')) {
+  if (isApi) {
     try {
       const audience = accounts.audience(req);
       const address = accounts.address(req), viewer = audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${address}`;
@@ -644,7 +647,7 @@ const server = http.createServer(async (req, res) => {
         requestGuard.checkVideo(viewer, address);
         playbackSignal = playbackGuard.acquire(req, res, viewer, address);
       } else {
-        const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience);
+        const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience,req);
         requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname), upload);
       }
       if ([...u.searchParams].some(([key, value]) => key.length > 80 || value.length > (key === 'q' ? 200 : 1024))) throw new AccountError(400, '请求格式无效');
@@ -657,14 +660,15 @@ const server = http.createServer(async (req, res) => {
   const handleRequest = async () => {
   try {
     // 静态文件也纳入异常处理，部署期间文件变化不会绕过错误边界。
-    if (!pathname.startsWith('/api/')) {
+    if (!isApi) {
       requestGuard.acquireStatic(req, res, accounts.address(req));
       if (serveStatic(req, res, pathname)) return;
     }
+    if (isApi) authorizeApi(req,res,u);
     if (await accounts.handle(req, res, u)) return;
     if (await content.handle(req, res, u)) return;
     const personalRoute = pathname.startsWith('/api/library') || pathname.startsWith('/api/history') || pathname === '/api/recommend';
-    const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null,res);
+    const services = personalServices(personalRoute ? accounts.guardLibrary(req) : null,res,req);
     if (await services.handleLibrary(req, res, u)) return;
     if (await services.handleHistory(req, res, u)) return;
     // 2. 官方大轮播 Banner API
@@ -1040,6 +1044,7 @@ const server = http.createServer(async (req, res) => {
           // 在途头部请求不共享取消状态；已完成的真实头部仍回填原缓存复用。
           const stream = { ...cachedStream }; delete stream.preparePromise;
           const prepared = await hgEngine.prepareHeader(stream);
+          req.revalidatePlayback?.(true);
           cachedStream.prepared ||= prepared;
           const range = byteRange(req.headers.range, prepared.total);
           if (!range) {
@@ -1085,6 +1090,7 @@ const server = http.createServer(async (req, res) => {
           return res.end();
         } catch (err) {
           if (playbackSignal?.aborted || res.destroyed) return;
+          if (err instanceof AccountError) throw err;
           console.warn(`[Stream Engine Error for ${quality}]:`, err.message);
         }
       }

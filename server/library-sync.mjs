@@ -5,7 +5,8 @@ function origin(input){let url;try{url=new URL(input);}catch{throw new LibraryEr
 export class LibrarySync {
   constructor(store){this.store=store;this.running=false;this.nextAttempt=0;this.failures=0;this.generation=0;this.status={state:store.getMeta('syncConfig')?'pending':'unconfigured',pending:0,lastSyncedAt:null,error:''};}
   async request(config,path,body){const response=await fetch(config.url+path,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${config.key}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(10000)});const data=await response.json();if(!response.ok)throw new LibraryError(response.status,data.error||'远程请求失败');return data;}
-  async configure(input){
+  async configure(input,revalidate){
+    revalidate?.();
     const generation=++this.generation;
     if(input.enabled===false){this.store.setMeta('syncConfig',null);this.status={state:'unconfigured',pending:0,lastSyncedAt:this.status.lastSyncedAt,error:''};return this.view();}
     const previous=this.store.getMeta('syncConfig');
@@ -13,6 +14,7 @@ export class LibrarySync {
     const config={url,key:typeof input.key==='string'&&input.key?input.key:(previous?.url===url?previous.key:'')};
     if(config.key.length<16)throw new LibraryError(400,'家庭共享密钥无效');
     const started=Date.now();const handshake=await this.request(config,'/api/sync/handshake');
+    revalidate?.();
     if(generation!==this.generation)throw new LibraryError(409,'配置已被更新，忽略旧验证结果');
     if(handshake.protocolVersion!==1||typeof handshake.instanceId!=='string'||!Number.isSafeInteger(handshake.serverTime))throw new LibraryError(400,'该地址不是兼容的共享服务');
     config.instanceId=handshake.instanceId;config.target=createHash('sha256').update(config.url+'\n'+config.instanceId+'\n'+config.key).digest('hex');
