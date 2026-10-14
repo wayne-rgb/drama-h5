@@ -27,6 +27,11 @@ export class ContentStore {
       CREATE TABLE IF NOT EXISTS comment_reports(comment_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(comment_id,account_id));
       CREATE TABLE IF NOT EXISTS content_audit(id TEXT PRIMARY KEY,admin_id TEXT NOT NULL,action TEXT NOT NULL,target_id TEXT NOT NULL,detail TEXT NOT NULL,created_at INTEGER NOT NULL);`);
     if (!this.db.prepare('PRAGMA table_info(content_series)').all().some(column=>column.name==='category_ids')) this.db.exec("ALTER TABLE content_series ADD COLUMN category_ids TEXT NOT NULL DEFAULT ''");
+    if (!this.db.prepare('PRAGMA table_info(content_series)').all().some(column=>column.name==='creator_id')) {
+      this.db.exec('ALTER TABLE content_series ADD COLUMN creator_id TEXT');
+      // 旧内容只依据真实的首次保存记录恢复归属，缺少记录时保持未分配。
+      this.db.exec("UPDATE content_series SET creator_id=(SELECT admin_id FROM content_audit WHERE target_id=content_series.id AND action='保存短剧' ORDER BY created_at,id LIMIT 1)");
+    }
     this.db.prepare("UPDATE content_assets SET status='failed',error='处理被服务重启中断，请重新上传' WHERE status='processing'").run();
   }
   close() { this.db.close(); }
@@ -38,12 +43,12 @@ export class ContentStore {
     const row = this.row(id);
     if (!row || (!preview && row.status !== 'published')) return null;
     const episodes = this.db.prepare('SELECT * FROM content_episodes WHERE series_id=? ORDER BY number').all(id).map(ep => ({ id: ep.id, number: ep.number, title: ep.title, assetId: ep.asset_id, vipRequired: ep.number > 3 }));
-    return { id: row.id, title: row.title, cover: row.cover_id ? `/api/content/covers/${row.cover_id}` : '', description: row.description, tags: row.tags, categoryIds:row.category_ids.split(',').filter(Boolean), badge: `全${episodes.length}集`, contentType: row.content_type, language: row.language, status: row.status, coverId: row.cover_id, episodes };
+    return { id: row.id, title: row.title, cover: row.cover_id ? `/api/content/covers/${row.cover_id}` : '', description: row.description, tags: row.tags, categoryIds:row.category_ids.split(',').filter(Boolean), badge: `全${episodes.length}集`, contentType: row.content_type, language: row.language, status: row.status, coverId: row.cover_id, creatorId: preview ? row.creator_id : undefined, owned: true, episodes };
   }
   list({ preview = false, query = '', type = '', tag = '', tagLabel = tag, page = 1 } = {}) {
     const rows = this.db.prepare(`SELECT * FROM content_series WHERE (?=1 OR status='published') AND (?='' OR title LIKE ? OR description LIKE ?) AND (?='' OR content_type=?) AND (?='' OR INSTR(','||category_ids||',',','||?||',')>0 OR tags LIKE ?) ORDER BY updated_at DESC LIMIT 24 OFFSET ?`).all(preview ? 1 : 0, query, `%${query}%`, `%${query}%`, type, type, tag, tag, `%${tagLabel}%`, (Math.max(1, Math.min(1000, Math.floor(Number(page)) || 1)) - 1) * 24);
     return rows.map(row => preview ? this.detail(row.id,true) : {
-      id:row.id,title:row.title,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',description:row.description,tags:row.tags,contentType:row.content_type,language:row.language,
+      id:row.id,title:row.title,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',description:row.description,tags:row.tags,contentType:row.content_type,language:row.language,owned:true,
       badge:`全${this.db.prepare('SELECT COUNT(*) AS count FROM content_episodes WHERE series_id=?').get(row.id).count}集`,
     });
   }
@@ -60,6 +65,12 @@ export class ContentStore {
     if (input.coverId && (cover?.kind !== 'image' || cover.status !== 'ready')) throw new AccountError(400, '封面尚未上传完成');
     this.db.prepare(`INSERT INTO content_series(id,title,description,tags,content_type,language,cover_id,status,updated_at,category_ids) VALUES(?,?,?,?,?,?,?,'draft',?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,tags=excluded.tags,content_type=excluded.content_type,language=excluded.language,cover_id=excluded.cover_id,category_ids=excluded.category_ids,updated_at=excluded.updated_at`).run(id, title, description, tags, input.contentType, input.language, cover?.id || null, Date.now(), [...new Set(categoryIds)].join(','));
     this.audit(admin, '保存短剧', id, { title }); return this.detail(id, true);
+  }
+  assignCreator(admin, id, creatorId) {
+    if (!this.row(id)) throw new AccountError(404, '短剧不存在');
+    this.db.prepare('UPDATE content_series SET creator_id=? WHERE id=?').run(creatorId, id);
+    this.audit(admin, '设置短剧创作者', id, { creatorId });
+    return this.detail(id, true);
   }
   saveEpisode(admin, seriesId, input) {
     const series = this.row(seriesId), asset = this.asset(input.assetId);

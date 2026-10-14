@@ -51,6 +51,7 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
   const [replacement,setReplacement]=useState<Episode|null>(null), [dragging,setDragging]=useState(false);
   const [showCompleted,setShowCompleted]=useState(false);
   const replaceInput=useRef<HTMLInputElement>(null), dragged=useRef<string|null>(null);
+  useEffect(()=>{setReplacement(null);setError('');setDragging(false);setShowCompleted(false);},[series?.id]);
   const change=(action:(rows:Task[])=>Task[])=>{
     if(!alive.current)return;
     const rows=action(tasksRef.current); tasksRef.current=rows; setTasks(rows);

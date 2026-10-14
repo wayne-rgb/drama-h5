@@ -6,6 +6,7 @@ export interface RecommendationSignal {
 }
 
 export interface Series {
+  owned?: boolean;
   contentType?: ContentType;
   id: string;
   title: string;

@@ -83,7 +83,8 @@ test('头像接口拒绝可执行格式并且资料更新不泄露密码', () =>
     assert.throws(() => store.updateProfile(account.id, { avatar: Buffer.from('<svg onload="alert(1)"></svg>').toString('base64') }), /头像需为/);
     const updated = store.updateProfile(account.id, { name: '新的昵称' });
     assert.equal(store.publicAccount(updated).name, '新的昵称');
-    assert.deepEqual(Object.keys(store.publicAccount(updated)).sort(), ['avatarUrl', 'email', 'emailVerified', 'googleLinked', 'id', 'membership', 'name'].sort());
+    assert.deepEqual(Object.keys(store.publicAccount(updated)).sort(), ['avatarUrl', 'creator', 'email', 'emailVerified', 'googleLinked', 'id', 'membership', 'name'].sort());
+    assert.equal(store.publicAccount(updated).creator, false);
   } finally { store.close(); }
 });
 

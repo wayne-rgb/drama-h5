@@ -9,6 +9,7 @@ import { EpisodeInteractions, VipGate } from "./EpisodeInteractions";
 import { LikedEpisodes, useLikeCount } from "./LikedEpisodes";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
+import { useContentAnalytics } from './use-content-analytics';
 import { 
   api,
   saveRecommendationSignal, resetRecommendationPreferences, commitRecommendationPreferences,
@@ -840,6 +841,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   }, [accountPanel]);
   const playbackReturn = activeSeries && currentEpisode ? {seriesId:activeSeries.id,episodeId:currentEpisode.id} : tab==='recommend' && streamDetail && streamCurrentEpisode ? {seriesId:streamDetail.id,episodeId:streamCurrentEpisode.id} : undefined;
   const detailLocked = !!currentEpisode && (currentEpisodeIndex >= 3 && !hasVipAccess || playbackError === 'VIP_REQUIRED');
+  useContentAnalytics(videoRef, activeSeries?.id, currentEpisode?.id, !!activeSeries?.owned && !!accountState.session, `${qualityEpisodeId}:${currentQuality}`, 'detail', accountState.session?.libraryOwner, detailLocked, playbackError);
+  useContentAnalytics(streamVideoRef, streamDetail?.id, streamCurrentEpisode?.id, tab === 'recommend' && !activeSeries && !!streamDetail?.owned && !!accountState.session, `${streamQualityEpisodeId}:${streamQuality}:${streamPlaybackAttempt}`, 'feed', accountState.session?.libraryOwner, !!streamCurrentEpisode && (streamEpisodeIndex >= 3 && !hasVipAccess || streamError === 'VIP_REQUIRED'), streamError);
   const openMobileSearch = (origin: "recommend" | "category") => {
     mobileSearchOrigin.current = { tab: origin, series: activeSeries, episodeId: currentEpisode?.id };
     setTab("search"); setActiveSeries(null);

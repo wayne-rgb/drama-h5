@@ -48,6 +48,7 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS account_subscriptions_owner ON account_subscriptions(account_id);
       CREATE TABLE IF NOT EXISTS account_billing_events (id TEXT PRIMARY KEY, received_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS account_creators(account_id TEXT PRIMARY KEY REFERENCES accounts(id),admin_id TEXT NOT NULL,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS account_manual_vip(account_id TEXT PRIMARY KEY REFERENCES accounts(id),period_end INTEGER NOT NULL,admin_id TEXT NOT NULL,reason TEXT NOT NULL,updated_at INTEGER NOT NULL);`);
   }
   close() { this.db.close(); }
@@ -73,6 +74,7 @@ export class AccountStore {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   byId(id) { return this.db.prepare('SELECT * FROM accounts WHERE id=?').get(id) || null; }
+  isCreator(id) { return !!id && !!this.db.prepare('SELECT 1 FROM account_creators WHERE account_id=?').get(id); }
   byEmail(email) { return this.db.prepare('SELECT * FROM accounts WHERE email=?').get(email) || null; }
   create({ email, name, hash = null, googleSub = null, avatar = null, verified = false }) {
     const id = crypto.randomUUID(), now = Date.now();
@@ -151,6 +153,6 @@ export class AccountStore {
   }
   publicAccount(account) {
     if (!account) return null;
-    return { id: account.id, email: account.email, name: account.name, emailVerified: !!account.email_verified, googleLinked: !!account.google_sub, avatarUrl: account.avatar_mime ? `/api/account/avatar?v=${account.updated_at}` : account.google_avatar || null, membership: this.membership(account.id) };
+    return { id: account.id, email: account.email, name: account.name, creator: this.isCreator(account.id), emailVerified: !!account.email_verified, googleLinked: !!account.google_sub, avatarUrl: account.avatar_mime ? `/api/account/avatar?v=${account.updated_at}` : account.google_avatar || null, membership: this.membership(account.id) };
   }
 }

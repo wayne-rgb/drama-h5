@@ -62,6 +62,7 @@ export function AccountMenu(props: AreaProps) {
       <button className="account-menu-setting" onClick={() => select(props.onLikes)}><ThumbsUp size={18}/>{t('我的点赞')}<small className="ms-auto">{props.likesCount ?? '—'}</small></button>
       <button className="account-menu-setting" onClick={() => select(props.onSettings)}><Settings size={18} />{t("设置")}<ChevronRight size={16} /></button>
       {props.session?.capabilities.admin && <a className="account-menu-setting" href="/admin"><ShieldCheck size={18}/>{t('内容后台')}<ChevronRight size={16}/></a>}
+      {props.session?.capabilities.creator && <a className="account-menu-setting" href="/creator"><ShieldCheck size={18}/>{t('创作者工作台')}<ChevronRight size={16}/></a>}
       {error && <div role="alert" className="account-error">{localizeError(error)}</div>}
       {user && <button className="account-menu-setting" disabled={signingOut} onClick={() => { setSigningOut(true); setError(""); void changeAccount("/api/auth/logout", {}).catch(error => setError(accountError(error))).finally(() => setSigningOut(false)); }}><LogOut size={18} />{t("退出登录")}</button>}
     </div>}

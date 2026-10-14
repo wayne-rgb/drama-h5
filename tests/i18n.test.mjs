@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 const require = createRequire(new URL("../apps/web-pc/package.json", import.meta.url));
 const ts = require("typescript");
 const localeSource = fs.readFileSync(new URL("../apps/web-pc/src/locales.ts", import.meta.url), "utf8");
+const analyticsLocaleSource = fs.readFileSync(new URL("../apps/web-pc/src/analytics-locales.ts", import.meta.url), "utf8");
 const runtimeSource = fs.readFileSync(new URL("../apps/web-pc/src/i18n.ts", import.meta.url), "utf8");
 const languageKey = "drama_h5_language_v1";
 
@@ -29,7 +30,7 @@ function loadRuntime(saved, blocked = false) {
     vm.runInNewContext(javascript, { ...environment, exports, require: name => dependencies[name] ?? require(name) });
     return exports;
   };
-  const locales = evaluate(localeSource);
+  const locales = evaluate(localeSource, { "./analytics-locales": evaluate(analyticsLocaleSource) });
   const runtime = evaluate(runtimeSource, { "./locales": locales });
   return { ...runtime, ...locales, document, storage, listeners };
 }

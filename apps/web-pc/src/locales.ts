@@ -1,6 +1,9 @@
 // 每行依次为英语、西班牙语、巴西葡萄牙语、阿拉伯语、加拿大法语；中文使用键名。
 // 界面翻译不改变内容服务的分类标识、搜索词或剧集元数据。
+import { analyticsMessages, analyticsChineseMessages } from './analytics-locales';
+
 export const messages = {
+  ...analyticsMessages,
   "请求地址无效": ["Invalid request address", "Dirección de solicitud no válida", "Endereço da solicitação inválido", "عنوان الطلب غير صالح", "Adresse de requête non valide"],
   "网络连接中断，请检查网络后重试": ["Connection interrupted. Check your network and retry.", "Conexión interrumpida. Revisa la red e inténtalo de nuevo.", "Conexão interrompida. Verifique a rede e tente novamente.", "انقطع الاتصال. تحقق من الشبكة وأعد المحاولة.", "Connexion interrompue. Vérifiez le réseau et réessayez."],
   "追剧、观看历史和偏好自动保存到你的账户": ["Your watchlist, history and preferences are saved to your account", "Tu lista, historial y preferencias se guardan en tu cuenta", "Sua lista, histórico e preferências são salvos na sua conta", "تُحفظ قائمة المتابعة والسجل والتفضيلات في حسابك", "Votre liste, historique et préférences sont enregistrés dans votre compte"],
@@ -547,6 +550,7 @@ export const messages = {
 
 // 描述性键名对应完整的中文句子，插值字段与其余语言保持一致。
 export const chineseMessages: Partial<Record<keyof typeof messages, string>> = {
+  ...analyticsChineseMessages,
   "Google登录尚未配置": "Google登录暂不可用",
   "邮件服务尚未配置": "验证邮件暂不可用",
   "订阅支付尚未配置": "会员订阅暂不可用",

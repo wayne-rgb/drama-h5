@@ -53,6 +53,7 @@ export function createAccountService(store, config = process.env) {
   const capabilities = { google: !!oauth, email: !!mail, billing: billing.ready, billingProvider: billing.provider };
   return {
     viewer, sameOrigin, requireViewer,
+    audience: req => viewer(req) || store.guest(cookies(req).hg_guest_session),
     canConfigureSync: account => localMode || isAdministrator(account,config),
     guardLibrary(req) {
       const account = viewer(req), guest = !account && !localMode ? store.guest(cookies(req).hg_guest_session) : null;
@@ -88,7 +89,7 @@ export function createAccountService(store, config = process.env) {
             const session = store.guestSession();guest={id:session.id,guest:true};setCookie(res,'hg_guest_session',session.token,31536000);
           }
           if (!account && localMode) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), librarySync: localMode || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
+          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), creator: store.isCreator(account?.id), librarySync: localMode || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);
