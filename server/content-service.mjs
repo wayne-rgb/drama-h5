@@ -39,7 +39,7 @@ export function createContentService(directory, accountStore, accounts, provider
     const key = user.id, row = rates.get(key) || { until: now + 60000, count: 0 };
     if (++row.count > 30 || rates.size >= 10000) throw new AccountError(429, '操作过于频繁，请稍后重试'); rates.set(key, row);
   };
-  const detail = async (id, preview = false) => {
+  const detail = async (id, preview = false, actor = '') => {
     if (!/^\d{1,40}$/.test(id || '')) throw new AccountError(400, '短剧标识无效');
     if (store.row(id)) { const data = store.detail(id, preview); if (!data) throw new AccountError(404, '短剧未上架'); return data; }
     // 同一剧的目录请求由多位观众复用，取消某个播放不能取消共享详情。
@@ -47,10 +47,10 @@ export function createContentService(directory, accountStore, accounts, provider
     const value = await provider.detail(id);
     if (!value || String(value.id) !== id || !Array.isArray(value.episodes)) throw new AccountError(502, '剧集信息暂不可用');
     return value;
-    }));
+    }), false, actor);
   };
   const resolveEpisode = async (req, seriesId, episodeId, enforce = true) => {
-    const initial = contentViewer(req), series = await detail(seriesId, preview(initial,seriesId));
+    const initial = contentViewer(req), series = await detail(seriesId, preview(initial,seriesId), accounts.address(req));
     // 外部目录可能等待网络，权限必须以等待结束后的会话和会员状态为准。
     const viewer = contentViewer(req);
     if (initial && initial.id !== viewer?.id) throw new AccountError(409, '登录状态已变化，请刷新页面');
@@ -93,7 +93,7 @@ export function createContentService(directory, accountStore, accounts, provider
     store, team, detail, resolveEpisode, analytics,
     close: () => { const pending = uploads.close(); store.close(); return pending; },
     publicDetail: async (req, id) => {
-      const initial=contentViewer(req),value=await detail(id,preview(initial,id)),user=contentViewer(req);
+      const initial=contentViewer(req),value=await detail(id,preview(initial,id),accounts.address(req)),user=contentViewer(req);
       if(value.owned){
         const privatePreview=value.status!=='published',previous=req.revalidateAccess;
         req.revalidateAccess=()=>{

@@ -51,6 +51,8 @@ shared-key.txt
 
 # Delivery artifacts, native intermediates, local runtime
 /outputs/
+/output/
+/.playwright-cli/
 /server/.local/
 /server/data/
 /apps/sync-server/data/

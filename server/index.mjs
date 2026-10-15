@@ -93,6 +93,8 @@ function serveStatic(req, res, pathname) {
 }
 
 const PORT = Number(process.env.PORT || 8788);
+const HOST = process.env.HG_HOST || '127.0.0.1';
+const SECURE_SITE = new URL(process.env.APP_ORIGIN || `http://127.0.0.1:${PORT}`).protocol === 'https:';
 const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
@@ -645,6 +647,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Frame-Options','DENY');
   res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; frame-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
   res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
+  if (SECURE_SITE) res.setHeader('Strict-Transport-Security','max-age=31536000');
   let u;
   if (req.url.length > 4096) return json(res, { error: '请求格式无效' }, 414);
   try { u = new URL(req.url, `http://${req.headers.host || "localhost"}`); }
@@ -744,7 +747,7 @@ const server = http.createServer(async (req, res) => {
     // 2. 官方大轮播 Banner API
     if (pathname === "/api/banners") {
       const own = content.list();
-      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0);
+      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0, downloadAddress);
       const banners = [...own.map(item => ({ ...item, backgroundCover: item.cover })), ...(data?.banners || [])];
       return json(res, { backgroundPending: !data, banners: banners.filter((item, index) => banners.findIndex(row => row.id === item.id) === index) });
     }
@@ -752,7 +755,7 @@ const server = http.createServer(async (req, res) => {
     // 2.1 官方首页专区列表 (GET /api/sections)
     if (pathname === "/api/sections") {
       const own = content.list();
-      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0);
+      const data = await catalog.read('home-sections', fetchOfficialHome, own.length > 0, downloadAddress);
       return json(res, { backgroundPending: !data, sections: own.length ? [{ type: 'uploaded', name: '为你推荐', items: own }, ...(data?.sections || [])] : data.sections });
     }
 
@@ -762,7 +765,7 @@ const server = http.createServer(async (req, res) => {
       if (!OFFICIAL_TYPES.some(row => row.id === type)) throw new AccountError(400, '不支持的分类类型');
       const ownTags = content.store.categoryTags(type, OFFICIAL_TAGS);
       try {
-        const data = await catalog.read(`tags:${type}`, () => coreProvider.categoryMetadata(type), content.store.listPage({type}).pagination.total > 0);
+        const data = await catalog.read(`tags:${type}`, () => coreProvider.categoryMetadata(type), content.store.listPage({type}).pagination.total > 0, downloadAddress);
         const tags = [...(data?.tags || []), ...ownTags];
         return json(res, { ...(data || {types:OFFICIAL_TYPES,type}), backgroundPending:!data, tags:tags.filter((item,index)=>tags.findIndex(row=>row.id===item.id)===index) });
       } catch {
@@ -781,7 +784,7 @@ const server = http.createServer(async (req, res) => {
       const options = {type,tag,tagLabel:OFFICIAL_TAGS.find(item=>item.id===tag)?.name || tag,page};
       const own = content.store.listPage(options);
       try {
-        const data = await catalog.read(`category:${type}:${tag}:${page}`, () => coreProvider.categoryList(type,tag,page), own.pagination.total > 0);
+        const data = await catalog.read(`category:${type}:${tag}:${page}`, () => coreProvider.categoryList(type,tag,page), own.pagination.total > 0, downloadAddress);
         return json(res, { ...(data || {type,tag,page}), backgroundPending: !data, items:content.merge(data?.items || [],options), pagination:{...(data?.pagination || own.pagination),totalPages:Math.max(data?.pagination?.totalPages || 1,own.pagination.totalPages)} });
       } catch (error) { throw new AccountError(error.status || 502, error.status === 400 ? error.message : '官网分类读取失败，请重试'); }
     }
@@ -796,13 +799,13 @@ const server = http.createServer(async (req, res) => {
       const slug = u.searchParams.get("type") || u.searchParams.get("slug") || "hot-drama";
       const page = parseInt(u.searchParams.get("page") || "1", 10);
       if (!OFFICIAL_RANK_TYPES.some(row => row.slug === slug || row.key === slug) || !Number.isSafeInteger(page) || page < 1 || page > 5) throw new AccountError(400, '请求格式无效');
-      const data = await catalog.read(`rank:${slug}:${page}`, () => fetchOfficialRankPage(slug, page));
+      const data = await catalog.read(`rank:${slug}:${page}`, () => fetchOfficialRankPage(slug, page), false, downloadAddress);
       return json(res, data);
     }
 
     // 5.2 兼容旧版全量四大排行榜 (GET /api/ranks)
     if (pathname === "/api/ranks") {
-      const home = await catalog.read('home-sections', fetchOfficialHome);
+      const home = await catalog.read('home-sections', fetchOfficialHome, false, downloadAddress);
       const ranks = home.sections.map((sec) => ({
         key: sec.type,
         title: sec.name.includes("榜") ? sec.name : `${sec.name}榜`,
@@ -836,7 +839,7 @@ const server = http.createServer(async (req, res) => {
       }
       const cat = await fetchOfficialCategory("real-drama", "", page);
       return { items: cat.items, page };
-      }, own.length > 0);
+      }, own.length > 0, downloadAddress);
       return json(res, { ...(data || {page}), items:content.merge(data?.items || [],{page}) });
     }
 
@@ -846,7 +849,7 @@ const server = http.createServer(async (req, res) => {
       const query = u.searchParams.get("q") || "", page = Number(u.searchParams.get("page") || 1);
       if (!Number.isSafeInteger(page) || page < 1 || page > 1000) throw new AccountError(400, '分类页码无效');
       const own = content.list({query,page});
-      const data = await catalog.read(`search:${query}:${page}`, () => coreProvider.search(query,page), own.length > 0);
+      const data = await catalog.read(`search:${query}:${page}`, () => coreProvider.search(query,page), own.length > 0, downloadAddress);
       return json(res, { ...(data || {page}), items:content.merge(data?.items || [], {query,page}) });
     }
 
@@ -926,7 +929,7 @@ const server = http.createServer(async (req, res) => {
           .filter((item) => String(item.id) !== String(seriesId));
         return { seriesId, keyword: "", page, items: fallbackItems.slice(0, limit) };
       }
-      });
+      }, false, downloadAddress);
       return json(res, related);
     }
 
@@ -1203,12 +1206,12 @@ server.requestTimeout = 65000;
 server.keepAliveTimeout = 5000;
 server.maxRequestsPerSocket = 1000;
 server.maxConnections = positiveLimit(process.env, 'HTTP_MAX_CONNECTIONS', 512, 65536);
-server.listen(PORT, process.env.HG_HOST || "0.0.0.0", () => {
+server.listen(PORT, HOST, () => {
   const actualPort = server.address().port;
-  if (process.send) process.send({type:"ready",port:actualPort});
+  if (process.send) process.send({type:"ready",port:actualPort,host:server.address().address});
   console.log(`===============================================`);
   console.log(`🚀 红果本地服务已启动!`);
-  console.log(`📡 监听地址: http://${process.env.HG_HOST || '0.0.0.0'}:${actualPort}`);
+  console.log(`📡 监听地址: http://${HOST}:${actualPort}`);
   console.log(`🎬 内容、推荐、分类、播放与本地资料`);
   console.log(`===============================================`);
 });

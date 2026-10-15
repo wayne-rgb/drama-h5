@@ -48,6 +48,7 @@ for (const localMode of [false, true]) {
     assert.equal(head.status, 200); assert.equal(await head.text(), '');
     assert.equal(Number(head.headers.get('content-length')), Buffer.byteLength(html));
     assert.equal(head.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(head.headers.get('strict-transport-security'), null);
     assert.equal(await (await fetch(`${base}/admin`)).text(), html);
     assert.equal((await fetch(`${base}/health`)).status, 200);
     assert.equal((await fetch(`${base}/api/library/sync`)).status, 404);
@@ -60,3 +61,25 @@ for (const localMode of [false, true]) {
     assert.equal((await fetch(`${base}/health`)).status, 200);
   });
 }
+
+test('缺省仅监听本机，HTTPS站点响应包含传输安全策略', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'drama-safe-listen-'));
+  const env = { ...process.env, PORT: '0', HG_DATA_DIR: directory, HG_WEB_DIR: path.join(directory, 'missing-web'), HG_ENV_FILE: path.join(directory, 'absent.env'), APP_ORIGIN: 'https://drama.example.test', HG_MANAGED: '', ADMIN_ACCOUNT_IDS: '', ADMIN_EMAILS: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '', SMTP_HOST: '', BILLING_PROVIDER: 'none' };
+  delete env.HG_HOST;
+  const child = fork(new URL('../server/index.mjs', import.meta.url), [], { env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  let diagnostics = '';
+  child.stderr.on('data', data => { diagnostics += data.toString(); });
+  t.after(async () => {
+    if (child.exitCode === null) { const exit = new Promise(resolve => child.once('exit', resolve)); child.send({ type: 'shutdown' }); await exit; }
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const ready = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Error('安全监听服务启动超时')), 10000);
+    child.once('error', reject); child.once('exit', () => { clearTimeout(timer); reject(Error(diagnostics)); });
+    child.on('message', message => { if (message.type === 'ready') { clearTimeout(timer); resolve(message); } });
+  });
+  assert.equal(ready.host, '127.0.0.1');
+  const response = await fetch(`http://127.0.0.1:${ready.port}/health`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('strict-transport-security'), 'max-age=31536000');
+});

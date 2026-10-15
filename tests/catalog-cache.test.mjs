@@ -25,3 +25,18 @@ test('外部读取失败不覆盖自有结果，也不把失败缓存成空内�
   const restored = { items: [{id:'7503745441910017049',title:'首辅娇娘'}] };
   assert.deepEqual(await cache.read('首页', async () => restored), restored);
 });
+
+test('同一来源不能用不同查询独占全部外部目录并发', async () => {
+  const cache = new CatalogCache({ maximum: 4, perActor: 2 });
+  const releases = [];
+  const load = value => new Promise(resolve => releases.push(() => resolve(value)));
+  const first = cache.read('查询一', () => load('一'), false, '198.51.100.8');
+  const second = cache.read('查询二', () => load('二'), false, '198.51.100.8');
+  await assert.rejects(cache.read('查询三', () => load('三'), false, '198.51.100.8'), error => error.status === 429);
+  const other = cache.read('其他来源', () => load('可用'), false, '203.0.113.9');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(releases.length, 3);
+  for (const release of releases) release();
+  assert.deepEqual(await Promise.all([first, second, other]), ['一', '二', '可用']);
+  assert.equal(cache.actors.size, 0);
+});
