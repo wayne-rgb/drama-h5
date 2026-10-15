@@ -4,7 +4,13 @@ import { readJson } from '../shared/http-json.mjs';
 import { normalizeTeamCode } from './team-store.mjs';
 
 export function createTeamService(team, accounts, config = process.env) {
-  const rates = new AuthenticationLimits(config);
+  const rates = new AuthenticationLimits(config, Date.now, { db: team.db, onThreshold: ({ scope, dimension, attempts, until }) => {
+    const member = scope.startsWith('team-mfa:') ? team.member(scope.slice('team-mfa:'.length))
+      : scope.startsWith('team:') ? team.db.prepare('SELECT * FROM team_members WHERE code=?').get(scope.slice('team:'.length)) : null;
+    if (!member) return;
+    try { team.event(member, '团队登录失败达到限制', member.id, { stage: scope.startsWith('team-mfa:') ? 'mfa' : 'password', dimension, attempts, until }); }
+    catch { console.warn('团队登录安全事件记录失败'); }
+  } });
   const secure = new URL(config.APP_ORIGIN || `http://127.0.0.1:${config.PORT || 8788}`).protocol === 'https:';
   const reply = (res, data) => { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
   const setCookie = (res, token, verified = false) => res.setHeader('Set-Cookie', `drama_team_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? verified ? 28800 : 600 : 0}${secure ? '; Secure' : ''}`);
@@ -15,7 +21,7 @@ export function createTeamService(team, accounts, config = process.env) {
     if (route === '/api/team/session' && req.method === 'GET') {
       const member = team.viewer(req, false);
       reply(res, { initialized: team.initialized(), bootstrapAvailable: !team.initialized() && String(config.TEAM_BOOTSTRAP_TOKEN || '').length >= 32,
-        member: member ? team.publicMember(member) : null, verified: !!member?.verified,
+        member: member ? member.verified ? team.publicMember(member) : team.pendingMember(member) : null, verified: !!member?.verified,
         mfaEnabled: !!member && !!team.db.prepare('SELECT 1 FROM team_mfa WHERE member_id=?').get(member.id) }); return true;
     }
     if (req.method === 'POST') {
@@ -44,7 +50,7 @@ export function createTeamService(team, accounts, config = process.env) {
             : route === '/api/team/join' ? await team.join(data.token, data.password)
             : route === '/api/team/recover' ? await team.recover(data.code, data.recoveryCode, data.password) : await team.login(data.code, data.password);
           if (route === '/api/team/login') team.logout(req);
-          setCookie(res, team.session(member)); reply(res, { member: team.publicMember(member) });
+          setCookie(res, team.session(member)); reply(res, { member: team.pendingMember(member) });
         }
         rates.successfulLogin(req, scope);
       } catch (error) { if ([400, 401, 403].includes(error.status)) rates.failedLogin(req, scope); throw error; }

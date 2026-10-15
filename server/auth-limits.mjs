@@ -15,34 +15,59 @@ export function clientAddress(req, trusted = new Set()) {
 }
 
 export class AuthenticationLimits {
-  constructor(config = {}, clock = Date.now) {
-    this.clock = clock; this.buckets = new Map();
+  constructor(config = {}, clock = Date.now, options = {}) {
+    this.clock = clock; this.buckets = new Map(); this.db = options.db || null; this.onThreshold = options.onThreshold;
     this.trusted = new Set(String(config.TRUSTED_PROXY_IPS || '').split(',').map(value => normalize(value.trim())).filter(Boolean));
     if ([...this.trusted].some(value => !isIP(value))) throw new Error('可信代理地址配置无效');
+    this.db?.exec('CREATE TABLE IF NOT EXISTS team_auth_limits(key TEXT PRIMARY KEY,count INTEGER NOT NULL,until INTEGER NOT NULL)');
   }
-  prune() { for (const [key, row] of this.buckets) if (row.until <= this.clock()) this.buckets.delete(key); }
+  prune() {
+    const now = this.clock();
+    for (const [key, row] of this.buckets) if (row.until <= now) this.buckets.delete(key);
+    this.db?.prepare('DELETE FROM team_auth_limits WHERE until<=?').run(now);
+  }
   row(key) {
     this.prune();
+    if (this.db) {
+      let row = this.db.prepare('SELECT count,until FROM team_auth_limits WHERE key=?').get(key);
+      if (row) return row;
+      if (this.db.prepare('SELECT COUNT(*) AS n FROM team_auth_limits').get().n >= 10000) throw new AccountError(429, '操作过于频繁，请稍后重试');
+      this.db.prepare('INSERT OR IGNORE INTO team_auth_limits VALUES(?,0,?)').run(key, this.clock() + 900000);
+      return this.db.prepare('SELECT count,until FROM team_auth_limits WHERE key=?').get(key);
+    }
     const row = this.buckets.get(key);
     if (row) return row;
     if (this.buckets.size >= 10000) throw new AccountError(429, '操作过于频繁，请稍后重试');
     const created = { count: 0, until: this.clock() + 900000 };
     this.buckets.set(key, created); return created;
   }
+  increment(key) {
+    const row = this.row(key);
+    if (!this.db) { row.count++; return row; }
+    return this.db.prepare('UPDATE team_auth_limits SET count=count+1 WHERE key=? RETURNING count,until').get(key);
+  }
+  count(key) { return this.db ? this.db.prepare('SELECT count FROM team_auth_limits WHERE key=?').get(key)?.count || 0 : this.buckets.get(key)?.count || 0; }
+  remove(key) { if (this.db) this.db.prepare('DELETE FROM team_auth_limits WHERE key=?').run(key); else this.buckets.delete(key); }
   request(req, scope, maximum) {
-    if (++this.row(`request:${scope}:${clientAddress(req, this.trusted)}`).count > maximum) throw new AccountError(429, '操作过于频繁，请稍后重试');
+    const source = digest(clientAddress(req, this.trusted));
+    if (this.increment(`request:${scope}:${source}`).count > maximum) throw new AccountError(429, '操作过于频繁，请稍后重试');
   }
   keys(req, email) {
-    const address = clientAddress(req, this.trusted), account = digest(email);
-    return [[`failure:pair:${account}:${address}`, 10], [`failure:account:${account}`, 20], [`failure:ip:${address}`, 100]];
+    const source = digest(clientAddress(req, this.trusted)), account = digest(email);
+    return [[`failure:pair:${account}:${source}`, 10, 'pair'], [`failure:account:${account}`, 20, 'account'], [`failure:ip:${source}`, 100, 'source']];
   }
   checkLogin(req, email) {
     this.prune();
-    for (const [key, maximum] of this.keys(req, email)) if ((this.buckets.get(key)?.count || 0) >= maximum) throw new AccountError(429, '操作过于频繁，请稍后重试');
+    for (const [key, maximum] of this.keys(req, email)) if (this.count(key) >= maximum) throw new AccountError(429, '操作过于频繁，请稍后重试');
   }
-  failedLogin(req, email) { for (const [key] of this.keys(req, email)) this.row(key).count++; }
+  failedLogin(req, email) {
+    for (const [key, maximum, dimension] of this.keys(req, email)) {
+      const row = this.increment(key);
+      if (row.count === maximum) this.onThreshold?.({ scope: email, dimension, attempts: maximum, until: row.until });
+    }
+  }
   successfulLogin(req, email) {
     const keys = this.keys(req, email);
-    this.buckets.delete(keys[0][0]); this.buckets.delete(keys[1][0]);
+    this.remove(keys[0][0]); this.remove(keys[1][0]);
   }
 }

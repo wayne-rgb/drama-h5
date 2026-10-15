@@ -69,6 +69,7 @@ export const teamMessages = {
   '撤销团队邀请': ['Revoked team invitation','Invitación revocada','Convite revogado','إلغاء دعوة فريق','Invitation révoquée'],
   '启用团队二次验证': ['Enabled team verification','Verificación activada','Verificação ativada','تفعيل تحقق الفريق','Vérification d’équipe activée'],
   '完成团队登录': ['Signed in to team','Inicio de sesión del equipo','Login da equipe concluído','تسجيل دخول الفريق','Connexion d’équipe effectuée'],
+  '团队登录失败达到限制': ['Team sign-in attempts reached the limit','Los intentos de acceso del equipo alcanzaron el límite','As tentativas de login da equipe atingiram o limite','بلغت محاولات تسجيل دخول الفريق الحد المسموح','Les tentatives de connexion d’équipe ont atteint la limite'],
   '重设团队密码': ['Reset team password','Contraseña del equipo restablecida','Senha da equipe redefinida','إعادة تعيين كلمة مرور الفريق','Mot de passe d’équipe réinitialisé'],
   '调整团队成员权限': ['Updated member access','Permisos actualizados','Permissões atualizadas','تعديل صلاحيات العضو','Accès du membre modifiés'],
 } as const satisfies Record<string, readonly [string,string,string,string,string]>;

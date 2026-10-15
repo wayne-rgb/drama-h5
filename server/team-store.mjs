@@ -29,6 +29,7 @@ export class TeamStore {
   transaction(action) { return this.content.transaction(action); }
   initialized() { return !!this.db.prepare('SELECT 1 FROM team_members LIMIT 1').get(); }
   member(id) { return this.db.prepare('SELECT * FROM team_members WHERE id=?').get(id) || null; }
+  pendingMember(member) { return { code: member.code }; }
   publicMember(member) {
     return { id: member.id, code: member.code, roles: JSON.parse(member.roles), enabled: !!member.enabled, createdAt: member.created_at,
       seriesIds: this.db.prepare('SELECT series_id FROM team_series_members WHERE member_id=? ORDER BY series_id').all(member.id).map(row => row.series_id),

@@ -7,8 +7,9 @@ import './admin.css';
 import './team.css';
 
 export type TeamRole = 'owner' | 'editor' | 'moderator' | 'analyst';
+export type PendingTeamMember = { code: string };
 export type TeamMember = { id: string; code: string; roles: TeamRole[]; enabled: boolean; createdAt: number; seriesIds: string[]; series: { id: string; title: string }[] };
-export type TeamSession = { initialized: boolean; bootstrapAvailable: boolean; member: TeamMember | null; verified: boolean; mfaEnabled: boolean };
+export type TeamSession = { initialized: boolean; bootstrapAvailable: boolean; member: TeamMember | PendingTeamMember | null; verified: boolean; mfaEnabled: boolean };
 export const roleLabels: Record<TeamRole, MessageKey> = { owner: '负责人', editor: '内容运营', moderator: '评论审核', analyst: '数据查看' };
 export const hasTeamRole = (member: TeamMember, role: TeamRole) => member.roles.includes('owner') || member.roles.includes(role);
 export async function teamRequest(path: string, body?: unknown) {

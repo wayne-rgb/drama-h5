@@ -29,11 +29,12 @@ async function fixture(t, extraConfig = {}) {
   const activate=async(initial)=>{
     const setup=await request('/api/team/mfa/setup',{},initial.cookie);assert.equal(setup.status,200);
     const enabled=await request('/api/team/mfa/enable',{token:setup.data.token,code:totp(setup.data.secret,Math.floor(Date.now()/30000)-1)},initial.cookie);assert.equal(enabled.status,200);
-    return {...enabled,member:initial.data.member,secret:setup.data.secret};
+    const session=await request('/api/team/session',undefined,enabled.cookie);assert.equal(session.data.verified,true);
+    return {...enabled,member:session.data.member,secret:setup.data.secret};
   };
   const owner=async()=>activate(await request('/api/team/bootstrap',{token:bootstrapToken,password}));
   const series=actor=>content.store.saveSeries(team.member(actor.member.id),{title:'真实团队作品',description:'',contentType:'real-drama',language:'en'});
-  const member=async(actor,roles,seriesIds=[])=>{const invite=await request('/api/team/invites',{roles,seriesIds},actor.cookie);assert.equal(invite.status,200);const joined=await request('/api/team/join',{token:invite.data.token,password});assert.equal(joined.status,200);return activate(joined);};
+  const member=async(actor,roles,seriesIds=[])=>{const invite=await request('/api/team/invites',{roles,seriesIds},actor.cookie);assert.equal(invite.status,200);const joined=await request('/api/team/join',{token:invite.data.token,password});assert.equal(joined.status,200);assert.deepEqual(Object.keys(joined.data.member),['code']);return activate(joined);};
   return {directory,users,accounts,content,team,config,policy,request,activate,owner,series,member};
 }
 
@@ -54,7 +55,12 @@ test('无会话验证失败不能锁住其他来源的团队验证和启用二�
 test('成员自己的二次验证失败受限，同一网络的其他成员仍能登录', async t => {
   const f = await fixture(t), owner = await f.owner(), analyst = await f.member(owner,['analyst']);
   const pending = await f.request('/api/team/login',{code:analyst.member.code,password});
+  assert.deepEqual(Object.keys(pending.data.member),['code']);
   for(let index=0;index<10;index++) assert.equal((await f.request('/api/team/mfa/verify',{code:'无效动态码'},pending.cookie)).status,400);
+  const securityEvent=f.team.db.prepare("SELECT detail FROM team_events WHERE member_id=? AND action='团队登录失败达到限制'").get(analyst.member.id);
+  const securityDetail=JSON.parse(securityEvent.detail);
+  assert.equal(securityDetail.stage,'mfa');assert.equal(securityDetail.dimension,'pair');assert.equal(securityDetail.attempts,10);assert.ok(securityDetail.until>Date.now());
+  assert.ok(f.team.db.prepare('SELECT COUNT(*) AS n FROM team_auth_limits').get().n>0);
   assert.equal((await f.request('/api/team/mfa/verify',{code:totp(analyst.secret)},pending.cookie)).status,429);
   const ownerPending = await f.request('/api/team/login',{code:owner.member.code,password});
   assert.equal((await f.request('/api/team/mfa/verify',{code:totp(owner.secret)},ownerPending.cookie)).status,200);
@@ -138,9 +144,13 @@ test('预览入口仍遵守作品授权和成员停用状态',async t=>{
 test('初始化只执行一次，未完成二次验证无后台权限，团队数据与观众账户独立',async t=>{
   const f=await fixture(t),initial=await f.request('/api/team/bootstrap',{token:bootstrapToken,password});
   assert.equal(initial.status,200);assert.match(initial.data.member.code,/^M-[A-F0-9]{12}$/);
+  assert.deepEqual(Object.keys(initial.data.member),['code']);
+  const pending=await f.request('/api/team/session',undefined,initial.cookie);
+  assert.equal(pending.data.verified,false);assert.deepEqual(Object.keys(pending.data.member),['code']);
   assert.equal((await f.request('/api/admin/accounts',undefined,initial.cookie)).status,401);
   const owner=await f.activate(initial);
-  assert.equal((await f.request('/api/team/session',undefined,owner.cookie)).data.verified,true);
+  const verified=await f.request('/api/team/session',undefined,owner.cookie);
+  assert.equal(verified.data.verified,true);assert.deepEqual(verified.data.member.roles,['owner']);assert.deepEqual(verified.data.member.series,[]);
   assert.equal((await f.request('/api/team/bootstrap',{token:bootstrapToken,password})).status,403);
   assert.equal(f.users.db.prepare('SELECT COUNT(*) AS n FROM accounts').get().n,0);
   for(const table of ['team_members','team_sessions','team_invites','team_events'])assert.equal(f.team.db.prepare(`PRAGMA table_info(${table})`).all().some(row=>/email|phone|name|device|account_id/.test(row.name)),false);
@@ -194,7 +204,7 @@ test('恢复码重设密码会撤销所有旧会话，动态码和恢复码均�
   const f=await fixture(t),owner=await f.owner(),initial=await f.request('/api/team/login',{code:owner.member.code,password});
   const code=totp(owner.secret),verified=await f.request('/api/team/mfa/verify',{code},initial.cookie);assert.equal(verified.status,200);
   const another=await f.request('/api/team/login',{code:owner.member.code,password});assert.equal((await f.request('/api/team/mfa/verify',{code},another.cookie)).status,400);
-  const recovered=await f.request('/api/team/recover',{code:owner.member.code,recoveryCode:owner.data.recoveryCodes[0],password:'新的团队回归密码2026'});assert.equal(recovered.status,200);assert.equal(recovered.data.member.id,owner.member.id);
+  const recovered=await f.request('/api/team/recover',{code:owner.member.code,recoveryCode:owner.data.recoveryCodes[0],password:'新的团队回归密码2026'});assert.equal(recovered.status,200);assert.equal(recovered.data.member.code,owner.member.code);assert.deepEqual(Object.keys(recovered.data.member),['code']);
   assert.equal((await f.request('/api/team/members',undefined,verified.cookie)).status,401);
   assert.equal((await f.request('/api/team/mfa/verify',{code:owner.data.recoveryCodes[0]},recovered.cookie)).status,400);
   assert.equal((await f.request('/api/team/mfa/verify',{code:owner.data.recoveryCodes[1]},recovered.cookie)).status,200);

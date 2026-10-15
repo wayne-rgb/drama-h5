@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter } from 'node:events';
 import { Readable, PassThrough } from 'node:stream';
 import http from 'node:http';
@@ -21,6 +25,21 @@ test('登录成功不累计失败额度，账户和地址的失败限制分别�
   assert.throws(() => limits.checkLogin(request('192.0.2.3'), 'viewer@example.test'), error => error.status === 429);
   now += 900001;
   assert.doesNotThrow(() => limits.checkLogin(one, 'viewer@example.test'));
+});
+
+test('团队登录失败限制跨进程重建保留，过期后自动释放', t => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'drama-auth-limits-')),filename=path.join(directory,'content.sqlite');
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  let now=1000;const notices=[];
+  const first=new DatabaseSync(filename),source=request('192.0.2.20');
+  const limits=new AuthenticationLimits({},()=>now,{db:first,onThreshold:value=>notices.push(value)});
+  for(let index=0;index<10;index++){limits.checkLogin(source,'team:M-TEST');limits.failedLogin(source,'team:M-TEST');}
+  assert.equal(notices.length,1);assert.equal(notices[0].dimension,'pair');
+  assert.equal(first.prepare('SELECT key FROM team_auth_limits').all().some(row=>row.key.includes('192.0.2.20')||row.key.includes('M-TEST')),false);first.close();
+  const second=new DatabaseSync(filename),restored=new AuthenticationLimits({},()=>now,{db:second});
+  assert.throws(()=>restored.checkLogin(source,'team:M-TEST'),error=>error.status===429);
+  now+=900001;assert.doesNotThrow(()=>restored.checkLogin(source,'team:M-TEST'));
+  assert.equal(second.prepare('SELECT COUNT(*) AS n FROM team_auth_limits').get().n,0);second.close();
 });
 
 test('转发地址只有在直接代理可信时才生效，并从右侧排除伪造的前缀', () => {
