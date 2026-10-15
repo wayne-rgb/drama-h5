@@ -97,9 +97,11 @@ const PORT = Number(process.env.PORT || 8788);
 const DATA_DIR = process.env.HG_DATA_DIR || path.join(__dirname, "data");
 const accountStore = new AccountStore(path.join(DATA_DIR, "accounts.sqlite"));
 const accounts = createAccountService(accountStore);
-const authorizeApi = createApiPolicy(accounts, accountStore);
 const personalStorage = new PersonalStorage(DATA_DIR,process.env);
 const content = createContentService(DATA_DIR, accountStore, accounts, coreProvider);
+const authorizeApi = createApiPolicy(accounts, accountStore, process.env, content.team);
+const resourceAudience = req => { const member=content.team.viewer(req); return member ? {id:member.id,team:true} : accounts.audience(req); };
+const audienceKey = audience => `${audience.team?'team':audience.guest?'guest':'account'}:${audience.id}`;
 const catalog = new CatalogCache();
 const trafficBudget = new TrafficBudget(path.join(DATA_DIR, 'resource-usage.sqlite'), process.env);
 const playbackGuard = new PlaybackGuard(process.env, trafficBudget);
@@ -657,8 +659,8 @@ const server = http.createServer(async (req, res) => {
   const pathname = u.pathname;
   const isApi = pathname === '/api' || pathname.startsWith('/api/');
   let downloadAudience,downloadAddress;
-  try{downloadAudience=accounts.audience(req);downloadAddress=accounts.address(req);}catch(error){const failure=publicFailure(error);return json(res,{error:failure.message},failure.status);}
-  const downloadViewer=downloadAudience?`${downloadAudience.guest?'guest':'account'}:${downloadAudience.id}`:`ip:${downloadAddress}`;
+  try{downloadAudience=resourceAudience(req);downloadAddress=accounts.address(req);}catch(error){const failure=publicFailure(error);return json(res,{error:failure.message},failure.status);}
+  const downloadViewer=downloadAudience?audienceKey(downloadAudience):`ip:${downloadAddress}`;
   req.guardDownload=()=>{if(req.downloadMetered)return;const signal=assetGuard.acquire(req,res,downloadViewer,downloadAddress,!!downloadAudience);req.downloadMetered=true;return signal;};
   req.sendDownload=source=>downloadProtection.pipe(req,res,source,downloadViewer);
   req.paceDownload=size=>downloadProtection.wait(req,res,downloadViewer,size);
@@ -666,7 +668,7 @@ const server = http.createServer(async (req, res) => {
   res.end=function(chunk,encoding,callback){
     // 观众接口的资料及目录正文也纳入保护，不能通过大型JSON绕过媒体传输统计。
     // 登录、支付、后台控制和探活保留独立请求保护，资源满额时仍可处理账户及管理故障。
-    if(!req.downloadMetered&&req.method!=='HEAD'&&[200,206].includes(res.statusCode)&&isApi&&!/^\/api\/(auth|account|billing|admin)(\/|$)/.test(pathname)&&(typeof chunk==='string'||ArrayBuffer.isView(chunk))){
+    if(!req.downloadMetered&&req.method!=='HEAD'&&[200,206].includes(res.statusCode)&&isApi&&!/^\/api\/(auth|account|billing|admin|team)(\/|$)/.test(pathname)&&(typeof chunk==='string'||ArrayBuffer.isView(chunk))){
       req.guardDownload();
       if(req.revalidateAccess&&!req.revalidatePlayback)req.revalidatePlayback=()=>req.revalidateAccess();
       const body=typeof chunk==='string'?Buffer.from(chunk,typeof encoding==='string'?encoding:undefined):Buffer.from(chunk.buffer,chunk.byteOffset,chunk.byteLength);
@@ -691,18 +693,18 @@ const server = http.createServer(async (req, res) => {
   let playbackSignal;
   if (isApi) {
     try {
-      const audience = accounts.audience(req);
+      const audience = resourceAudience(req);
       req.playbackPrivileged = !!audience && !audience.guest && (accounts.canConfigureSync(audience,req) || accountStore.membership(audience.id).active);
-      const address = accounts.address(req), viewer = audience ? `${audience.guest ? 'guest' : 'account'}:${audience.id}` : `ip:${address}`;
+      const address = accounts.address(req), viewer = audience ? audienceKey(audience) : `ip:${address}`;
       req.guardPublicAsset = () => {
         let checkedAt=0;
         req.revalidatePlayback=(force=false)=>{
           if(!force&&Date.now()-checkedAt<1000)return;
-          const current=accounts.audience(req);
+          const current=resourceAudience(req);
           req.playbackPrivileged=!!current&&!current.guest&&(accounts.canConfigureSync(current,req)||accountStore.membership(current.id).active);
           checkedAt=Date.now();
         };
-        req.revalidatePlayback(true);const signal=coverGuard.acquire(req,res,viewer,address,!!accounts.audience(req));req.downloadMetered=true;return signal;
+        req.revalidatePlayback(true);const signal=coverGuard.acquire(req,res,viewer,address,!!resourceAudience(req));req.downloadMetered=true;return signal;
       };
       if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
@@ -710,8 +712,8 @@ const server = http.createServer(async (req, res) => {
         playbackSignal = playbackGuard.acquire(req, res, viewer, address,!!audience);
         req.downloadMetered=true;
       } else {
-        const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && audience && !audience.guest && accounts.canConfigureSync(audience,req);
-        requestGuard.acquire(req, res, viewer, address, /^\/api\/auth\/(login|register|reset)$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
+        const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && !!content.team.viewer(req);
+        requestGuard.acquire(req, res, viewer, address, /^\/api\/(?:auth\/(login|register|reset)|team\/(bootstrap|join|login|recover))$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
       }
       if ([...u.searchParams].some(([key, value]) => key.length > 80 || value.length > (key === 'q' ? 200 : 1024))) throw new AccountError(400, '请求格式无效');
     } catch (error) {
@@ -728,7 +730,7 @@ const server = http.createServer(async (req, res) => {
       if (serveStatic(req, res, pathname)) return;
     }
     if (isApi) authorizeApi(req,res,u);
-    const securityAction=['/api/auth/login','/api/auth/logout','/api/auth/reset','/api/auth/verify','/api/account/sessions/revoke','/api/account/mfa/setup','/api/account/mfa/enable','/api/account/mfa/verify'].includes(pathname);
+    const securityAction=pathname.startsWith('/api/team/') || ['/api/auth/login','/api/auth/logout','/api/auth/reset','/api/auth/verify','/api/account/sessions/revoke','/api/account/mfa/setup','/api/account/mfa/enable','/api/account/mfa/verify'].includes(pathname);
     // 保留空间不足时，仍允许登录、退出及验证，便于用户保护账户和管理员处理故障。
     if(isApi && ['POST','PUT'].includes(req.method) && !securityAction && !(pathname==='/api/library/operations'&&accounts.audience(req))){
       const previous=req.revalidateAccess;
@@ -950,7 +952,7 @@ const server = http.createServer(async (req, res) => {
     if (guardedPlayback) {
       if (!['GET','HEAD'].includes(req.method)) throw new AccountError(405,'请求方式无效');
       accounts.sameOrigin(req);
-      if(guardedPlayback[2]==='stream'&&!accounts.audience(req)&&!accounts.isLocal(req))throw new AccountError(401,'请刷新页面后重试');
+      if(guardedPlayback[2]==='stream'&&!resourceAudience(req)&&!accounts.isLocal(req))throw new AccountError(401,'请刷新页面后重试');
       const seriesId = u.searchParams.get('seriesId') || u.searchParams.get('series_id') || vidToSeriesMap.get(guardedPlayback[1]);
       const resolved = await content.resolveEpisode(req, seriesId, guardedPlayback[1]);
       if (await content.ownPlayback(req,res,guardedPlayback[2],resolved)) return;

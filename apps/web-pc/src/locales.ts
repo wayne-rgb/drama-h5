@@ -1,8 +1,10 @@
 // 每行依次为英语、西班牙语、巴西葡萄牙语、阿拉伯语、加拿大法语；中文使用键名。
 // 界面翻译不改变内容服务的分类标识、搜索词或剧集元数据。
 import { analyticsMessages, analyticsChineseMessages } from './analytics-locales';
+import { teamMessages } from './team-locales';
 
 export const messages = {
+  ...teamMessages,
   ...analyticsMessages,
   "资料分页无效": ["Invalid library page", "Página de biblioteca no válida", "Página da biblioteca inválida", "صفحة المكتبة غير صالحة", "Page de bibliothèque non valide"],
   "资料类型无效": ["Invalid library type", "Tipo de biblioteca no válido", "Tipo de biblioteca inválido", "نوع المكتبة غير صالح", "Type de bibliothèque non valide"],

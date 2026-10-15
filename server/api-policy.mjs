@@ -3,6 +3,12 @@ import { isAdministrator, isAdministratorAccount } from './account-role.mjs';
 
 // 每条对外路由都声明方法及身份边界；对象归属和VIP仍由业务处理器校验真实数据。
 const rules = [
+  [/^\/api\/team\/session$/, ['GET'], 'team-session'],
+  [/^\/api\/team\/(bootstrap|join|login|recover|logout|mfa\/(setup|enable|verify)|sessions\/revoke)$/, ['POST'], 'team-session'],
+  [/^\/api\/team\/(members|series|events)$/, ['GET'], 'team-owner'],
+  [/^\/api\/team\/invites$/, ['GET','POST'], 'team-owner'],
+  [/^\/api\/team\/members\/[a-f0-9-]{36}$/, ['POST'], 'team-owner'],
+  [/^\/api\/team\/invites\/[a-f0-9-]{36}\/revoke$/, ['POST'], 'team-owner'],
   [/^\/api\/(banners|sections|home|search|ranks|category\/(tags|list)|rank\/(types|list|page))$/, ['GET','HEAD'], 'public'],
   [/^\/api\/series\/\d{1,40}(?:\/(related|recommend))?$/, ['GET','HEAD'], 'public'],
   [/^\/api\/episodes\/\d{1,40}\/(qualities|play|stream)$/, ['GET','HEAD'], 'public'],
@@ -46,7 +52,7 @@ const rules = [
   [/^\/api\/admin\/comments\/[a-f0-9-]{36}$/, ['POST'], 'admin'],
 ];
 
-export function createApiPolicy(accounts, store, config = process.env) {
+export function createApiPolicy(accounts, store, config = process.env, team) {
   return (req, res, url) => {
     const rule = rules.find(([pattern]) => pattern.test(url.pathname));
     if (!rule) throw new AccountError(404, '页面不存在');
@@ -65,9 +71,12 @@ export function createApiPolicy(accounts, store, config = process.env) {
     const check = () => {
       const writes = !['GET','HEAD'].includes(req.method);
       if (permission !== 'notification' && permission !== 'personal' && (writes || !['public','comments'].includes(permission))) accounts.sameOrigin(req);
+      if (permission === 'team-session') return null;
+      if (permission === 'team-owner') { if (!team) throw new AccountError(503, '团队服务暂不可用'); return team.require(req, 'owner'); }
+      if (team && ['admin','creator'].includes(permission)) return team.authorize(req, url);
       if (permission === 'personal') return accounts.guardLibrary(req);
       if (permission === 'audience') {
-        const user = accounts.audience(req);
+        const user = team?.viewer(req) || accounts.audience(req);
         if (!user) throw new AccountError(401, '请刷新页面后重试');
         return user;
       }

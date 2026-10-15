@@ -20,7 +20,7 @@ export class CommentModeration {
       // 内容源暂不可用时保留评论和审核能力，不猜测名称或集数。
     }
   }
-  async series(params) {
+  async series(params, memberId = '') {
     const missing = this.db.prepare('SELECT DISTINCT c.series_id FROM episode_comments c LEFT JOIN content_series s ON s.id=c.series_id WHERE s.id IS NULL AND NOT EXISTS(SELECT 1 FROM comment_content m WHERE m.series_id=c.series_id) LIMIT 24').all();
     await Promise.allSettled(missing.map(row => this.recover(row.series_id)));
     const page = this.page(params), query = (params.get('q') || '').trim().slice(0,200);
@@ -30,7 +30,7 @@ export class CommentModeration {
       reports AS (SELECT c.series_id,COUNT(*) AS reports FROM comment_reports r JOIN episode_comments c ON c.id=r.comment_id GROUP BY c.series_id)
       SELECT ids.id,COALESCE(s.title,n.title) AS title,COALESCE(c.comments,0) AS comments,COALESCE(r.reports,0) AS reports
       FROM ids LEFT JOIN content_series s ON s.id=ids.id LEFT JOIN names n ON n.series_id=ids.id LEFT JOIN counts c ON c.series_id=ids.id LEFT JOIN reports r ON r.series_id=ids.id
-      WHERE (?='' OR COALESCE(s.title,n.title,'') LIKE ?) ORDER BY reports DESC,comments DESC,ids.id DESC LIMIT 25 OFFSET ?`).all(query,`%${query}%`,(page-1)*24);
+      WHERE (?='' OR COALESCE(s.title,n.title,'') LIKE ?) ${memberId ? 'AND EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=ids.id AND t.member_id=?)' : ''} ORDER BY reports DESC,comments DESC,ids.id DESC LIMIT 25 OFFSET ?`).all(query,`%${query}%`,...(memberId?[memberId]:[]),(page-1)*24);
     return { items:rows.slice(0,24),hasMore:rows.length>24 };
   }
   page(params) {

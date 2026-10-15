@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {EventEmitter} from 'node:events';
 import {fork} from 'node:child_process';
-import {AccountStore} from '../server/account-store.mjs';
+import {AccountStore,passwordHash} from '../server/account-store.mjs';
 import {createAccountService} from '../server/account-routes.mjs';
 import {createApiPolicy} from '../server/api-policy.mjs';
 import {createContentService} from '../server/content-service.mjs';
@@ -22,19 +22,20 @@ async function fixture(t,provider={}){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drama-deep-fix-')),users=new AccountStore(':memory:');
   const admin=users.create({email:'deep-admin@example.test',name:'独立回归管理员'}),config={APP_ORIGIN:origin,ADMIN_ACCOUNT_IDS:admin.id};
   const accounts=createAccountService(users,config),content=createContentService(directory,users,accounts,provider,config);
+  const teamAdmin=content.team.create(await passwordHash('深度回归团队密码2026'),['owner'],[]);
   t.after(async()=>{content.close();users.close();await fs.rm(directory,{recursive:true,force:true});});
-  return {directory,users,admin,accounts,content,config};
+  return {directory,users,admin,teamAdmin,accounts,content,config};
 }
 
 for(const route of ['/api/admin/comments?seriesId=91','/api/admin/comment-series'])test(`管理员退出后待完成的私有读取拒绝返回：${route}`,async t=>{
   let finish,arrived;const started=new Promise(resolve=>{arrived=resolve;});
   const f=await fixture(t,{detail:()=>{arrived();return new Promise(resolve=>{finish=resolve;});}});
   f.content.store.db.prepare('INSERT INTO episode_comments(id,episode_id,series_id,account_id,body,status,created_at) VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),'101','91',f.admin.id,'独立数据库中的隐藏审核记录','hidden',Date.now());
-  const token=f.users.session(f.admin.id),req={method:'GET',url:route,headers:{origin,cookie:`hg_account_session=${token}`},socket:{remoteAddress:'127.0.0.1'}};
+  const token=f.content.team.session(f.teamAdmin,true),req={method:'GET',url:route,headers:{origin,cookie:`drama_team_session=${token}`},socket:{remoteAddress:'127.0.0.1'}};
   let responded=false;const res={setHeader(){},writeHead(){responded=true;},end(){responded=true;}};
-  createApiPolicy(f.accounts,f.users,f.config)(req,res,new URL(route,origin));
+  createApiPolicy(f.accounts,f.users,f.config,f.content.team)(req,res,new URL(route,origin));
   const reading=f.content.handle(req,res,new URL(route,origin));const rejected=assert.rejects(reading,error=>[401,409].includes(error.status));
-  await started;f.users.logout(token);finish({id:'91',title:'真实目录边界',episodes:[{id:'101',number:1,title:'第一集'}]});await rejected;assert.equal(responded,false);
+  await started;f.content.team.logout(req);finish({id:'91',title:'真实目录边界',episodes:[{id:'101',number:1,title:'第一集'}]});await rejected;assert.equal(responded,false);
 });
 
 test('预检独立限频、正常接口额度保留，关闭连接准确释放并发',()=>{

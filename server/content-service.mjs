@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { AccountError } from './account-store.mjs';
-import { isAdministrator } from './account-role.mjs';
+import { TeamStore } from './team-store.mjs';
+import { createTeamService } from './team-routes.mjs';
 import { ContentStore, textValue } from './content-store.mjs';
 import { createUploads } from './content-upload.mjs';
 import { LocalMediaStorage } from './media-storage.mjs';
@@ -16,10 +17,19 @@ import {AnalyticsResource} from './analytics-resource.mjs';
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
   const store = new ContentStore(directory), storage = new LocalMediaStorage(directory, config), uploads = createUploads(store, directory, config, storage);
-  const isAdmin = user => isAdministrator(user, config);
+  const team = new TeamStore(store, directory, config), handleTeam = createTeamService(team, accounts, config);
+  const isAdmin = user => !!user?.roles && team.owner(user);
+  const contentViewer = req => team.viewer(req) || accounts.viewer(req);
+  const preview = (user, id) => !!user?.roles && (team.owner(user) || !!team.db.prepare('SELECT 1 FROM team_series_members WHERE member_id=? AND series_id=?').get(user.id,id));
   const analytics = new ContentAnalytics(store, accountStore, accounts, isAdmin);
+  analytics.team = team;
   const analyticsResource=new AnalyticsResource(store,directory,config);
-  const requireAdmin = req => { const user = accounts.requireViewer(req); if (!isAdmin(user)) throw new AccountError(403, '需要管理员权限'); return user; };
+  const requireAdmin = req => team.authorize(req, new URL(req.url, 'http://localhost'));
+  const guardAsset = (req,id) => {
+    if (!id) return;
+    const member=team.require(req),asset=store.asset(id);
+    if (!team.owner(member) && (!asset || !team.allowed(member,'editor',asset.series_id))) throw new AccountError(403,'没有此作品的操作权限');
+  };
   const metadata = new CatalogCache(), rates = new Map();
   const limit = (req, user) => {
     const now = Date.now(); for (const [key, row] of rates) if (row.until < now) rates.delete(key);
@@ -37,23 +47,23 @@ export function createContentService(directory, accountStore, accounts, provider
     }));
   };
   const resolveEpisode = async (req, seriesId, episodeId, enforce = true) => {
-    const initial = accounts.viewer(req), series = await detail(seriesId, isAdmin(initial));
+    const initial = contentViewer(req), series = await detail(seriesId, preview(initial,seriesId));
     // 外部目录可能等待网络，权限必须以等待结束后的会话和会员状态为准。
-    const viewer = accounts.viewer(req);
+    const viewer = contentViewer(req);
     if (initial && initial.id !== viewer?.id) throw new AccountError(409, '登录状态已变化，请刷新页面');
-    if (series.owned && series.status !== 'published' && !isAdmin(viewer)) throw new AccountError(404, '短剧未上架');
+    if (series.owned && series.status !== 'published' && !preview(viewer,seriesId)) throw new AccountError(404, '短剧未上架');
     const index = series.episodes.findIndex(ep => String(ep.id) === episodeId);
     if (index < 0) throw new AccountError(404, '分集不属于此短剧');
     const required = index >= 3;
-    if (enforce && required && !isAdmin(viewer) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
+    if (enforce && required && !preview(viewer,seriesId) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
     const audience=accounts.audience(req);
     let checkedAt = 0;
     const revalidate = (force = false) => {
       const now = Date.now();
       if (!force && now - checkedAt < 1000) return;
-      const current = accounts.viewer(req),currentAudience=accounts.audience(req);
+      const current = contentViewer(req),currentAudience=accounts.audience(req);
       if(audience&&(!currentAudience||currentAudience.id!==audience.id||!!currentAudience.guest!==!!audience.guest))throw new AccountError(401,'请刷新页面后重试');
-      const administrator=isAdmin(current),member=!!current&&accountStore.membership(current.id).active;
+      const administrator=preview(current,seriesId),member=!!current&&accountStore.membership(current.id).active;
       req.playbackPrivileged=administrator||member;
       let currentRequired=required;
       if(series.owned){
@@ -77,21 +87,21 @@ export function createContentService(directory, accountStore, accounts, provider
     sendMedia(req, res, storage.locate(store, asset), asset, { quality, cover, publicCover, revalidateCover });
   };
   return {
-    store, detail, resolveEpisode, analytics,
+    store, team, detail, resolveEpisode, analytics,
     close: () => { uploads.close(); store.close(); },
     publicDetail: async (req, id) => {
-      const initial=accounts.viewer(req),value=await detail(id,isAdmin(initial)),user=accounts.viewer(req);
+      const initial=contentViewer(req),value=await detail(id,preview(initial,id)),user=contentViewer(req);
       if(value.owned){
         const privatePreview=value.status!=='published',previous=req.revalidateAccess;
         req.revalidateAccess=()=>{
           previous?.();
-          const current=accounts.viewer(req),row=store.row(id);
-          if(privatePreview){accounts.sameOrigin(req);if(!initial||current?.id!==initial.id||!isAdmin(current))throw new AccountError(404,'短剧未上架');}
-          if(!row||row.status!=='published'&&!isAdmin(current))throw new AccountError(404,'短剧未上架');
+          const current=contentViewer(req),row=store.row(id);
+          if(privatePreview){accounts.sameOrigin(req);if(!initial||current?.id!==initial.id||!preview(current,id))throw new AccountError(404,'短剧未上架');}
+          if(!row||row.status!=='published'&&!preview(current,id))throw new AccountError(404,'短剧未上架');
         };
         req.revalidateAccess();
       }
-      const vip=isAdmin(user)||accountStore.membership(user?.id||'').active;
+      const vip=preview(user,id)||accountStore.membership(user?.id||'').active;
       const {creatorId,...publicValue}=value;
       return {...publicValue,episodes:value.episodes.map((ep,index)=>({id:ep.id,number:ep.number,title:ep.title,vipRequired:index>=3,locked:index>=3&&!vip}))};
     },
@@ -114,6 +124,7 @@ export function createContentService(directory, accountStore, accounts, provider
       return true;
     },
     async handle(req, res, url) {
+      if (await handleTeam(req,res,url)) return true;
       const route = url.pathname, adminRoute = route.startsWith('/api/admin/');
       const social = /^\/api\/episodes\/(\d+)\/(interactions|likes|comments)$/.exec(route);
       const comment = /^\/api\/comments\/([a-f0-9-]+)(\/report)?$/.exec(route);
@@ -127,6 +138,7 @@ export function createContentService(directory, accountStore, accounts, provider
       if (myLikes || removeLike) throw new AccountError(405,'请求方式无效');
       const input = async () => { if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new AccountError(415, '请求格式无效'); try { return await readJson(req); } catch (error) { if (error instanceof AccountError) throw error; throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : '请求格式无效'); } };
       if (analyticsRoute) {
+        if (['/api/analytics/sessions','/api/analytics/progress'].includes(route) && req.method==='POST' && team.viewer(req)) { await input();reply(res,{excluded:true});return true; }
         if (route === '/api/analytics/sessions' && req.method === 'POST') reply(res, analyticsResource.start(analytics,req, await input()));
         else if (route === '/api/analytics/progress' && req.method === 'POST') reply(res, analytics.progress(req, await input()));
         else if (route === '/api/analytics/series' && req.method === 'GET') reply(res, analytics.series(req));
@@ -141,7 +153,7 @@ export function createContentService(directory, accountStore, accounts, provider
         const revalidateCover=(force=false)=>{
           if(!force&&Date.now()-checkedAt<1000)return;
           const published=store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
-          const user=accounts.viewer(req),creatorCover=user&&accountStore.isCreator(user.id)&&store.db.prepare('SELECT 1 FROM content_series WHERE cover_id=? AND creator_id=?').get(cover[1],user.id);
+          const user=team.viewer(req),creatorCover=user&&store.db.prepare('SELECT id FROM content_series WHERE cover_id=?').all(cover[1]).some(row=>preview(user,row.id));
           if(asset?.kind!=='image'||asset.status!=='ready'||!published&&!isAdmin(user)&&!creatorCover)throw new AccountError(404,'封面不存在');
           checkedAt=Date.now();return !!published;
         };
@@ -171,25 +183,26 @@ export function createContentService(directory, accountStore, accounts, provider
         }
         const offset = (Math.max(1,Math.min(1000,Math.floor(Number(url.searchParams.get('page')))||1))-1)*100;
         const upload = /^\/api\/admin\/uploads\/([a-f0-9-]+)$/.exec(route), series = /^\/api\/admin\/series\/(\d+)(?:\/(episodes|publish|reorder)(?:\/(\d+))?)?$/.exec(route), moderation = /^\/api\/admin\/comments\/([a-f0-9-]+)$/.exec(route);
-        if (route === '/api/admin/series' && req.method === 'GET') reply(res, { items: store.list({ preview: true, query: url.searchParams.get('q') || '', page: url.searchParams.get('page') }) });
-        else if (route === '/api/admin/series' && req.method === 'POST') reply(res, store.saveSeries(admin, await input()));
+        if (route === '/api/admin/series' && req.method === 'GET') reply(res, { items: store.list({ preview: true, query: url.searchParams.get('q') || '', page: url.searchParams.get('page'), memberId: team.owner(admin) ? '' : admin.id }) });
+        else if (route === '/api/admin/series' && req.method === 'POST') { const data=await input();guardAsset(req,data.coverId);reply(res, store.saveSeries(admin, data)); }
         else if (series && req.method === 'GET' && !series[2]) { const data = store.detail(series[1], true); if (!data) throw new AccountError(404, '短剧不存在'); reply(res, {...data,assets:[...new Set([data.coverId,...data.episodes.map(ep=>ep.assetId)])].filter(Boolean).map(id=>store.asset(id)).filter(Boolean)}); }
         else if (series && req.method === 'POST') {
           const data = await input();
           if (series[2] === 'episodes') {
+            guardAsset(req,data.assetId);
             const previous=store.db.prepare('SELECT id FROM content_episodes WHERE series_id=? AND number=?').get(series[1],data.number);
             if(previous)analytics.rememberVersion(previous.id);
             const result=store.saveEpisode(admin,series[1],data);
             for(const episode of result.episodes)analytics.rememberVersion(episode.id);
             reply(res,result);
-          } else reply(res,!series[2] ? store.saveSeries(admin,data,series[1]) : series[2] === 'publish' ? store.publish(admin,series[1],data.status) : store.reorder(admin,series[1],data.ids));
+          } else { if (!series[2]) guardAsset(req,data.coverId); reply(res,!series[2] ? store.saveSeries(admin,data,series[1]) : series[2] === 'publish' ? store.publish(admin,series[1],data.status) : store.reorder(admin,series[1],data.ids)); }
         }
         else if (series?.[2] === 'episodes' && series[3] && req.method === 'DELETE') { analytics.rememberVersion(series[3]); reply(res, store.removeEpisode(admin, series[1], series[3])); }
-        else if (route === '/api/admin/uploads' && req.method === 'POST') reply(res, uploads.create(admin, await input()));
-        else if (route === '/api/admin/uploads' && req.method === 'GET') reply(res, { items: store.db.prepare('SELECT id FROM content_assets ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(offset).map(row => store.asset(row.id)), maximum: uploads.maximum });
+        else if (route === '/api/admin/uploads' && req.method === 'POST') { const data = await input(); team.requireSeries(req,'editor',data.seriesId); reply(res, uploads.create(admin, data)); }
+        else if (route === '/api/admin/uploads' && req.method === 'GET') reply(res, { items: store.db.prepare('SELECT id FROM content_assets WHERE owner_id=? AND (?=1 OR EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=content_assets.series_id AND t.member_id=?)) ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(admin.id,team.owner(admin)?1:0,admin.id,offset).map(row => store.asset(row.id)), maximum: uploads.maximum });
         else if (upload && req.method === 'PUT') reply(res, await uploads.chunk(req, admin, upload[1]));
         else if (upload && req.method === 'DELETE') reply(res, await uploads.cancel(admin, upload[1]));
-        else if (upload && req.method === 'GET') { const asset = store.asset(upload[1]); if (!asset) throw new AccountError(404, '上传不存在'); reply(res, asset); }
+        else if (upload && req.method === 'GET') { const asset = store.asset(upload[1]); if (!asset || !team.owner(admin) && (asset.owner_id!==admin.id || !team.allowed(admin,'editor',asset.series_id))) throw new AccountError(404, '上传不存在'); reply(res, asset); }
         else if (route === '/api/admin/accounts' && req.method === 'GET') { const query = String(url.searchParams.get('q') || '').slice(0, 200); reply(res, { items: accountStore.db.prepare('SELECT * FROM accounts WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 100 OFFSET ?').all(`%${query}%`, `%${query}%`,offset).map(user => accountStore.publicAccount(user)) }); }
         else if (route === '/api/admin/membership' && req.method === 'POST') {
           const data = await input(), user = accountStore.byId(data.accountId); if (!user) throw new AccountError(404, '账户不存在');
@@ -200,7 +213,7 @@ export function createContentService(directory, accountStore, accounts, provider
           accountStore.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET period_end=excluded.period_end,admin_id=excluded.admin_id,reason=excluded.reason,updated_at=excluded.updated_at').run(user.id, end, admin.id, reason, Date.now());
           store.audit(admin, data.revoke ? '撤销手动会员' : '开通手动会员', user.id, { periodEnd: end, reason,accountName:user.name,accountEmail:user.email }); reply(res, { user: accountStore.publicAccount(user) });
         }
-        else if (route === '/api/admin/comment-series' && req.method === 'GET') { const data=await commentModeration.series(url.searchParams);req.revalidateAccess?.();requireAdmin(req);reply(res,data); }
+        else if (route === '/api/admin/comment-series' && req.method === 'GET') { const data=await commentModeration.series(url.searchParams,team.owner(admin)?'':admin.id);req.revalidateAccess?.();requireAdmin(req);reply(res,data); }
         else if (route === '/api/admin/comments' && req.method === 'GET') { const data=await commentModeration.comments(url.searchParams);req.revalidateAccess?.();requireAdmin(req);reply(res,{...data,items:data.items.map(({account_id,...row})=>({...row,author:accountStore.byId(account_id)?.name || '—'}))}); }
         else if (moderation && req.method === 'POST') { const data = await input(); if (!['visible', 'hidden', 'deleted'].includes(data.status)) throw new AccountError(400, '评论状态无效'); store.db.prepare('UPDATE episode_comments SET status=? WHERE id=?').run(data.status, moderation[1]); store.audit(admin, '处理评论', moderation[1], { status: data.status }); reply(res, { ok: true }); }
         else if (route === '/api/admin/audit-series' && req.method === 'GET') reply(res,contentAudit.series(url.searchParams));

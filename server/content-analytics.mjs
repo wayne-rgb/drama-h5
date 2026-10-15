@@ -55,6 +55,7 @@ export class ContentAnalytics {
     this.rates.set(actor, row);
   }
   start(req, input) {
+    if (this.team?.viewer(req)) return { excluded: true };
     const { user, id: actor } = this.actor(req); this.limit(actor);
     if (!input || typeof input!=='object' || !/^\d{1,40}$/.test(input.seriesId || '') || !/^\d{1,40}$/.test(input.episodeId || '') || !UUID.test(input.requestId || '') || !['detail', 'feed'].includes(input.entry)) throw new AccountError(400, '观看会话无效');
     const series = this.content.row(input.seriesId);
@@ -96,6 +97,11 @@ export class ContentAnalytics {
     if (episode) this.db.prepare('INSERT INTO analytics_feedback VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(), seriesId, episodeId, episode.asset_id, kind, this.clock());
   }
   scope(req, seriesId) {
+    if (this.team) {
+      const user = this.team.require(req, 'analyst'), admin = this.team.owner(user);
+      if (seriesId) this.team.requireSeries(req, 'analyst', seriesId);
+      return { user, admin };
+    }
     const user = this.accounts.requireViewer(req), admin = this.isAdmin(user);
     if (!admin && !this.accountStore.isCreator(user.id)) throw new AccountError(403, '需要创作者权限');
     if (seriesId) {
@@ -106,7 +112,8 @@ export class ContentAnalytics {
   }
   series(req) {
     const { user, admin } = this.scope(req);
-    const rows = this.db.prepare('SELECT id,title,creator_id,status,cover_id,(SELECT COUNT(*) FROM content_episodes e WHERE e.series_id=content_series.id) AS episode_count FROM content_series WHERE ?=1 OR creator_id=? ORDER BY updated_at DESC').all(admin ? 1 : 0, user.id);
+    const scope = this.team ? 'EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=content_series.id AND t.member_id=?)' : 'creator_id=?';
+    const rows = this.db.prepare(`SELECT id,title,creator_id,status,cover_id,(SELECT COUNT(*) FROM content_episodes e WHERE e.series_id=content_series.id) AS episode_count FROM content_series WHERE ?=1 OR ${scope} ORDER BY updated_at DESC`).all(admin ? 1 : 0, user.id);
     return { items: rows.map(row => ({ id: row.id, title: row.title, creatorId: row.creator_id, status: row.status,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',episodeCount:row.episode_count })) };
   }
   report(req, params) {
@@ -117,7 +124,8 @@ export class ContentAnalytics {
     const parse = value => { const time = Date.parse(`${value}T00:00:00Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== value) throw new AccountError(400, '统计日期无效'); return time; };
     const from = parse(start), to = parse(end) + DAY;
     if (to <= from || to - from > 90 * DAY || from > now || to > parse(new Date(now).toISOString().slice(0, 10)) + DAY) throw new AccountError(400, '统计日期无效');
-    const filters = 's.started_at>=? AND s.started_at<? AND (?=1 OR c.creator_id=?) AND (?=\'\' OR s.series_id=?) AND (?=\'\' OR s.episode_id=?)';
+    const access = this.team ? 'EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=c.id AND t.member_id=?)' : 'c.creator_id=?';
+    const filters = `s.started_at>=? AND s.started_at<? AND (?=1 OR ${access}) AND (?='' OR s.series_id=?) AND (?='' OR s.episode_id=?)`;
     const bindings = [from, to, admin ? 1 : 0, user.id, seriesId, seriesId];
     // 剧列表在数据库内聚合，不把所有作品的观看区间加载到服务进程。
     const rows = seriesId ? this.db.prepare(`SELECT s.* FROM analytics_sessions s JOIN content_series c ON c.id=s.series_id WHERE ${filters} ORDER BY s.started_at`).all(...bindings,episodeId,episodeId) : [];
@@ -177,12 +185,12 @@ export class ContentAnalytics {
       const latest=!metadata.current ? this.db.prepare('SELECT r.episode_number AS number,r.episode_title AS title FROM content_audit_refs r JOIN content_audit a ON a.id=r.audit_id WHERE r.series_id=? AND r.episode_id=? ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1').get(seriesId,id) : null;
       return {episodeId:id,number:latest?.number || metadata.number,title:latest?.title || metadata.title,current:metadata.current,...summarize(list),...continuation(list)};
     }).sort((a,b)=>a.number-b.number);
-    const feedbackRows = this.db.prepare("SELECT f.kind,f.created_at,f.episode_id,f.asset_id FROM analytics_feedback f JOIN content_series c ON c.id=f.series_id WHERE f.created_at>=? AND f.created_at<? AND (?=1 OR c.creator_id=?) AND (?='' OR f.series_id=?) AND (?='' OR f.episode_id=?)").all(...bindings,episodeId,episodeId);
+    const feedbackRows = this.db.prepare(`SELECT f.kind,f.created_at,f.episode_id,f.asset_id FROM analytics_feedback f JOIN content_series c ON c.id=f.series_id WHERE f.created_at>=? AND f.created_at<? AND (?=1 OR ${access}) AND (?='' OR f.series_id=?) AND (?='' OR f.episode_id=?)`).all(...bindings,episodeId,episodeId);
     const counts = list => ({ likesAdded: list.filter(row => row.kind === 'like').length, likesRemoved: list.filter(row => row.kind === 'unlike').length, commentsAdded: list.filter(row => row.kind === 'comment').length });
     const commentPage = Number(params.get('commentPage') || 1);
     if (!Number.isSafeInteger(commentPage) || commentPage < 1 || commentPage > 10000) throw new AccountError(400, '统计日期无效');
-    const comments = this.db.prepare("SELECT m.id,m.episode_id,m.body,m.created_at,c.title FROM episode_comments m JOIN content_series c ON c.id=m.series_id WHERE m.status='visible' AND m.created_at>=? AND m.created_at<? AND (?=1 OR c.creator_id=?) AND (?='' OR m.series_id=?) AND (?='' OR m.episode_id=?) ORDER BY m.created_at DESC,m.id DESC LIMIT 21 OFFSET ?").all(...bindings,episodeId,episodeId, (commentPage - 1) * 20);
-    const likes = this.db.prepare("SELECT COUNT(*) AS count FROM episode_likes l JOIN content_episodes e ON e.id=l.episode_id JOIN content_series c ON c.id=e.series_id WHERE (?=1 OR c.creator_id=?) AND (?='' OR e.series_id=?) AND (?='' OR e.id=?)").get(admin ? 1 : 0, user.id, seriesId, seriesId,episodeId,episodeId).count;
+    const comments = this.db.prepare(`SELECT m.id,m.episode_id,m.body,m.created_at,c.title FROM episode_comments m JOIN content_series c ON c.id=m.series_id WHERE m.status='visible' AND m.created_at>=? AND m.created_at<? AND (?=1 OR ${access}) AND (?='' OR m.series_id=?) AND (?='' OR m.episode_id=?) ORDER BY m.created_at DESC,m.id DESC LIMIT 21 OFFSET ?`).all(...bindings,episodeId,episodeId, (commentPage - 1) * 20);
+    const likes = this.db.prepare(`SELECT COUNT(*) AS count FROM episode_likes l JOIN content_episodes e ON e.id=l.episode_id JOIN content_series c ON c.id=e.series_id WHERE (?=1 OR ${access}) AND (?='' OR e.series_id=?) AND (?='' OR e.id=?)`).get(admin ? 1 : 0, user.id, seriesId, seriesId,episodeId,episodeId).count;
     return { start, end, timezone: 'UTC', collected:to>collectionStartedAt, collectionStartedAt, summary: sqlSummary || summarize(rows), timeline, series, episodes, episodeGroups, feedback: { currentLikes: likes, ...counts(feedbackRows), timeline: timeline.map(day => ({ date: day.date, collected:day.collected, ...counts(feedbackRows.filter(row => new Date(row.created_at).toISOString().slice(0, 10) === day.date)) })), episodes: episodes.map(ep => ({ episodeId: ep.episodeId, assetId: ep.assetId, ...counts(feedbackRows.filter(row => row.episode_id === ep.episodeId && row.asset_id === ep.assetId)) })), comments: comments.slice(0, 20), hasMoreComments: comments.length > 20 } };
   }
 }

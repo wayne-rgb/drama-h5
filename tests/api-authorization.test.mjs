@@ -201,7 +201,7 @@ test('真正HTTP入口拒绝未声明接口与后台读取，资料请求中的�
   assert.equal((await send('/api/admin/accounts')).status,401);assert.equal((await send('/api/account/export')).status,404);assert.equal((await send('/api/rank/types',{})).status,405);
   const registered=await send('/api/auth/register',{email:'ordinary@example.invalid',name:'普通用户',password:'授权回归独立密码-2026',id:'任意管理员编号',role:'admin',emailVerified:true,membership:{active:true}}),cookie=registered.headers.get('set-cookie').split(';')[0],account=(await registered.json()).user;
   assert.equal(account.emailVerified,false);assert.equal(account.membership.active,false);
-  assert.equal((await send('/api/admin/accounts',undefined,cookie)).status,403);
+  assert.equal((await send('/api/admin/accounts',undefined,cookie)).status,401);
   const changed=await send('/api/account/profile',{accountId:'其他账户编号',name:'当前用户资料',role:'admin',membership:{active:true}},cookie);assert.equal(changed.status,200);
   const session=await(await send('/api/account/session',undefined,cookie)).json();assert.equal(session.user.id,account.id);assert.equal(session.user.name,'当前用户资料');assert.equal(session.capabilities.admin,false);assert.equal(session.user.membership.active,false);
 });

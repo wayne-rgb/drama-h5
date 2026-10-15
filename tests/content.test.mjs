@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { AccountStore } from '../server/account-store.mjs';
+import { AccountStore, passwordHash } from '../server/account-store.mjs';
 import { createAccountService } from '../server/account-routes.mjs';
 import { createContentService } from '../server/content-service.mjs';
 import { isAdministrator } from '../server/account-role.mjs';
@@ -53,6 +53,8 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   const origin = 'http://127.0.0.1:4318', config = {APP_ORIGIN:origin,ADMIN_ACCOUNT_IDS:admin.id};
   const accounts = createAccountService(store,config);
   const content = createContentService(directory,store,accounts,{detail:async()=>{throw Error('测试禁止访问外部内容源');}},config);
+  const teamAdmin=content.team.create(await passwordHash('内容回归团队密码2026'),['owner'],[]);
+  actors.admin.cookie=`drama_team_session=${content.team.session(teamAdmin,true)}`;
   const server = http.createServer(async(req,res)=>{
     try {
       const url = new URL(req.url,origin);
@@ -72,12 +74,12 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
     return {response,status:response.status,data:method==='HEAD'?null:response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer())};
   };
   assert.equal((await request('/api/admin/series')).status,401);
-  assert.equal((await request('/api/admin/series',{actor:actors.first})).status,403);
+  assert.equal((await request('/api/admin/series',{actor:actors.first})).status,401);
   assert.equal((await request('/api/admin/series',{actor:actors.admin,body:{},requestOrigin:'https://untrusted.example'})).status,403);
   const upload = async(data,kind,mime)=>{
     const created=await request('/api/admin/uploads',{actor:actors.admin,body:{name:'测试素材',size:data.length,kind,mime}});assert.equal(created.status,200);
     const id=created.data.id;
-    assert.equal((await request(`/api/admin/uploads/${id}`,{actor:actors.first,method:'PUT',body:data,headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes 0-${data.length-1}/${data.length}`}})).status,403);
+    assert.equal((await request(`/api/admin/uploads/${id}`,{actor:actors.first,method:'PUT',body:data,headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes 0-${data.length-1}/${data.length}`}})).status,401);
     const initial=await request(`/api/admin/uploads/${id}`,{actor:actors.admin,method:'PUT',body:data.subarray(0,7),headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes 0-6/${data.length}`}});assert.equal(initial.status,200);assert.equal(initial.data.offset,7);
     assert.equal((await request(`/api/admin/uploads/${id}`,{actor:actors.admin,method:'PUT',body:data.subarray(0,7),headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes 0-6/${data.length}`}})).status,409);
     const resume=(await request(`/api/admin/uploads/${id}`,{actor:actors.admin})).data.offset;
@@ -113,7 +115,7 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   assert.equal((await request(episodeRoute,{actor:actors.admin,body:{...replaceInput,assetId:video.id}})).status,409);
   assert.equal((await request(`/api/admin/uploads/${video.id}`,{actor:actors.admin})).data.status,'ready');
   const disposable=(await request('/api/admin/uploads',{actor:actors.admin,body:{name:'待取消.mp4',size:100,kind:'video',mime:'video/mp4'}})).data;
-  assert.equal((await request(`/api/admin/uploads/${disposable.id}`,{actor:actors.first,method:'DELETE'})).status,403);
+  assert.equal((await request(`/api/admin/uploads/${disposable.id}`,{actor:actors.first,method:'DELETE'})).status,401);
   assert.equal((await request(`/api/admin/uploads/${disposable.id}`,{actor:actors.admin,method:'DELETE'})).data.status,'failed');
   await assert.rejects(fs.stat(path.join(directory,'media',`${disposable.id}.part`)),{code:'ENOENT'});
   assert.equal((await request(`/api/admin/uploads/${video.id}`,{actor:actors.admin,method:'DELETE'})).data.status,'ready');
@@ -164,7 +166,7 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   assert.equal((await request(`/api/comments/${comment.data.id}`,{actor:actors.second,method:'DELETE'})).status,403);
   await request(`/api/comments/${comment.data.id}/report`,{actor:actors.second,body:{}});
   assert.equal((await request('/api/admin/comment-series')).status,401);
-  assert.equal((await request(`/api/admin/comments?seriesId=${id}`,{actor:actors.first})).status,403);
+  assert.equal((await request(`/api/admin/comments?seriesId=${id}`,{actor:actors.first})).status,401);
   const moderation=(await request(`/api/admin/comments?seriesId=${id}&episodeId=${free}`,{actor:actors.admin})).data;
   assert.equal(moderation.items[0].reports,1);
   assert.equal(moderation.items[0].seriesTitle,'数据库验收短剧');
@@ -195,18 +197,17 @@ test('上传、发布、VIP边界、互动隔离与后台权限使用真实HTTP�
   assert.equal((await request(`/api/episodes/${paid}/qualities?seriesId=${id}`,{actor:actors.first})).status,403);
   assert.ok((await request('/api/admin/audit?scope=platform',{actor:actors.admin})).data.items.some(row=>row.action==='撤销手动会员'));
   assert.equal((await request('/api/admin/audit-series')).status,401);
-  assert.equal((await request(`/api/admin/audit?seriesId=${id}`,{actor:actors.first})).status,403);
+  assert.equal((await request(`/api/admin/audit?seriesId=${id}`,{actor:actors.first})).status,401);
   assert.equal((await request('/api/admin/audit',{actor:actors.admin})).status,400);
   assert.equal((await request(`/api/admin/audit?seriesId=${id}&episodeId=123`,{actor:actors.admin})).status,404);
   const audit=(await request(`/api/admin/audit?seriesId=${id}&episodeId=${free}`,{actor:actors.admin})).data;
   assert.ok(audit.items.some(row=>row.action==='处理评论'&&row.targets.some(target=>target.number===1)));
-  assert.ok(audit.items.every(row=>row.actorName==='管理员'&&row.actorEmail===admin.email&&row.target_id===undefined&&row.admin_id===undefined&&row.detail===undefined));
+  assert.ok(audit.items.every(row=>row.actorName===teamAdmin.code&&row.actorEmail===null&&row.target_id===undefined&&row.admin_id===undefined&&row.detail===undefined));
   assert.equal((await request('/api/admin/audit-series?q=数据库验收',{actor:actors.admin})).data.items[0].title,'数据库验收短剧');
-  const creatorNames=(await request(`/api/admin/creators?seriesId=${id}`,{actor:actors.admin})).data;
-  assert.equal(creatorNames.assignedCreator,null);
-  content.store.db.prepare('UPDATE content_series SET creator_id=? WHERE id=?').run(first.id,id);
-  const revoked=(await request(`/api/admin/creators?seriesId=${id}`,{actor:actors.admin})).data;
-  assert.equal(revoked.assignedCreator.name,first.name);assert.equal(revoked.assignedCreator.creator,false);
+  assert.equal((await request(`/api/admin/creators?seriesId=${id}`,{actor:actors.admin})).status,404);
+  const teamMember=content.team.create(await passwordHash('作品授权回归密码2026'),['analyst'],[]);
+  content.team.update({headers:{cookie:actors.admin.cookie}},teamMember.id,{roles:['analyst'],enabled:true,seriesIds:[id]});
+  assert.equal(content.team.allowed(content.team.member(teamMember.id),'analyst',id),true);
   await request(`/api/admin/series/${id}/publish`,{actor:actors.admin,body:{status:'draft'}});
   assert.equal((await request(`/api/episodes/${free}/stream?seriesId=${id}`)).status,404);
   const unavailable=(await request('/api/me/likes',{actor:actors.first})).data.items[0];
