@@ -15,9 +15,9 @@ import { createApiPolicy } from '../server/api-policy.mjs';
 import { totp } from '../server/account-mfa.mjs';
 
 const origin='http://127.0.0.1:8793',password='团队权限真实回归密码2026',bootstrapToken='team-regression-bootstrap-2026-owner';
-async function fixture(t) {
+async function fixture(t, extraConfig = {}) {
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drama-team-')),users=new AccountStore(':memory:');
-  const config={APP_ORIGIN:origin,TEAM_BOOTSTRAP_TOKEN:bootstrapToken},accounts=createAccountService(users,config),content=createContentService(directory,users,accounts,{},config),team=content.team;
+  const config={APP_ORIGIN:origin,TEAM_BOOTSTRAP_TOKEN:bootstrapToken,...extraConfig},accounts=createAccountService(users,config),content=createContentService(directory,users,accounts,{},config),team=content.team;
   const policy=createApiPolicy(accounts,users,config,team);
   const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,origin);policy(req,res,url);if(await accounts.handle(req,res,url)||await content.handle(req,res,url))return;if(/^\/api\/series\/\d+$/.test(url.pathname)){const data=await content.publicDetail(req,url.pathname.split('/').at(-1));res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data));return;}throw Error('未处理测试路由');}catch(error){res.writeHead(error.status||500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -36,6 +36,56 @@ async function fixture(t) {
   const member=async(actor,roles,seriesIds=[])=>{const invite=await request('/api/team/invites',{roles,seriesIds},actor.cookie);assert.equal(invite.status,200);const joined=await request('/api/team/join',{token:invite.data.token,password});assert.equal(joined.status,200);return activate(joined);};
   return {directory,users,accounts,content,team,config,policy,request,activate,owner,series,member};
 }
+
+test('无会话验证失败不能锁住其他来源的团队验证和启用二次验证', async t => {
+  const f = await fixture(t, {TRUSTED_PROXY_IPS:'127.0.0.1'}), owner = await f.owner();
+  for (const route of ['/api/team/mfa/verify','/api/team/mfa/enable']) {
+    for (const address of ['198.51.100.1','198.51.100.2']) {
+      for (let index=0;index<10;index++) assert.equal((await f.request(route,{code:'无效动态码'},'',origin,{'X-Forwarded-For':address})).status,401);
+    }
+  }
+  const pending = await f.request('/api/team/login',{code:owner.member.code,password});
+  assert.equal(pending.status,200);
+  assert.equal((await f.request('/api/team/mfa/verify',{code:totp(owner.secret)},pending.cookie)).status,200);
+  const newcomer = await f.member(owner,['analyst']);
+  assert.equal((await f.request('/api/team/session',undefined,newcomer.cookie)).data.verified,true);
+});
+
+test('成员自己的二次验证失败受限，同一网络的其他成员仍能登录', async t => {
+  const f = await fixture(t), owner = await f.owner(), analyst = await f.member(owner,['analyst']);
+  const pending = await f.request('/api/team/login',{code:analyst.member.code,password});
+  for(let index=0;index<10;index++) assert.equal((await f.request('/api/team/mfa/verify',{code:'无效动态码'},pending.cookie)).status,400);
+  assert.equal((await f.request('/api/team/mfa/verify',{code:totp(analyst.secret)},pending.cookie)).status,429);
+  const ownerPending = await f.request('/api/team/login',{code:owner.member.code,password});
+  assert.equal((await f.request('/api/team/mfa/verify',{code:totp(owner.secret)},ownerPending.cookie)).status,200);
+});
+
+test('错误初始化和邀请凭证的失败计数不会阻断有效凭证', async t => {
+  const f = await fixture(t,{TRUSTED_PROXY_IPS:'127.0.0.1'});
+  for(const address of ['198.51.100.30','198.51.100.31'])for(let index=0;index<10;index++) {
+    assert.equal((await f.request('/api/team/bootstrap',{token:'无效初始化凭证',password},'',origin,{'X-Forwarded-For':address})).status,403);
+  }
+  const owner=await f.owner();
+  for(const address of ['198.51.100.32','198.51.100.33'])for(let index=0;index<10;index++) {
+    assert.equal((await f.request('/api/team/join',{token:'无效邀请凭证',password},'',origin,{'X-Forwarded-For':address})).status,400);
+  }
+  const member=await f.member(owner,['analyst']);
+  assert.equal((await f.request('/api/team/session',undefined,member.cookie)).data.verified,true);
+});
+
+for (const action of ['login','recover']) test(`团队${action==='login'?'登录':'密码恢复'}的空白和大小写变体共用账户失败额度`, async t => {
+  const f = await fixture(t,{TRUSTED_PROXY_IPS:'127.0.0.1'}), owner = await f.owner();
+  const route = `/api/team/${action}`, failure = action==='login'?401:400;
+  for(const [source,address] of ['198.51.100.10','198.51.100.11'].entries()) {
+    for(let index=0;index<10;index++) {
+      const code=`${' '.repeat(index)}${owner.member.code.toLowerCase()}${'\t'.repeat(source+1)}`;
+      assert.equal((await f.request(route,{code,password:'回归测试使用的错误团队密码2026',recoveryCode:'0'.repeat(24)},'',origin,{'X-Forwarded-For':address})).status,failure);
+    }
+  }
+  const blocked = await f.request(route,{code:`\n${owner.member.code}\t`,password,recoveryCode:owner.data.recoveryCodes[0]},'',origin,{'X-Forwarded-For':'198.51.100.12'});
+  assert.equal(blocked.status,429);
+  assert.equal((await f.request('/api/team/session',undefined,owner.cookie)).data.verified,true);
+});
 
 test('团队预览拦截个人资料、互动和管理写入，普通观看仍使用原观众会话',async t=>{
   const f=await fixture(t),owner=await f.owner(),series=f.series(owner),viewer=f.users.create({email:'preview-viewer@example.invalid',name:'正常观众'});

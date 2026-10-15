@@ -45,7 +45,7 @@ export function createAccountService(store, config = process.env) {
   const sendToken = async (account, purpose) => {
     if (!mail) throw new AccountError(503, '邮件服务尚未配置');
     const token = store.token(purpose, account.id);
-    const url = `${origin}/?account=${purpose}&token=${encodeURIComponent(token)}`;
+    const url = `${origin}/?account=${purpose}#token=${encodeURIComponent(token)}`;
     await mail.sendMail({ from: config.SMTP_FROM, to: { address: account.email }, subject: purpose === 'reset' ? 'Reset your password' : 'Verify your email', text: `${purpose === 'reset' ? 'Reset your password' : 'Verify your email'}: ${url}\nThis link expires in 30 minutes.` });
   };
   const capabilities = { google: !!oauth, email: !!mail, billing: billing.ready, billingProvider: billing.provider };

@@ -46,12 +46,11 @@ export class RequestGuard {
     const scope = hls ? 'hls' : 'video';
     this.rate([[`${scope}:viewer:${viewer}`, hls ? this.hls : this.video], [`${scope}:ip:${address}`, hls ? this.hlsIp : this.videoIp], [`${scope}:global`, hls ? this.hlsGlobal : this.videoGlobal]]);
   }
-  acquire(req, res, viewer, address, costly = false, upload = false) {
+  acquire(req, res, viewer, address, upload = false) {
     // 已认证管理上传按分块计数，不能用浏览接口额度误伤正常批量大文件上传。
     const scope = upload ? 'upload' : 'api';
     this.rate([[`${scope}:viewer:${viewer}`, upload ? 6000 : this.api], [`${scope}:ip:${address}`, upload ? 12000 : this.ip], [`${scope}:global`, upload ? 30000 : this.global]]);
-    // 密码计算另设小并发，避免多个合法格式请求同时占用大量计算内存。
-    const entries = [['all', this.maximum], [`viewer:${viewer}`, 16], [`ip:${address}`, 64], ...(costly ? [['password', 4]] : [])];
+    const entries = [['all', this.maximum], [`viewer:${viewer}`, 16], [`ip:${address}`, 64]];
     this.activate(req, res, entries);
   }
   acquireStatic(req, res, address) {

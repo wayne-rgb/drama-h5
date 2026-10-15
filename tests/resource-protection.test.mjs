@@ -22,7 +22,7 @@ test('请求频率按观众和IP叠加，换游客身份不会恢复IP额度，�
   now += 60001; assert.doesNotThrow(() => guard.checkVideo('甲', '地址甲'));
 });
 
-test('公开接口及密码计算并发有界，完成和关闭只释放一次', () => {
+test('公开接口并发有界，完成和关闭只释放一次', () => {
   const guard = new RequestGuard({ API_MAX_ACTIVE_REQUESTS: 2 });
   const pair = () => ({ req: new EventEmitter(), res: new EventEmitter() });
   const first = pair(), second = pair();
@@ -30,10 +30,6 @@ test('公开接口及密码计算并发有界，完成和关闭只释放一次',
   assert.throws(() => guard.acquire(...Object.values(pair()), '丙', '丙'), error => error.status === 429);
   first.res.emit('finish'); first.res.emit('close'); first.req.emit('aborted'); second.res.emit('close');
   assert.equal(guard.active.size, 0);
-  const costly = new RequestGuard(), pairs = Array.from({ length: 4 }, pair);
-  for (const [index, row] of pairs.entries()) costly.acquire(row.req, row.res, String(index), String(index), true);
-  assert.throws(() => costly.acquire(...Object.values(pair()), '另一个', '另一个', true), error => error.status === 429);
-  for (const row of pairs) row.res.emit('finish');
 });
 
 test('全站请求额度同时覆盖不同来源，管理上传保留独立分块额度', () => {
@@ -42,7 +38,7 @@ test('全站请求额度同时覆盖不同来源，管理上传保留独立分�
   guard.acquire(req, res, '甲', '甲'); res.emit('finish');
   assert.throws(() => guard.acquire(new EventEmitter(), new EventEmitter(), '乙', '乙'), error => error.status === 429);
   const uploadReq = new EventEmitter(), uploadRes = new EventEmitter();
-  assert.doesNotThrow(() => guard.acquire(uploadReq, uploadRes, '管理员', '管理地址', false, true)); uploadRes.emit('finish');
+  assert.doesNotThrow(() => guard.acquire(uploadReq, uploadRes, '管理员', '管理地址', true)); uploadRes.emit('finish');
   guard.checkVideo('甲', '甲');
   assert.throws(() => guard.checkVideo('乙', '乙'), error => error.status === 429);
   const staticRes = new EventEmitter(); guard.acquireStatic(new EventEmitter(), staticRes, '地址'); staticRes.emit('finish');

@@ -48,6 +48,16 @@ test('密码有独立盐且错误密码与不存在账户不能通过验证', as
   await assert.rejects(passwordHash('短密码'), /12至256/);
 });
 
+test('四路实际密码计算共享容量，完成及失败后均归还名额', async () => {
+  const password='密码计算容量独立回归2026', hash=await passwordHash(password);
+  const pending=[passwordHash(password),passwordMatches(password,hash),passwordHash(password),passwordMatches(password,hash)];
+  await assert.rejects(passwordHash(password),error=>error.status===429);
+  await assert.rejects(passwordMatches(password,hash),error=>error.status===429);
+  const results=await Promise.all(pending);assert.equal(results[1],true);assert.equal(results[3],true);
+  await assert.rejects(passwordMatches(password,'损坏的密码记录'));
+  assert.equal(await passwordMatches(password,await passwordHash(password)),true);
+});
+
 test('会话仅保存令牌摘要，退出和密码重置会撤销旧会话', async () => {
   const store = new AccountStore(':memory:');
   try {

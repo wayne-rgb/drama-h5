@@ -16,17 +16,25 @@ export function displayName(value) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > 80) throw new AccountError(400, '昵称需为1至80个字符');
   return value.trim();
 }
+let activePasswordComputations = 0;
+async function passwordKey(password, salt) {
+  // 仅实际计算占用名额；慢速正文和已断开的响应不能占用或提前释放计算容量。
+  if (activePasswordComputations >= 4) throw new AccountError(429, '操作过于频繁，请稍后重试');
+  activePasswordComputations++;
+  try { return await scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 67108864 }); }
+  finally { activePasswordComputations--; }
+}
 export async function passwordHash(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 256) throw new AccountError(400, '密码需为12至256个字符');
   const salt = crypto.randomBytes(16).toString('hex');
-  const key = await scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 67108864 });
+  const key = await passwordKey(password, salt);
   return `scrypt:${salt}:${key.toString('hex')}`;
 }
 const dummyHash = passwordHash(secret());
 export async function passwordMatches(password, stored) {
   const [, salt, encoded] = (stored || await dummyHash).split(':');
   const input = typeof password === 'string' && password.length <= 256 ? password : '';
-  const key = await scrypt(input, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 67108864 });
+  const key = await passwordKey(input, salt);
   return crypto.timingSafeEqual(key, Buffer.from(encoded, 'hex')) && !!stored;
 }
 

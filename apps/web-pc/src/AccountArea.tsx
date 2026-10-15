@@ -5,6 +5,7 @@ import { Account, AccountSession, accountError, accountRequest, changeAccount } 
 import { languages, MessageKey, useI18n } from "./i18n";
 import { HistoryItem } from "./types";
 import { teamPreview } from './team-preview';
+import { accountLinkToken, clearAccountLinkToken } from './account-link';
 
 export type AccountPanel = "login" | "register" | "recover" | "reset" | "verify" | "profile" | "membership" | null;
 export function useAccountSession() {
@@ -97,6 +98,7 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
   const user = session?.user, capabilities = session?.capabilities;
   const manageSubscription = needsSubscriptionManagement(user);
   const subscription = manageSubscription ? user?.membership.billingSubscription || user?.membership : user?.membership;
+  useEffect(() => { if (panel !== 'reset' && panel !== 'verify') clearAccountLinkToken(); }, [panel]);
   useEffect(() => {
     setError(new URLSearchParams(window.location.search).get("error")?.slice(0, 512) || ""); setNotice(""); setPassword(""); setAvatar(null); setName(current => user?.name ?? current); setEmail(current => user?.email ?? current);
     if (panel && !dialog.current?.open) dialog.current?.showModal();
@@ -118,7 +120,7 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
       if (panel === "login" || panel === "register") await changeAccount(`/api/auth/${panel}`, { email, password, ...(panel === "register" ? { name } : {}) },returnTarget());
       else if (panel === "profile") { await accountRequest("/api/account/profile", { name, ...(avatar ? { avatar: avatar.split(",")[1] } : {}) }); setAvatar(null); await onRefresh(); setNotice("资料已保存"); }
       else if (panel === "recover") { await accountRequest("/api/auth/recover", { email }); setNotice("如邮箱已注册，你会收到找回密码邮件"); }
-      else if (panel === "reset") { await accountRequest("/api/auth/reset", { password, token: new URLSearchParams(window.location.search).get("token") }); window.location.assign("/?account=login"); }
+      else if (panel === "reset") { await accountRequest("/api/auth/reset", { password, token: accountLinkToken('reset') }); clearAccountLinkToken(); window.location.assign("/?account=login"); }
     });
   };
   const chooseAvatar = async (selected?: File) => {
@@ -140,7 +142,7 @@ export function AccountDialogs({ panel: requestedPanel, onPanel, session, sessio
         {!capabilities?.billing && <p className="account-service-note">{t("订阅支付尚未配置")}</p>}
         <button className="account-primary" disabled={busy || !!user && (!capabilities?.billing || !user.emailVerified)} onClick={() => { if (!user) { returnToMembership.current=true; onPanel("login"); return; } void perform(async () => { const result = await accountRequest<{ url: string }>(manageSubscription ? "/api/billing/portal" : "/api/billing/checkout", manageSubscription ? { returnTo:returnTarget() } : { planId,returnTo:returnTarget() }); window.location.assign(result.url); }); }}>{t(manageSubscription ? "管理订阅" : user ? "订阅会员" : "登录后订阅")}</button>
         {user && !user.emailVerified && <button className="account-text-button" onClick={() => onPanel("profile")}>{t("请先验证邮箱")}<ChevronRight size={15} /></button>}
-      </> : panel === "verify" ? <><ShieldCheck size={36} /><p>{t("确认邮箱验证后，链接将失效")}</p><button className="account-primary" disabled={busy} onClick={() => void perform(async () => { await accountRequest("/api/auth/verify", { token: new URLSearchParams(window.location.search).get("token") }); await onRefresh(); setNotice("邮箱验证成功"); })}>{t("验证邮箱")}</button></> : <form onSubmit={submit}>
+      </> : panel === "verify" ? <><ShieldCheck size={36} /><p>{t("确认邮箱验证后，链接将失效")}</p><button className="account-primary" disabled={busy} onClick={() => void perform(async () => { await accountRequest("/api/auth/verify", { token: accountLinkToken('verify') }); clearAccountLinkToken(); await onRefresh(); setNotice("邮箱验证成功"); })}>{t("验证邮箱")}</button></> : <form onSubmit={submit}>
         {panel === "profile" ? <>
           <div className="account-profile-avatar">
             {avatar ? <span className="account-avatar account-avatar-large"><img src={avatar} alt={t("头像")} /></span> : <Avatar user={user} large />}

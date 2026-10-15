@@ -83,7 +83,7 @@ function serveStatic(req, res, pathname) {
     "Content-Type": contentType,
     "Content-Length": stat.size,
     "Access-Control-Allow-Origin": "*",
-    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    "Cache-Control": res.getHeader('Cache-Control') || (ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable"),
   });
   if (req.method === 'HEAD') { res.end(); return true; }
   const stream = fs.createReadStream(filePath);
@@ -658,6 +658,11 @@ const server = http.createServer(async (req, res) => {
   catch { return json(res,{error:'请求地址无效'},400); }
   const pathname = u.pathname;
   const isApi = pathname === '/api' || pathname.startsWith('/api/');
+  if (!isApi && ['reset','verify'].includes(u.searchParams.get('account'))) {
+    // 在浏览器下载脚本和样式前生效，旧查询参数邮件也不能把令牌带进来源头或页面缓存。
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cache-Control', 'no-store');
+  }
   let downloadAudience,downloadAddress;
   try{downloadAudience=resourceAudience(req);downloadAddress=accounts.address(req);}catch(error){const failure=publicFailure(error);return json(res,{error:failure.message},failure.status);}
   const downloadViewer=downloadAudience?audienceKey(downloadAudience):`ip:${downloadAddress}`;
@@ -713,7 +718,7 @@ const server = http.createServer(async (req, res) => {
         req.downloadMetered=true;
       } else {
         const upload = req.method === 'PUT' && /^\/api\/admin\/uploads\/[a-f0-9-]+$/.test(pathname) && !!content.team.viewer(req);
-        requestGuard.acquire(req, res, viewer, address, /^\/api\/(?:auth\/(login|register|reset)|team\/(bootstrap|join|login|recover))$/.test(pathname)||pathname==='/api/account/mfa/setup', upload);
+        requestGuard.acquire(req, res, viewer, address, upload);
       }
       if ([...u.searchParams].some(([key, value]) => key.length > 80 || value.length > (key === 'q' ? 200 : 1024))) throw new AccountError(400, '请求格式无效');
     } catch (error) {

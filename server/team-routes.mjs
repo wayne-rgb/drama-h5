@@ -1,6 +1,7 @@
-import { AccountError } from './account-store.mjs';
+import { AccountError, digest } from './account-store.mjs';
 import { AuthenticationLimits } from './auth-limits.mjs';
 import { readJson } from '../shared/http-json.mjs';
+import { normalizeTeamCode } from './team-store.mjs';
 
 export function createTeamService(team, accounts, config = process.env) {
   const rates = new AuthenticationLimits(config);
@@ -25,7 +26,15 @@ export function createTeamService(team, accounts, config = process.env) {
       try { const data=await readJson(req);req.revalidateAccess?.();if(/^\/api\/team\/(members|invites)(\/|$)/.test(route))team.business?.writable();return data; } catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : error instanceof AccountError ? error.message : '请求格式无效'); }
     };
     if (['/api/team/bootstrap', '/api/team/join', '/api/team/login', '/api/team/recover', '/api/team/mfa/verify', '/api/team/mfa/enable'].includes(route) && req.method === 'POST') {
-      const data = await input(), scope = route === '/api/team/login' || route === '/api/team/recover' ? `team:${String(data.code || '').slice(0, 80).toUpperCase()}` : route;
+      const data = await input();
+      let scope;
+      if (route.startsWith('/api/team/mfa/')) {
+        // 未登录请求只消耗来源额度，不能替其他成员累计验证失败。
+        const member = team.viewer(req, false);
+        if (!member) throw new AccountError(401, '请先完成团队登录');
+        scope = `team-mfa:${member.id}`;
+      } else if (route === '/api/team/login' || route === '/api/team/recover') scope = `team:${normalizeTeamCode(data.code)}`;
+      else scope = `${route}:${digest(typeof data.token === 'string' ? data.token : '')}`;
       rates.checkLogin(req, scope);
       try {
         if (route === '/api/team/mfa/verify') { const token = team.verify(req, data.code); setCookie(res, token, true); reply(res, { ok: true }); }

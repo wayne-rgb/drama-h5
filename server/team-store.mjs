@@ -8,6 +8,10 @@ export const teamRoles = ['owner', 'editor', 'moderator', 'analyst'];
 const lifetime = 8 * 3600000;
 const fail = (status, message) => { throw new AccountError(status, message); };
 const cookie = req => /(?:^|;\s*)drama_team_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+export function normalizeTeamCode(value) {
+  const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  return code.length <= 80 ? code : '';
+}
 
 // 与内容共用数据库事务，团队凭证和观众账户互不关联。
 export class TeamStore {
@@ -109,7 +113,7 @@ export class TeamStore {
     });
   }
   async login(code, password) {
-    const member = typeof code === 'string' ? this.db.prepare('SELECT * FROM team_members WHERE code=?').get(code.trim().toUpperCase()) : null;
+    const member = this.db.prepare('SELECT * FROM team_members WHERE code=?').get(normalizeTeamCode(code));
     if (!await passwordMatches(password, member?.password_hash) || !member?.enabled) fail(401, '团队账号或密码不正确');
     const current = this.member(member.id);
     if (!current?.enabled || current.password_hash !== member.password_hash) fail(401, '团队账号或密码不正确');
@@ -183,7 +187,7 @@ export class TeamStore {
   async recover(code, recoveryCode, password) {
     const hash = await passwordHash(password);
     return this.transaction(() => {
-      const member = typeof code === 'string' && this.db.prepare('SELECT * FROM team_members WHERE code=? AND enabled=1').get(code.trim().toUpperCase());
+      const member = this.db.prepare('SELECT * FROM team_members WHERE code=? AND enabled=1').get(normalizeTeamCode(code));
       if (!member || typeof recoveryCode !== 'string' || !/^[a-f0-9]{24}$/i.test(recoveryCode)) fail(400, '动态码无效或已使用');
       this.verifyCode(member, recoveryCode);
       this.db.prepare('UPDATE team_members SET password_hash=? WHERE id=?').run(hash, member.id);
