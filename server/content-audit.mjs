@@ -100,7 +100,7 @@ export class ContentAudit {
     return {series:seriesId ? {id:seriesId,title:seriesTitle} : null,episodes:[...episodes.values()].sort((a,b)=>(a.number??Infinity)-(b.number??Infinity)||a.id.localeCompare(b.id)),hasMore:rows.length>100,items:rows.slice(0,100).map(row=>{
       const detail=readDetail(row),actor=this.accounts.byId(row.admin_id),account=scope==='platform' ? this.accounts.byId(row.target_id) : null,creator=detail.creatorId ? this.accounts.byId(detail.creatorId) : null;
       const targets=this.db.prepare('SELECT series_title AS seriesTitle,episode_number AS number,episode_title AS title FROM content_audit_refs WHERE audit_id=? AND (?=\'\' OR series_id=?) AND (?=\'\' OR episode_id=?) ORDER BY episode_number').all(row.id,seriesId,seriesId,episodeId,episodeId);
-      return {id:row.id,action:row.action,createdAt:row.created_at,actorName:detail.adminName || actor?.name || null,actorEmail:detail.adminEmail || actor?.email || null,targets,
+      return {id:row.id,action:row.action,createdAt:row.created_at,actorName:detail.actorCode || detail.adminName || actor?.name || null,actorEmail:detail.actorCode ? null : detail.adminEmail || actor?.email || null,targets,
         filename:detail.fileName || (row.action==='完成文件上传' ? detail.name : detail.assetId ? this.store.asset(detail.assetId)?.name : null) || null,
         kind:row.action==='完成文件上传' ? detail.kind || null : row.action==='保存分集' ? 'video' : null,
         order:row.action==='调整分集顺序' ? (detail.order || (detail.ids || []).map((id,index)=>({number:index+1,title:this.db.prepare('SELECT episode_title FROM content_audit_refs WHERE audit_id=? AND episode_id=?').get(row.id,id)?.episode_title || ''}))).map(item=>({number:item.number,title:item.title})) : [],

@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import {PassThrough} from 'node:stream';
 import {EventEmitter} from 'node:events';
 import {fork} from 'node:child_process';
-import {AccountStore} from '../server/account-store.mjs';
+import {AccountStore,passwordHash} from '../server/account-store.mjs';
 import {createAccountService} from '../server/account-routes.mjs';
 import {createContentService} from '../server/content-service.mjs';
 import {createApiPolicy} from '../server/api-policy.mjs';
@@ -17,6 +17,8 @@ async function fixture(t){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drama-external-review-')),users=new AccountStore(path.join(directory,'accounts.sqlite'));
   const admin=users.create({email:'admin@example.test',name:'隔离管理员'}),viewer=users.create({email:'viewer@example.test',name:'真实回归观众'});
   const config={APP_ORIGIN:origin,ADMIN_ACCOUNT_IDS:admin.id},accounts=createAccountService(users,config),content=createContentService(directory,users,accounts,{},config),store=content.store;
+  const teamAdmin=content.team.create(await passwordHash('接口回归团队密码2026'),['owner'],[]);
+  const teamViewer=content.team.create(await passwordHash('作品回归团队密码2026'),['analyst'],[]);
   const cover=crypto.randomUUID(),video=crypto.randomUUID(),bytes=Buffer.alloc(512*1024,1);
   for(const [id,kind,mime] of [[cover,'image','image/png'],[video,'video','video/mp4']]){
     await fs.writeFile(path.join(directory,'media',id),bytes);
@@ -28,7 +30,8 @@ async function fixture(t){
   const cleanup=[];
   t.after(async()=>{for(const finish of cleanup)await finish();content.close();users.close();await fs.rm(directory,{recursive:true,force:true});});
   const request=(url,token)=>({method:'GET',url,headers:{origin,...(token?{cookie:`hg_account_session=${token}`}:{})},socket:{remoteAddress:'127.0.0.1'}});
-  return {directory,users,admin,viewer,accounts,content,store,config,series,cover,video,bytes,request,cleanup};
+  const teamRequest=(url,token)=>({method:'GET',url,headers:{origin,cookie:`drama_team_session=${token}`},socket:{remoteAddress:'127.0.0.1'}});
+  return {directory,users,admin,viewer,teamAdmin,teamViewer,teamRequest,accounts,content,store,config,series,cover,video,bytes,request,cleanup};
 }
 
 test('播放连接复核当前免费集序、会员权益、分集存在性和素材版本',async t=>{
@@ -66,24 +69,24 @@ for(const access of ['published','creator','admin'])test(`封面在途传输持�
   const f=await fixture(t);let token;
   if(access!=='published'){
     f.store.publish(f.admin,f.series.id,'draft');
-    if(access==='creator'){f.users.db.prepare('INSERT INTO account_creators VALUES(?,?,?)').run(f.viewer.id,f.admin.id,Date.now());f.store.assignCreator(f.admin,f.series.id,f.viewer.id);}
-    token=f.users.session(access==='admin'?f.admin.id:f.viewer.id);
+    if(access==='creator')f.store.db.prepare('INSERT INTO team_series_members VALUES(?,?)').run(f.series.id,f.teamViewer.id);
+    token=f.content.team.session(access==='admin'?f.teamAdmin:f.teamViewer,true);
   }
-  const req=f.request(`/api/content/covers/${f.cover}`,token),res=new EventEmitter();let source;
+  const req=access==='published'?f.request(`/api/content/covers/${f.cover}`):f.teamRequest(`/api/content/covers/${f.cover}`,token),res=new EventEmitter();let source;
   Object.assign(res,{setHeader(){},writeHead(){},end(){}});req.sendDownload=value=>{source=value;};req.guardPublicAsset=()=>{req.revalidatePlayback=()=>{};};
   f.cleanup.push(()=>res.emit('close'));await f.content.handle(req,res,new URL(req.url,origin));assert.ok(source);assert.doesNotThrow(()=>req.revalidatePlayback(true));
-  if(access==='published')f.store.publish(f.admin,f.series.id,'draft');else if(access==='creator')f.users.db.prepare('DELETE FROM account_creators WHERE account_id=?').run(f.viewer.id);else f.users.logout(token);
+  if(access==='published')f.store.publish(f.admin,f.series.id,'draft');else if(access==='creator')f.store.db.prepare('DELETE FROM team_series_members WHERE member_id=?').run(f.teamViewer.id);else f.content.team.logout(req);
   assert.throws(()=>req.revalidatePlayback(true),error=>error.status===404);
   f.store.publish(f.admin,f.series.id,'published');assert.doesNotThrow(()=>req.revalidatePlayback(true));res.emit('close');
 });
 
 test('草稿详情预览限制来源，退出或撤销管理员后停止私有响应，不返回素材或归属字段',async t=>{
   const f=await fixture(t);f.store.publish(f.admin,f.series.id,'draft');
-  const token=f.users.session(f.admin.id),req=f.request(`/api/series/${f.series.id}`,token),data=await f.content.publicDetail(req,f.series.id);
+  const token=f.content.team.session(f.teamAdmin,true),req=f.teamRequest(`/api/series/${f.series.id}`,token),data=await f.content.publicDetail(req,f.series.id);
   assert.equal(Object.hasOwn(data,'creatorId'),false);assert.equal(data.episodes.some(row=>'assetId' in row),false);assert.doesNotThrow(()=>req.revalidateAccess());
-  f.users.logout(token);assert.throws(()=>req.revalidateAccess(),error=>error.status===404);
-  const outside=f.request(req.url,f.users.session(f.admin.id));outside.headers.origin='https://external.example';await assert.rejects(f.content.publicDetail(outside,f.series.id),error=>error.status===403);
-  const revoked=f.request(req.url,f.users.session(f.admin.id));await f.content.publicDetail(revoked,f.series.id);f.config.ADMIN_ACCOUNT_IDS='';assert.throws(()=>revoked.revalidateAccess(),error=>error.status===404);
+  f.content.team.logout(req);assert.throws(()=>req.revalidateAccess(),error=>error.status===404);
+  const outside=f.teamRequest(req.url,f.content.team.session(f.teamAdmin,true));outside.headers.origin='https://external.example';await assert.rejects(f.content.publicDetail(outside,f.series.id),error=>error.status===403);
+  const revoked=f.teamRequest(req.url,f.content.team.session(f.teamAdmin,true));await f.content.publicDetail(revoked,f.series.id);f.store.db.prepare('UPDATE team_members SET enabled=0 WHERE id=?').run(f.teamAdmin.id);assert.throws(()=>revoked.revalidateAccess(),error=>error.status===404);
 });
 
 test('真实HTTP正在传输的旧免费集在调整为VIP后停止，正常范围请求及错误脱敏保留',async t=>{

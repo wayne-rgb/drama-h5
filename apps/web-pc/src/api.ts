@@ -146,7 +146,7 @@ export async function removeHistoryItem(id:string,_source:HistorySource="all"){o
 export async function clearHistory(_source:HistorySource="all"){operation("history","*","clear");await journal.flush();await refreshLibrary();}
 export function getSyncStatus(){return cache.sync;}
 export async function configureSync(url:string,key:string,enabled=true){const data=(await client().post("/api/library/sync",enabled?{url,key}:{enabled:false})).data;cache.sync=data;await refreshLibrary();return data;}
-if(!migrationOnly){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
+if(!migrationOnly&&!['/admin','/creator'].includes(window.location.pathname.replace(/\/+$/,''))){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
 
 export const api = {
   // 首页先显示真实自有内容，再补齐后台完成的外部专区。

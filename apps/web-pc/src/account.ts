@@ -16,7 +16,10 @@ export async function accountRequest<T = any>(path: string, body?: unknown): Pro
 }
 async function requestAccount<T = any>(path: string, body?: unknown): Promise<T> {
   const base = window.location.protocol === "file:" ? getSettings().baseUrl : "";
-  const response = await axios.request({ url: `${base}${path}`, method: body === undefined ? "GET" : "POST", data: body, withCredentials: window.location.protocol !== "file:", timeout: 20000 });
+  const response = await axios.request({ url: `${base}${path}`, method: body === undefined ? "GET" : "POST", data: body, withCredentials: window.location.protocol !== "file:", timeout: 20000 }).catch(error=>{
+    if(error.response?.status===401 && /^\/api\/(admin\/|analytics\/(series|report))/.test(path))window.dispatchEvent(new Event('team-session-changed'));
+    throw error;
+  });
   return response.data;
 }
 export function accountError(error: any) { return error?.response?.data?.error || "账户服务暂不可用，请稍后重试"; }

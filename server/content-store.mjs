@@ -43,7 +43,7 @@ export class ContentStore {
   close() { this.db.close(); }
   transaction(action) { this.db.exec('BEGIN IMMEDIATE'); try { const result = action(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
   audit(admin, action, target, detail = {}) {
-    const row={id:crypto.randomUUID(),admin_id:admin.id,action,target_id:target,detail:JSON.stringify({...detail,adminName:admin.name || null,adminEmail:admin.email || null}),created_at:Date.now()};
+    const row={id:crypto.randomUUID(),admin_id:admin.id,action,target_id:target,detail:JSON.stringify(admin.code ? {...detail,actorCode:admin.code} : {...detail,adminName:admin.name || null,adminEmail:admin.email || null}),created_at:Date.now()};
     this.db.prepare('INSERT INTO content_audit VALUES(?,?,?,?,?,?)').run(row.id,row.admin_id,row.action,row.target_id,row.detail,row.created_at);
     captureAuditContext(this,row);
   }
@@ -64,8 +64,9 @@ export class ContentStore {
     const episodes = this.db.prepare('SELECT * FROM content_episodes WHERE series_id=? ORDER BY number').all(id).map(ep => ({ id: ep.id, number: ep.number, title: ep.title, assetId: ep.asset_id, vipRequired: ep.number > 3 }));
     return { id: row.id, title: row.title, cover: row.cover_id ? `/api/content/covers/${row.cover_id}` : '', description: row.description, tags: row.tags, categoryIds:row.category_ids.split(',').filter(Boolean), badge: `全${episodes.length}集`, contentType: row.content_type, language: row.language, status: row.status, coverId: row.cover_id, creatorId: preview ? row.creator_id : undefined, owned: true, episodes };
   }
-  list({ preview = false, query = '', type = '', tag = '', tagLabel = tag, page = 1 } = {}) {
-    const rows = this.db.prepare(`SELECT * FROM content_series WHERE (?=1 OR status='published') AND (?='' OR title LIKE ? OR description LIKE ?) AND (?='' OR content_type=?) AND (?='' OR INSTR(','||category_ids||',',','||?||',')>0 OR tags LIKE ?) ORDER BY updated_at DESC LIMIT 24 OFFSET ?`).all(preview ? 1 : 0, query, `%${query}%`, `%${query}%`, type, type, tag, tag, `%${tagLabel}%`, (Math.max(1, Math.min(1000, Math.floor(Number(page)) || 1)) - 1) * 24);
+  list({ preview = false, query = '', type = '', tag = '', tagLabel = tag, page = 1, memberId = '' } = {}) {
+    const scope = memberId ? ' AND EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=content_series.id AND t.member_id=?)' : '';
+    const rows = this.db.prepare(`SELECT * FROM content_series WHERE (?=1 OR status='published') AND (?='' OR title LIKE ? OR description LIKE ?) AND (?='' OR content_type=?) AND (?='' OR INSTR(','||category_ids||',',','||?||',')>0 OR tags LIKE ?)${scope} ORDER BY updated_at DESC LIMIT 24 OFFSET ?`).all(preview ? 1 : 0, query, `%${query}%`, `%${query}%`, type, type, tag, tag, `%${tagLabel}%`, ...(memberId ? [memberId] : []), (Math.max(1, Math.min(1000, Math.floor(Number(page)) || 1)) - 1) * 24);
     return rows.map(row => preview ? this.detail(row.id,true) : {
       id:row.id,title:row.title,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',description:row.description,tags:row.tags,contentType:row.content_type,language:row.language,owned:true,
       badge:`全${this.db.prepare('SELECT COUNT(*) AS count FROM content_episodes WHERE series_id=?').get(row.id).count}集`,
