@@ -122,7 +122,7 @@ test('剧下每集只占一行，跨版本观众去重，集详情只读取该�
   f.content.db.prepare("UPDATE content_episodes SET asset_id='replacement' WHERE id='101'").run();f.analytics.rememberVersion('101');
   const replaced=f.start();f.advance(3000);f.progress(replaced,3000,[[0,3000]]);
   const second=f.start(f.requests.viewer,'102');f.advance(3000);f.progress(second,3000,[[0,3000]]);f.analytics.feedback('91','102','comment');
-  for(const id of ['101','102'])f.content.db.prepare('INSERT INTO episode_comments VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),id,'91',f.viewer.id,`第${id}集评论`,'visible',Date.now());
+  for(const id of ['101','102'])f.content.db.prepare('INSERT INTO episode_comments VALUES(?,?,?,?,?,?,?)').run(crypto.randomUUID(),id,'91',f.viewer.id,`第${id}集评论`,'visible',f.analytics.clock());
   const all=f.report();assert.equal(all.episodeGroups.length,4);assert.equal(all.episodeGroups[0].viewers,1);assert.equal(all.episodeGroups[0].plays,2);
   const scoped=f.report(f.requests.creator,{seriesId:'91',episodeId:'101'});
   assert.equal(scoped.episodeGroups.length,1);assert.equal(scoped.episodes.length,2);assert.equal(scoped.summary.plays,2);assert.equal(scoped.feedback.likesAdded,1);assert.equal(scoped.feedback.commentsAdded,0);
