@@ -7,6 +7,7 @@ import { bindPlaybackLifecycle } from './playback-lifecycle.mjs';
 import { toggleMediaFullscreen } from './playback-fullscreen.mjs';
 import { useMobileLayout } from "./use-mobile-layout";
 import { AccountDialogs, AccountHome, AccountMenu, AccountPanel, useAccountSession } from "./AccountArea";
+import { accountLinkPurpose, subscribeAccountLink } from './account-link';
 import "./account.css";
 import { EpisodeInteractions, VipGate } from "./EpisodeInteractions";
 import { LikedEpisodes, useLikeCount } from "./LikedEpisodes";
@@ -101,6 +102,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const accountState = useAccountSession();
   const hasVipAccess = teamPreview || !!accountState.session?.user?.membership.active || !!accountState.session?.capabilities.admin;
   const [accountPanel, setAccountPanel] = useState<AccountPanel>(() => { if(teamPreview)return null;const panel = new URLSearchParams(window.location.search).get("account"); return ["login", "register", "recover", "reset", "verify", "profile", "membership"].includes(panel || "") ? panel as AccountPanel : null; });
+  useEffect(() => subscribeAccountLink(() => { const panel = accountLinkPurpose(); if (!teamPreview && panel) setAccountPanel(panel); }), []);
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
   const changeLanguage = (value: string) => {

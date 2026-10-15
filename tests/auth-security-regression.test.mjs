@@ -66,11 +66,41 @@ test('真实前端模块清除新旧邮件令牌，保留面板和播放参数�
   const javascript=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
   for(const purpose of ['reset','verify'])for(const fragment of [false,true]) {
     let href=`https://drama.example/?account=${purpose}&series=91&episode=101${fragment?'#token=':'&token='}独立回归令牌`;
-    const exports={},environment={URL,URLSearchParams,exports,window:{location:{href},history:{replaceState(_state,_title,url){href=String(url);}}}};
+    const events=new Map(),exports={},window={location:{get href(){return href;}},history:{state:{保留:'现有历史状态'},replaceState(state,_title,url){this.state=state;href=String(url);}},addEventListener(name,listener){events.set(name,listener);}};
+    const environment={URL,URLSearchParams,exports,window};
     vm.runInNewContext(javascript,environment);
     const cleaned=new URL(href);assert.equal(cleaned.searchParams.has('token'),false);assert.equal(cleaned.hash,'');
     assert.equal(cleaned.searchParams.get('account'),purpose);assert.equal(cleaned.searchParams.get('series'),'91');assert.equal(cleaned.searchParams.get('episode'),'101');
     assert.equal(exports.accountLinkToken(purpose),'独立回归令牌');assert.equal(exports.accountLinkToken(purpose==='reset'?'verify':'reset'),null);
     exports.clearAccountLinkToken();assert.equal(exports.accountLinkToken(purpose),null);
+  }
+});
+
+test('同一标签页打开第二个账户链接时只提交最新令牌',async()=>{
+  const require=createRequire(new URL('../apps/web-pc/package.json',import.meta.url)),ts=require('typescript');
+  const source=await fs.readFile(new URL('../apps/web-pc/src/account-link.ts',import.meta.url),'utf8');
+  const javascript=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
+  for(const purpose of ['reset','verify']) {
+    let href=`https://drama.example/?account=${purpose}&series=91#token=第一个令牌`;
+    const events=new Map(),exports={},history={state:{保留:'现有历史状态'},replaceState(state,_title,url){this.state=state;href=String(url);}};
+    const window={location:{get href(){return href;}},history,addEventListener(name,listener){events.set(name,listener);}};
+    vm.runInNewContext(javascript,{URL,URLSearchParams,exports,window});
+    const firstRevision=exports.accountLinkRevision();
+    assert.equal(exports.accountLinkToken(purpose),'第一个令牌');
+    let notifications=0;exports.subscribeAccountLink(()=>notifications++);
+    href=`https://drama.example/?account=${purpose}&series=91#token=第二个令牌`;events.get('hashchange')();
+    assert.equal(exports.accountLinkToken(purpose),'第二个令牌');
+    assert.equal(new URL(href).hash,'');assert.equal(notifications,1);
+    assert.ok(exports.accountLinkRevision()>firstRevision);
+    exports.clearAccountLinkToken(firstRevision);
+    assert.equal(exports.accountLinkToken(purpose),'第二个令牌');
+  }
+});
+
+test('两个真实前端入口在独立托管时也禁止发送来源',async()=>{
+  for(const file of ['index.html','mobile-prototype.html']) {
+    const html=await fs.readFile(new URL(`../apps/web-pc/${file}`,import.meta.url),'utf8');
+    assert.match(html,/<meta\s+name="referrer"\s+content="no-referrer"\s*\/>/i);
+    assert.ok(html.indexOf('name="referrer"')<html.indexOf('<script'),`${file} 的来源策略必须在脚本前生效`);
   }
 });
