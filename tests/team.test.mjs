@@ -19,11 +19,11 @@ async function fixture(t) {
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'drama-team-')),users=new AccountStore(':memory:');
   const config={APP_ORIGIN:origin,TEAM_BOOTSTRAP_TOKEN:bootstrapToken},accounts=createAccountService(users,config),content=createContentService(directory,users,accounts,{},config),team=content.team;
   const policy=createApiPolicy(accounts,users,config,team);
-  const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,origin);policy(req,res,url);if(await accounts.handle(req,res,url)||await content.handle(req,res,url))return;throw Error('未处理测试路由');}catch(error){res.writeHead(error.status||500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}});
+  const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,origin);policy(req,res,url);if(await accounts.handle(req,res,url)||await content.handle(req,res,url))return;if(/^\/api\/series\/\d+$/.test(url.pathname)){const data=await content.publicDetail(req,url.pathname.split('/').at(-1));res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data));return;}throw Error('未处理测试路由');}catch(error){res.writeHead(error.status||500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:error.message}));}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{await new Promise(resolve=>{server.close(resolve);server.closeAllConnections();});content.close();users.close();await fs.rm(directory,{recursive:true,force:true});});
-  const request=async(route,data,cookie='',requestOrigin=origin)=>{
-    const response=await fetch(`http://127.0.0.1:${server.address().port}${route}`,{method:data===undefined?'GET':'POST',headers:{Origin:requestOrigin,...(cookie?{Cookie:cookie}:{}),...(data===undefined?{}:{'Content-Type':'application/json'})},body:data===undefined?undefined:JSON.stringify(data)});
+  const request=async(route,data,cookie='',requestOrigin=origin,headers={})=>{
+    const response=await fetch(`http://127.0.0.1:${server.address().port}${route}`,{method:data===undefined?'GET':'POST',headers:{Origin:requestOrigin,...(cookie?{Cookie:cookie}:{}),...(data===undefined?{}:{'Content-Type':'application/json'}),...headers},body:data===undefined?undefined:JSON.stringify(data)});
     return {status:response.status,data:await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0],headers:response.headers};
   };
   const activate=async(initial)=>{
@@ -36,6 +36,54 @@ async function fixture(t) {
   const member=async(actor,roles,seriesIds=[])=>{const invite=await request('/api/team/invites',{roles,seriesIds},actor.cookie);assert.equal(invite.status,200);const joined=await request('/api/team/join',{token:invite.data.token,password});assert.equal(joined.status,200);return activate(joined);};
   return {directory,users,accounts,content,team,config,policy,request,activate,owner,series,member};
 }
+
+test('团队预览拦截个人资料、互动和管理写入，普通观看仍使用原观众会话',async t=>{
+  const f=await fixture(t),owner=await f.owner(),series=f.series(owner),viewer=f.users.create({email:'preview-viewer@example.invalid',name:'正常观众'});
+  const cookie=`${owner.cookie}; hg_account_session=${f.users.session(viewer.id)}`,headers={'X-Team-Preview':'1'};
+  const allowed=await f.request(`/api/series/${series.id}`,undefined,cookie,origin,headers);assert.equal(allowed.status,200);
+  const cases=[
+    ['/api/account/session'],['/api/library'],['/api/history'],['/api/recommend'],['/api/me/likes'],['/api/admin/accounts'],
+    ['/api/account/profile',{name:'不得写入的资料'}],['/api/library/operations',{kind:'history',key:series.id,op:'set',value:{seriesId:series.id}}],
+    ['/api/library/import',{operations:[]}],['/api/library/sync',{enabled:false}],['/api/history/progress',{seriesId:series.id}],
+    ['/api/episodes/123/likes',{liked:true}],['/api/episodes/123/comments',{body:'不得写入的互动'}],
+    ['/api/analytics/sessions',{seriesId:series.id}],['/api/billing/checkout',{planId:'monthly'}],['/api/auth/logout',{}],
+    ['/api/admin/membership',{accountId:viewer.id,revoke:true}],['/api/team/members'],
+  ];
+  for(const [route,data] of cases)assert.equal((await f.request(route,data,cookie,origin,headers)).status,403,route);
+  assert.equal(f.users.byId(viewer.id).name,'正常观众');
+  assert.equal(f.users.db.prepare('SELECT COUNT(*) AS n FROM account_sessions WHERE account_id=?').get(viewer.id).n,1);
+  assert.equal(f.content.store.db.prepare('SELECT COUNT(*) AS n FROM episode_comments').get().n,0);
+  const normal=await f.request('/api/account/session',undefined,cookie,origin,{Referer:`${origin}/`});assert.equal(normal.status,200);assert.equal(normal.data.user.id,viewer.id);
+  assert.equal((await f.request('/api/account/profile',{name:'更新后的观众'},cookie,origin,{Referer:`${origin}/`})).status,200);
+  assert.equal(f.users.byId(viewer.id).name,'更新后的观众');
+});
+
+test('预览来源校验覆盖缺失标记的请求，普通观众和未完成验证的会话不能进入预览',async t=>{
+  const f=await fixture(t),owner=await f.owner(),series=f.series(owner),viewer=f.users.create({email:'preview-source@example.invalid',name:'来源检查观众'});
+  const viewerCookie=`hg_account_session=${f.users.session(viewer.id)}`,cookie=`${owner.cookie}; ${viewerCookie}`,source={Referer:`${origin}/preview/?series=${series.id}`};
+  assert.equal((await f.request('/api/account/session',undefined,cookie,origin,source)).status,403);
+  assert.equal((await f.request('/api/library/operations',{},cookie,origin,source)).status,403);
+  assert.equal((await f.request(`/api/series/${series.id}`,undefined,cookie,origin,source)).status,200);
+  assert.equal((await f.request(`/api/series/${series.id}`,undefined,viewerCookie,origin,source)).status,401);
+  const pending=`drama_team_session=${f.team.session(f.team.member(owner.member.id))}; ${viewerCookie}`;
+  assert.equal((await f.request(`/api/series/${series.id}`,undefined,pending,origin,{'X-Team-Preview':'1'})).status,401);
+  assert.equal((await f.request('/api/team/session',undefined,owner.cookie,origin,source)).data.verified,true);
+  assert.equal((await f.request('/api/account/session',undefined,cookie,origin,{Referer:`${origin}/`})).data.user.id,viewer.id);
+});
+
+test('预览入口仍遵守作品授权和成员停用状态',async t=>{
+  const f=await fixture(t),owner=await f.owner(),series=f.series(owner),editor=await f.member(owner,['editor']);
+  const route=`/api/series/${series.id}`,headers={'X-Team-Preview':'1'};
+  assert.equal((await f.request(route,undefined,editor.cookie,origin,headers)).status,404);
+  const path=`/api/team/members/${editor.member.id}`;
+  assert.equal((await f.request(path,{roles:['editor'],enabled:true,seriesIds:[series.id]},owner.cookie)).status,200);
+  assert.equal((await f.request(route,undefined,editor.cookie,origin,headers)).status,401);
+  const pending=await f.request('/api/team/login',{code:editor.member.code,password});assert.equal(pending.status,200);
+  const verified=await f.request('/api/team/mfa/verify',{code:totp(editor.secret)},pending.cookie);assert.equal(verified.status,200);
+  assert.equal((await f.request(route,undefined,verified.cookie,origin,headers)).status,200);
+  assert.equal((await f.request(path,{roles:['editor'],enabled:false,seriesIds:[series.id]},owner.cookie)).status,200);
+  assert.equal((await f.request(route,undefined,verified.cookie,origin,headers)).status,401);
+});
 
 test('初始化只执行一次，未完成二次验证无后台权限，团队数据与观众账户独立',async t=>{
   const f=await fixture(t),initial=await f.request('/api/team/bootstrap',{token:bootstrapToken,password});

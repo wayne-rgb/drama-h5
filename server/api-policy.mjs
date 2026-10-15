@@ -62,13 +62,15 @@ export function createApiPolicy(accounts, store, config = process.env, team) {
     const rule = rules.find(([pattern]) => pattern.test(url.pathname));
     if (!rule) throw new AccountError(404, '页面不存在');
     const [, methods, permission] = rule;
+    let preview = req.headers['x-team-preview'] === '1';
+    try { preview ||= new URL(req.headers.referer).pathname.replace(/\/+$/, '') === '/preview'; } catch {}
     if (req.method === 'OPTIONS') {
       const requested = req.headers['access-control-request-method'];
       if (requested && !methods.includes(requested)) throw new AccountError(405, '请求方式无效');
       if (!['public','comments'].includes(permission)) accounts.sameOrigin(req);
       res.setHeader('Access-Control-Allow-Origin', ['public','comments'].includes(permission) ? '*' : req.headers.origin || config.APP_ORIGIN || '');
       res.setHeader('Access-Control-Allow-Methods', methods.join(', '));
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, Content-Range, X-Library-Owner, X-Upload-Revision');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, Content-Range, X-Library-Owner, X-Upload-Revision, X-Team-Preview');
       res.setHeader('Vary', 'Origin');
       return;
     }
@@ -76,6 +78,13 @@ export function createApiPolicy(accounts, store, config = process.env, team) {
     const check = () => {
       const writes = !['GET','HEAD'].includes(req.method);
       if (permission !== 'notification' && permission !== 'personal' && (writes || !['public','comments'].includes(permission))) accounts.sameOrigin(req);
+      if (preview && permission !== 'team-session') {
+        accounts.sameOrigin(req);
+        if (!team) throw new AccountError(503, '团队服务暂不可用');
+        const member = team.require(req);
+        if (writes || permission !== 'public' || /^\/api\/(account|auth)\//.test(url.pathname) || url.pathname.endsWith('/interactions')) throw new AccountError(403, '团队预览不使用个人资料');
+        return member;
+      }
       if (permission === 'team-session') return null;
       if (permission === 'team-owner') { if (!team) throw new AccountError(503, '团队服务暂不可用'); return team.require(req, 'owner'); }
       if (team && ['admin','creator'].includes(permission)) return team.authorize(req, url);

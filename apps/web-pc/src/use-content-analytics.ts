@@ -1,13 +1,14 @@
 import { RefObject, useEffect, useRef, useState } from 'react';
 import { accountRequest } from './account';
 import { PlaybackAnalytics } from './content-analytics.mjs';
+import { teamPreview } from './team-preview';
 
 const queueKey = 'drama_content_analytics_v1';
 type Snapshot = { id: string; sequence: number; watchMs: number; ranges: number[][]; errors: number };
 type Pending = { owner: string; at: number; snapshot: Snapshot };
 let queue: Pending[] = [];
 try {
-  const saved = JSON.parse(localStorage.getItem(queueKey) || '[]');
+  const saved = teamPreview ? [] : JSON.parse(localStorage.getItem(queueKey) || '[]');
   if (Array.isArray(saved)) queue = saved.filter(item => typeof item?.owner === 'string' && Number.isFinite(item.at) && typeof item.snapshot?.id === 'string' && Number.isSafeInteger(item.snapshot.sequence) && Array.isArray(item.snapshot.ranges)).slice(-100);
 } catch { queue = []; }
 let sending = false;
@@ -34,7 +35,7 @@ async function flush(owner: string) {
 export function useContentAnalytics(video: RefObject<HTMLVideoElement>, seriesId: string | undefined, episodeId: string | undefined, enabled: boolean, generation: string, entry: 'detail' | 'feed', identity: string | undefined, locked: boolean, playbackError: string) {
   const tracker = useRef<any>(null), [ready, setReady] = useState(0);
   useEffect(() => {
-    if (!enabled || !seriesId || !episodeId || !identity || window.location.protocol === 'file:') return;
+    if (teamPreview || !enabled || !seriesId || !episodeId || !identity || window.location.protocol === 'file:') return;
     let active = true, opening = false, finished = false;
     const requestId = crypto.randomUUID();
     const start = async () => {

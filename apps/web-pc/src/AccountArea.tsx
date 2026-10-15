@@ -4,6 +4,7 @@ import { ArrowRight, Camera, Check, ChevronRight, Clock, Crown, Heart, ThumbsUp,
 import { Account, AccountSession, accountError, accountRequest, changeAccount } from "./account";
 import { languages, MessageKey, useI18n } from "./i18n";
 import { HistoryItem } from "./types";
+import { teamPreview } from './team-preview';
 
 export type AccountPanel = "login" | "register" | "recover" | "reset" | "verify" | "profile" | "membership" | null;
 export function useAccountSession() {
@@ -12,6 +13,7 @@ export function useAccountSession() {
   const confirmation = useRef<Promise<void> | null>(null);
   const refreshSequence = useRef(0);
   const refresh = async () => {
+    if (teamPreview) return;
     const sequence = ++refreshSequence.current;
     let data: AccountSession | null = null;
     try {

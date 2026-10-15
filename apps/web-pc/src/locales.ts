@@ -4,6 +4,10 @@ import { analyticsMessages, analyticsChineseMessages } from './analytics-locales
 import { teamMessages } from './team-locales';
 
 export const messages = {
+  "团队预览": ["Team preview", "Vista previa del equipo", "Prévia da equipe", "معاينة الفريق", "Aperçu de l’équipe"],
+  "返回后台": ["Back to dashboard", "Volver al panel", "Voltar ao painel", "العودة إلى لوحة الإدارة", "Retour au tableau de bord"],
+  "预览仅用于检查播放，不保存个人记录或进行互动。": ["Preview playback without saving personal activity or interacting.", "Revisa la reproducción sin guardar actividad personal ni interactuar.", "Confira a reprodução sem salvar atividades pessoais ou interagir.", "تحقق من التشغيل دون حفظ النشاط الشخصي أو التفاعل.", "Vérifiez la lecture sans enregistrer d’activité personnelle ni interagir."],
+  "团队预览不使用个人资料": ["Personal features are unavailable in team preview.", "Las funciones personales no están disponibles en la vista previa del equipo.", "Os recursos pessoais não estão disponíveis na prévia da equipe.", "الميزات الشخصية غير متاحة في معاينة الفريق.", "Les fonctions personnelles ne sont pas disponibles dans l’aperçu de l’équipe."],
   ...teamMessages,
   ...analyticsMessages,
   "HLS已就绪": ["HLS ready", "HLS listo", "HLS pronto", "HLS جاهز", "HLS prêt"],

@@ -13,6 +13,7 @@ import { LikedEpisodes, useLikeCount } from "./LikedEpisodes";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { useContentAnalytics } from './use-content-analytics';
+import { teamPreview } from './team-preview';
 import { usePlaybackSource } from './use-playback-source';
 import { useMediaPlayback } from './use-media-playback';
 import { 
@@ -98,8 +99,8 @@ const playbackFailure = (error:any) => error?.response?.data?.error === 'VIP_REQ
 export default function App({ mobilePrototype: forceMobileLayout }: { mobilePrototype?: boolean } = {}) {
   const mobilePrototype = useMobileLayout(forceMobileLayout);
   const accountState = useAccountSession();
-  const hasVipAccess = !!accountState.session?.user?.membership.active || !!accountState.session?.capabilities.admin;
-  const [accountPanel, setAccountPanel] = useState<AccountPanel>(() => { const panel = new URLSearchParams(window.location.search).get("account"); return ["login", "register", "recover", "reset", "verify", "profile", "membership"].includes(panel || "") ? panel as AccountPanel : null; });
+  const hasVipAccess = teamPreview || !!accountState.session?.user?.membership.active || !!accountState.session?.capabilities.admin;
+  const [accountPanel, setAccountPanel] = useState<AccountPanel>(() => { if(teamPreview)return null;const panel = new URLSearchParams(window.location.search).get("account"); return ["login", "register", "recover", "reset", "verify", "profile", "membership"].includes(panel || "") ? panel as AccountPanel : null; });
   const { language, t, localizeLabel, localizeError, setLanguage, formatDate } = useI18n();
   const [languageSaved, setLanguageSaved] = useState(true);
   const changeLanguage = (value: string) => {
@@ -393,9 +394,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   };
 
   useEffect(() => {
-    loadHomeData();
-    loadCategoryTags();
-    loadRankTypes();
+    if(!teamPreview){loadHomeData();loadCategoryTags();loadRankTypes();}
     setFavorites(getFavorites());
     void refreshHistory();
     setSearchHistoryList(getSearchHistory());
@@ -464,7 +463,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       fetchCategoryList(selectedCatType, selectedCatTag, catPage);
     }
   }, [tab, selectedCatType, selectedCatTag, catPage]);
-  useEffect(()=>{void loadCategoryTags(selectedCatType);},[selectedCatType]);
+  useEffect(()=>{if(!teamPreview)void loadCategoryTags(selectedCatType);},[selectedCatType]);
 
   // 榜单类型或页码变动时加载
   useEffect(() => {
@@ -888,6 +887,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
   // 收藏 / 取消收藏
   const handleToggleFav = (series: Series) => {
+    if(teamPreview){showToast('团队预览不使用个人资料');return;}
     const isFav = toggleFavorite(series);
     setFavorites(getFavorites());
     showToast(isFav ? "已加入我的追剧" : "已从我的追剧移除");
@@ -1015,7 +1015,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
   // 🌟 1.5 切换短剧时，自动拉取同题材推荐短剧 (任务 01: 猜你喜欢 & 任务 02: 换一批)
   useEffect(() => {
-    if (!activeSeries?.id) {
+    if (teamPreview || !activeSeries?.id) {
       setRelatedSeries([]);
       setRelatedPool([]);
       setRelatedKeyword("");
@@ -1683,6 +1683,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
 
   return (
     <div className={`${mobilePrototype ? "mobile-prototype-mode " : ""}${forceMobileLayout === true ? "mobile-prototype-preview " : ""}flex h-screen w-screen overflow-hidden bg-[#070a12] text-slate-100 flex-col font-sans select-none`}>
+      {teamPreview && <header className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 bg-slate-900 px-4 py-3" aria-label={t('团队预览')}><div><strong>{t('团队预览')}</strong><p className="text-xs text-slate-300">{t('预览仅用于检查播放，不保存个人记录或进行互动。')}</p></div><a className="text-rose-300 underline" href="/admin">{t('返回后台')}</a></header>}
       {/* 提示条 Toast */}
       {toast && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-800/95 border border-slate-700/80 backdrop-blur px-5 py-2.5 rounded-full text-sm shadow-2xl text-rose-400 font-semibold animate-bounce">
@@ -1691,7 +1692,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       )}
 
       {/* 🔝 顶部通用导航栏（TV 遥控器与电脑鼠标通用，导航栏置顶） */}
-      {!mobilePrototype && <header className="h-16 md:h-20 bg-[#0a0f1d]/95 backdrop-blur border-b border-slate-800/80 px-4 md:px-8 flex items-center justify-between z-30 shrink-0">
+      {!teamPreview && !mobilePrototype && <header className="h-16 md:h-20 bg-[#0a0f1d]/95 backdrop-blur border-b border-slate-800/80 px-4 md:px-8 flex items-center justify-between z-30 shrink-0">
         <div className="flex-1 min-w-0 flex items-center gap-3 md:gap-8 overflow-x-auto no-scrollbar">
           {/* Logo */}
           <div 
@@ -1787,7 +1788,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         {/* 右侧用户区提供资料、会员、追剧、历史、点赞与设置，语言归入设置。 */}
         <AccountMenu {...personalAreaProps} />
       </header>}
-      {mobilePrototype && !activeSeries && tab !== "recommend" && <header className={`prototype-header${mobileSettingsOpen ? ' prototype-settings-header' : ''}`}>
+      {!teamPreview && mobilePrototype && !activeSeries && tab !== "recommend" && <header className={`prototype-header${mobileSettingsOpen ? ' prototype-settings-header' : ''}`}>
         {mobileSettingsOpen ? <><button aria-label={t('返回')} onClick={returnMobileSettings}><ArrowLeft size={23}/></button><strong>{t('设置')}</strong><span className="prototype-header-spacer" aria-hidden="true"/></> : <>
         <div className="prototype-brand"><span className="prototype-brand-icon"><Play size={17} fill="currentColor" /></span><strong>{t(tab === "category" ? "分类" : tab === "rank" ? "榜单" : tab === "favorites" || tab === "settings" ? "我的" : tab === "search" ? "搜索" : "推荐")}</strong></div>
         {tab === "category" && <button aria-label={t("搜索")} onClick={() => openMobileSearch("category")}><Search size={22} /></button>}
@@ -1810,7 +1811,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               <div className={`flex items-center justify-between ${mobilePrototype ? "prototype-legacy-player-controls" : ""}`}>
                 <button
                   tabIndex={7}
-                  onClick={() => setActiveSeries(null)}
+                  onClick={() => {if(teamPreview)window.location.assign('/admin');else setActiveSeries(null);}}
                   className="flex items-center gap-2 text-sm text-slate-400 hover:text-white px-3 py-1.5 rounded-lg hover:bg-slate-800 transition outline-none focus:ring-2 focus:ring-rose-500"
                 >
                   <ArrowLeft className="w-4 h-4" />{t("返回")}</button>
@@ -1891,7 +1892,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     {mobilePrototype && <>
                       <div className="prototype-detail-shade" />
                       <div className="prototype-detail-top">
-                        <div className="prototype-detail-back"><button aria-label={t("返回")} onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else setActiveSeries(null); }}><ArrowLeft size={21} /></button><span>{t("第{{number}}集", { number: currentEpisode.number })}</span></div>
+                        <div className="prototype-detail-back"><button aria-label={t("返回")} onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else if(teamPreview)window.location.assign('/admin');else setActiveSeries(null); }}><ArrowLeft size={21} /></button><span>{t("第{{number}}集", { number: currentEpisode.number })}</span></div>
                         <PlayerActions key={currentEpisode.id} speed={playbackSpeed} quality={currentQuality} qualities={videoQualities} loading={qualitiesLoading} onSpeed={handleSelectSpeed} onQuality={handleSelectQuality} onSearch={() => openMobileSearch(tab === "category" ? "category" : "recommend")} onFullscreen={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} autoplay={autoPlayNext} onAutoplay={() => setAutoPlayNext(value => !value)} muted={isMuted} onMute={handleToggleMute} volume={volume} onVolume={value => { if (videoRef.current) { videoRef.current.volume = value; videoRef.current.muted = value === 0; } setVolume(value); setIsMuted(value === 0); }} onPrevious={() => setCurrentEpisodeIndex(value => value - 1)} previousDisabled={currentEpisodeIndex === 0} onRelated={() => setMobileRelatedOpen(true)} />
                       </div>
                       {mobileDetailLandscape && <FullscreenWatch key={currentEpisode.id} videoRef={videoRef} onClick={() => void toggleMobileFullscreen(playerContainerRef.current, videoRef.current)} />}
@@ -4287,8 +4288,8 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
           </div>
         )}
       </main>
-      <AccountDialogs panel={accountPanel} playbackReturn={playbackReturn} onPanel={panel => { setAccountPanel(panel); if (!panel) { const url = new URL(window.location.href); url.searchParams.delete("account"); url.searchParams.delete("token"); url.searchParams.delete("error"); url.searchParams.delete('plan'); window.history.replaceState(null, "", url); } }} session={accountState.session} sessionError={accountState.error} onRefresh={accountState.refresh} />
-      {mobilePrototype && <nav className="prototype-bottom-nav" aria-label={t("主导航")}>
+      {!teamPreview && <AccountDialogs panel={accountPanel} playbackReturn={playbackReturn} onPanel={panel => { setAccountPanel(panel); if (!panel) { const url = new URL(window.location.href); url.searchParams.delete("account"); url.searchParams.delete("token"); url.searchParams.delete("error"); url.searchParams.delete('plan'); window.history.replaceState(null, "", url); } }} session={accountState.session} sessionError={accountState.error} onRefresh={accountState.refresh} />}
+      {!teamPreview && mobilePrototype && <nav className="prototype-bottom-nav" aria-label={t("主导航")}>
         <button className={tab === "recommend" || tab === "search" ? "active" : ""} onClick={() => { setTab("recommend"); setActiveSeries(null); loadStreamData(1, false); }}><Compass size={22} /><span>{t("推荐")}</span></button>
         <button className={tab === "category" || tab === "home" ? "active" : ""} onClick={() => { setTab("category"); setActiveSeries(null); if (!categoryItems.length) void fetchCategoryList(selectedCatType, selectedCatTag, catPage); }}><Grid size={22} /><span>{t("分类")}</span></button>
         <button className={tab === "rank" ? "active" : ""} onClick={() => { setTab("rank"); setActiveSeries(null); if (!rankItems.length) void fetchRankList(selectedRankSlug, rankPage); }}><Trophy size={22} /><span>{t("榜单")}</span></button>

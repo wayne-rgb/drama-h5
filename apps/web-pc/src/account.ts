@@ -1,5 +1,6 @@
 import axios from "axios";
 import { flushPersonalLibrary, getSettings } from "./api";
+import { previewHeaders } from './team-preview';
 
 export type Membership = { active: boolean; status: string; planId: string | null; periodEnd: number | null; cancelAtPeriodEnd: boolean; billingSubscription?: { status: string; planId: string; periodEnd: number; cancelAtPeriodEnd: boolean } | null };
 export type Account = { id: string; name: string; email: string; creator?: boolean; emailVerified: boolean; googleLinked: boolean; avatarUrl: string | null; membership: Membership };
@@ -16,7 +17,7 @@ export async function accountRequest<T = any>(path: string, body?: unknown): Pro
 }
 async function requestAccount<T = any>(path: string, body?: unknown): Promise<T> {
   const base = window.location.protocol === "file:" ? getSettings().baseUrl : "";
-  const response = await axios.request({ url: `${base}${path}`, method: body === undefined ? "GET" : "POST", data: body, withCredentials: window.location.protocol !== "file:", timeout: 20000 }).catch(error=>{
+  const response = await axios.request({ url: `${base}${path}`, method: body === undefined ? "GET" : "POST", data: body, headers: previewHeaders, withCredentials: window.location.protocol !== "file:", timeout: 20000 }).catch(error=>{
     if(error.response?.status===401 && /^\/api\/(admin\/|analytics\/(series|report))/.test(path))window.dispatchEvent(new Event('team-session-changed'));
     throw error;
   });

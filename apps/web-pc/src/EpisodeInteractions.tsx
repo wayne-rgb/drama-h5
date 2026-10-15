@@ -6,10 +6,15 @@ import { PlayerSideAction } from './mobile-prototype/PlayerActions';
 import { playbackLocation } from './playback-location';
 import './interactions.css';
 import { notifyLikesChanged } from './LikedEpisodes';
+import { teamPreview } from './team-preview';
 
 type Social = { liked: boolean; likes: number; comments: number };
 type Comment = { id: string; body: string; author: string; own: boolean; createdAt: number };
-export function EpisodeInteractions({ seriesId, episodeId, title, session, onLogin }: { seriesId: string; episodeId: string; title: string; session: AccountSession | null; onLogin: () => void }) {
+type InteractionProps = { seriesId: string; episodeId: string; title: string; session: AccountSession | null; onLogin: () => void };
+export function EpisodeInteractions(props: InteractionProps) {
+  return teamPreview ? null : <ViewerInteractions {...props} />;
+}
+function ViewerInteractions({ seriesId, episodeId, title, session, onLogin }: InteractionProps) {
   const { t, localizeError, formatDate } = useI18n();
   const [social, setSocial] = useState<Social | null>(null), [open, setOpen] = useState(false), [sharing, setSharing] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]), [next, setNext] = useState<string | null>(null), [body, setBody] = useState('');

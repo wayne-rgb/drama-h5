@@ -119,7 +119,7 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
         <button disabled={busy||!owner&&!selected}>{t(selected?'保存基本信息':'保存并上传')}</button>
       </form></details>
       {selected&&<>
-        <div className="admin-publish"><span>{t(statusLabels[selected.status])} · {selected.episodes.length} {t('集')}</span><button disabled={busy||selected.status!=='published'&&uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'检查并发布')}</button>{selected.episodes.length>0&&<a href={`/?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div>
+        <div className="admin-publish"><span>{t(statusLabels[selected.status])} · {selected.episodes.length} {t('集')}</span><button disabled={busy||selected.status!=='published'&&uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'检查并发布')}</button>{selected.episodes.length>0&&<a href={`/preview?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div>
         {uploadingSeries.includes(selected.id)&&<p>{t('请先完成或移除未完成的上传任务')}</p>}
         <h3>{t('分集管理')}</h3>{selected.status==='published'&&<p>{t('下架后可调整分集')}</p>}
         <details><summary>{t('复用素材或编辑分集')}</summary><form onSubmit={event=>{event.preventDefault();void run(async()=>{

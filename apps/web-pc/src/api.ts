@@ -1,6 +1,7 @@
 import axios from "axios";
 import { LibraryJournal } from "./library-journal.mjs";
 import { accountRequest } from './account';
+import { teamPreview, previewHeaders } from './team-preview';
 import { legacyOperations } from "@shared/legacy-migration.mjs";
 import {
   RecommendationMode, RecommendationSignal,
@@ -33,6 +34,7 @@ let libraryPagination:Record<string,{next:string|null;count:number}>={};
 const loadedPersonalPages=new Set<string>();
 export function getPersonalPagination(kind:'favorite'|'history'){return libraryPagination[kind]||{next:null,count:0};}
 export async function loadPersonalPage(kind:'favorite'|'history'){
+ if(teamPreview)return;
  const cursor=libraryPagination[kind]?.next;if(!cursor)return;
  const data=(await client().get('/api/library',{params:{kind,cursor}})).data,field=kind==='favorite'?'favorites':'history';
  const rows=kind==='favorite'?data.items:data.items.map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}));
@@ -40,12 +42,13 @@ export async function loadPersonalPage(kind:'favorite'|'history'){
  libraryPagination[kind]={next:(cache as any)[field].length>=data.count?null:data.next,count:data.count};loadedPersonalPages.add(kind);window.dispatchEvent(new CustomEvent('library-updated'));
 }
 const migrationOnly=new URLSearchParams(window.location.search).has("__legacy_migration");
-function rawClient(){const instance=axios.create({baseURL:window.location.protocol==="file:"?(getSettings().baseUrl||"http://127.0.0.1:8788").replace(/\/+$/,""):"",timeout:15000,withCredentials:window.location.protocol!=="file:"});instance.interceptors.response.use(response=>response,error=>{if(error.response?.status===409&&error.response?.data?.error==="登录状态已变化，请刷新页面")window.location.reload();return Promise.reject(error);});return instance;}
+function rawClient(){const instance=axios.create({baseURL:window.location.protocol==="file:"?(getSettings().baseUrl||"http://127.0.0.1:8788").replace(/\/+$/,""):"",headers:previewHeaders,timeout:15000,withCredentials:window.location.protocol!=="file:"});instance.interceptors.response.use(response=>response,error=>{if(error.response?.status===409&&error.response?.data?.error==="登录状态已变化，请刷新页面")window.location.reload();return Promise.reject(error);});return instance;}
 let libraryOwner="guest";
 let identityReady:Promise<void>|null=null;
 let identityKnown=false;
 function createJournal(owner:string){return new LibraryJournal(localStorage,owner==="guest"||owner.startsWith('guest:')?window.location.origin:`${window.location.origin}:account:${owner}`,async operation=>{await rawClient().post("/api/library/operations",operation,{headers:{"X-Library-Owner":owner}});});}
 async function ensureLibraryIdentity(){
+ if(teamPreview)return;
  if(!identityReady)identityReady=(async()=>{
   const data=await accountRequest('/api/account/session');
   libraryOwner=data.libraryOwner||data.user?.id||"guest";
@@ -59,14 +62,14 @@ function client(){
  instance.interceptors.request.use(async request=>{if(/^\/api\/(library|history|recommend)(?:\/|\?|$)/.test(request.url||"")){await ensureLibraryIdentity();request.headers["X-Library-Owner"]=libraryOwner;}return request;});
  return instance;
 }
-export async function flushPersonalLibrary(){await ensureLibraryIdentity();await journal.flush(true);}
+export async function flushPersonalLibrary(){if(teamPreview)return;await ensureLibraryIdentity();await journal.flush(true);}
 function warning(error:any){window.dispatchEvent(new CustomEvent("history-storage-error",{detail:error?.message||"本地记录保存失败，请检查服务和存储空间"}));}
 let journal=createJournal("guest");
-function operation(kind:string,key:string,op:string,value:any=null,force=false){try{if(!identityKnown)throw Error("个人资料正在加载，请稍后重试");journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush(force).catch(warning);return true;}catch(error){warning(error);return false;}}
+function operation(kind:string,key:string,op:string,value:any=null,force=false){if(teamPreview)return false;try{if(!identityKnown)throw Error("个人资料正在加载，请稍后重试");journal.save({kind,key,op,value,at:Math.round(Date.now()+clockOffset)});void journal.flush(force).catch(warning);return true;}catch(error){warning(error);return false;}}
 export function getSettings():Settings{try{return JSON.parse(localStorage.getItem(SETTINGS_KEY)||"null")||{baseUrl:"http://127.0.0.1:8788",token:""};}catch{return{baseUrl:"http://127.0.0.1:8788",token:""};}}
 export function saveSettings(value:Settings){localStorage.setItem(SETTINGS_KEY,JSON.stringify(value));}
 export function getFavorites():Series[]{return cache.favorites;}
-export function toggleFavorite(series:Series):boolean{const exists=cache.favorites.some(item=>item.id===series.id);cache.favorites=exists?cache.favorites.filter(item=>item.id!==series.id):[series,...cache.favorites];operation("favorite",series.id,exists?"delete":"set",exists?null:series);return !exists;}
+export function toggleFavorite(series:Series):boolean{if(teamPreview)return false;const exists=cache.favorites.some(item=>item.id===series.id);cache.favorites=exists?cache.favorites.filter(item=>item.id!==series.id):[series,...cache.favorites];operation("favorite",series.id,exists?"delete":"set",exists?null:series);return !exists;}
 export function getSearchHistory():string[]{return cache.searchHistory;}
 export function saveSearchHistory(query:string):string[]{query=query.trim();if(query){cache.searchHistory=[query,...cache.searchHistory.filter(item=>item.toLowerCase()!==query.toLowerCase())].slice(0,10);operation("search",query.toLowerCase(),"set",{query});}return cache.searchHistory;}
 export function removeSearchHistory(query:string):string[]{cache.searchHistory=cache.searchHistory.filter(item=>item!==query);operation("search",query.trim().toLowerCase(),"delete");return cache.searchHistory;}
@@ -74,12 +77,13 @@ export function clearSearchHistory(){cache.searchHistory=[];operation("search","
 export function getPlaybackPreferences(){return cache.preferences;}
 export function savePlaybackPreference(key:"quality"|"speed"|"recommendationMode"|"recommendationResetAt",value:string|number){cache.preferences={...cache.preferences,[key]:value};operation("preference",key,"set",{value});}
 export function saveRecommendationSignal(key:string,value:RecommendationSignal){
+ if(teamPreview)return false;
  if (!["real-drama","comic-drama","ai-drama"].includes(value.contentType)) return;
  return operation("recommendation",key,"set",value);
 }
 export function resetRecommendationPreferences(){savePlaybackPreference("recommendationResetAt",Math.round(Date.now()+clockOffset));}
 export function getProgress(id:string):HistoryItem|null{return cache.history.find(item=>item.seriesId===id)||null;}
-export function beginHistory(series:Series,progress?:HistoryItem|null){activeHistory=series;if(progress)cache.history=[progress,...cache.history.filter(item=>item.seriesId!==series.id)];}
+export function beginHistory(series:Series,progress?:HistoryItem|null){if(teamPreview)return;activeHistory=series;if(progress)cache.history=[progress,...cache.history.filter(item=>item.seriesId!==series.id)];}
 export function saveProgress(seriesId:string,episodeId:string,position:number,extra?:{title?:string;cover?:string;badge?:string;tags?:string;episodeNumber?:number;duration?:number;completed?:boolean}){
  if(!activeHistory||activeHistory.id!==seriesId||!episodeId)return;
  const item={seriesId,...(activeHistory.contentType?{contentType:activeHistory.contentType}:{}),title:extra?.title||activeHistory.title,cover:extra?.cover||activeHistory.cover,badge:extra?.badge||activeHistory.badge,tags:extra?.tags||activeHistory.tags,description:activeHistory.description,episodeId,episodeNumber:extra?.episodeNumber||1,position,duration:extra?.duration||0,completed:!!extra?.completed,updatedAt:Math.round(Date.now()+clockOffset)};
@@ -107,7 +111,7 @@ async function migrate(){if(migration)return migration;const keys=["hg_favorites
   }
   for(const key of keys)if(localStorage.getItem(key)===raw[key])localStorage.removeItem(key);
  })();try{await migration;}finally{migration=null;}}
-export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library",{params:libraryVersion?{since:libraryRevision,version:libraryVersion}:{}})).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;
+export async function refreshLibrary(){if(teamPreview)return cache;if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library",{params:libraryVersion?{since:libraryRevision,version:libraryVersion}:{}})).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;
  if(!data.unchanged){
   const old=cache;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"auto",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
   if(data.reset)loadedPersonalPages.clear();
@@ -134,19 +138,20 @@ export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight
  }
  window.dispatchEvent(new CustomEvent("library-updated"));return cache;})();try{return await refreshInFlight;}finally{refreshInFlight=null;}}
 export async function commitRecommendationPreferences(){
+ if(teamPreview)return cache.preferences;
  await ensureLibraryIdentity();
  const deadline=Date.now()+15000;
  while(journal.entries().length){await journal.flush();if(Date.now()>deadline)throw Error("推荐偏好尚未保存，请重试");}
  if(refreshInFlight)await refreshInFlight;
  return (await refreshLibrary()).preferences;
 }
-export async function getServerProgress(id:string):Promise<HistoryItem|null>{await ensureLibraryIdentity();await journal.flush(true);const data=(await client().get('/api/library',{params:{seriesId:id}})).data;const item=data.item?{...data.item,position:data.item.positionMs/1000,duration:data.item.durationMs/1000}:null;if(data.favorite&&!cache.favorites.some(row=>row.id===id))cache.favorites.unshift(data.favorite);const local=getProgress(id),pending=journal.entries().some(({event}:any)=>event.kind==='history'&&event.key===id&&event.op==='set');if(local&&(pending||item&&local.updatedAt>item.updatedAt))return local;cache.history=[...(item?[item]:[]),...cache.history.filter(row=>row.seriesId!==id)];window.dispatchEvent(new CustomEvent('library-updated'));return item;}
+export async function getServerProgress(id:string):Promise<HistoryItem|null>{if(teamPreview)return null;await ensureLibraryIdentity();await journal.flush(true);const data=(await client().get('/api/library',{params:{seriesId:id}})).data;const item=data.item?{...data.item,position:data.item.positionMs/1000,duration:data.item.durationMs/1000}:null;if(data.favorite&&!cache.favorites.some(row=>row.id===id))cache.favorites.unshift(data.favorite);const local=getProgress(id),pending=journal.entries().some(({event}:any)=>event.kind==='history'&&event.key===id&&event.op==='set');if(local&&(pending||item&&local.updatedAt>item.updatedAt))return local;cache.history=[...(item?[item]:[]),...cache.history.filter(row=>row.seriesId!==id)];window.dispatchEvent(new CustomEvent('library-updated'));return item;}
 export async function getHistoryList(_source:HistorySource="all"):Promise<HistoryItem[]>{await refreshLibrary();return cache.history;}
-export async function removeHistoryItem(id:string,_source:HistorySource="all"){operation("history",id,"delete");await journal.flush();await refreshLibrary();}
-export async function clearHistory(_source:HistorySource="all"){operation("history","*","clear");await journal.flush();await refreshLibrary();}
+export async function removeHistoryItem(id:string,_source:HistorySource="all"){if(teamPreview)return;operation("history",id,"delete");await journal.flush();await refreshLibrary();}
+export async function clearHistory(_source:HistorySource="all"){if(teamPreview)return;operation("history","*","clear");await journal.flush();await refreshLibrary();}
 export function getSyncStatus(){return cache.sync;}
 export async function configureSync(url:string,key:string,enabled=true){const data=(await client().post("/api/library/sync",enabled?{url,key}:{enabled:false})).data;cache.sync=data;await refreshLibrary();return data;}
-if(!migrationOnly&&!['/admin','/creator'].includes(window.location.pathname.replace(/\/+$/,''))){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
+if(!teamPreview&&!migrationOnly&&!['/admin','/creator'].includes(window.location.pathname.replace(/\/+$/,''))){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
 
 export const api = {
   // 首页先显示真实自有内容，再补齐后台完成的外部专区。
@@ -216,6 +221,7 @@ export const api = {
 
   // 6.1 沉浸式流推荐接口 (GET /api/recommend?page=N)
   async getRecommendStream(page = 1, session: string, signal?: AbortSignal): Promise<{ items: Series[]; page: number; session: string }> {
+    if(teamPreview)throw Error('团队预览不使用个人资料');
     await ensureLibraryIdentity();
     await journal.flush();
     const res = await client().get(`/api/recommend?page=${page}&session=${encodeURIComponent(session)}`, {signal});
@@ -261,6 +267,7 @@ export const api = {
 
   // 10. 全库个性化算法推荐流 (瀑布流 / 猜你喜欢)
   async getRecommend(page = 1): Promise<{ items: Series[]; page: number }> {
+    if(teamPreview)throw Error('团队预览不使用个人资料');
     if (page === 1 || !auxiliaryRecommendationSession) auxiliaryRecommendationSession = journal.uuid();
     const res = await client().get(`/api/recommend?page=${page}&session=${encodeURIComponent(auxiliaryRecommendationSession)}`);
     return res.data;
