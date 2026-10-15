@@ -125,3 +125,15 @@ test('维护权限、过期预检和恢复时机受控，不能误恢复后续�
   assert.equal((await f.request(`/api/admin/series/${f.series.id}`,{data:{title:'不应保存'}})).status,503);
   const result=await f.business.migrate(f.owner,{snapshot:f.business.preview().snapshot});f.business.resume(f.owner);f.business.pause(f.owner);assert.throws(()=>f.business.restore(f.owner,result.id),error=>error.status===409);f.business.resume(f.owner);
 });
+
+test('先迁移再删除确认账号，历史操作、其他观众及评论点赞全部保留',async t=>{
+  const f=await fixture(t),legacy=await f.legacy(),confirmed=[{id:legacy.actor.id,email:legacy.actor.email}],comment=crypto.randomUUID();
+  f.store.db.prepare('INSERT INTO episode_comments(id,episode_id,series_id,account_id,body,created_at) VALUES(?,?,?,?,?,?)').run(comment,'历史分集',f.series.id,legacy.actor.id,'保留历史评论',Date.now());
+  f.store.db.prepare('INSERT INTO episode_likes VALUES(?,?,?)').run('历史分集',legacy.actor.id,Date.now());
+  const before=f.users.byId(legacy.viewer.id),vip=f.users.membership(legacy.viewer.id),invariants=f.business.invariants();
+  assert.throws(()=>f.users.retireConfirmedAccounts(confirmed),error=>error.status===409);
+  f.business.pause(f.owner);await f.business.migrate(f.owner,{snapshot:f.business.preview().snapshot});f.business.resume(f.owner);
+  assert.deepEqual(f.users.retireConfirmedAccounts(confirmed).deleted,[legacy.actor.id]);assert.deepEqual(f.users.byId(legacy.viewer.id),before);assert.deepEqual(f.users.membership(legacy.viewer.id),vip);assert.equal(f.business.invariants(),invariants);
+  assert.equal(f.store.db.prepare('SELECT body FROM episode_comments WHERE id=?').get(comment).body,'保留历史评论');assert.ok(f.store.db.prepare('SELECT 1 FROM episode_likes WHERE account_id=?').get(legacy.actor.id));
+  assert.match(JSON.parse(f.store.db.prepare('SELECT detail FROM content_audit WHERE id=?').get(legacy.logId).detail).actorCode,/^H-/);assert.equal(f.business.preview().accounts.some(row=>row.id===legacy.actor.id),false);
+});

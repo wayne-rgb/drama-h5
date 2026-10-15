@@ -79,6 +79,29 @@ export class AccountStore {
   byId(id) { return this.db.prepare('SELECT * FROM accounts WHERE id=?').get(id) || null; }
   isCreator(id) { return !!id && !!this.db.prepare('SELECT 1 FROM account_creators WHERE account_id=?').get(id); }
   byEmail(email) { return this.db.prepare('SELECT * FROM accounts WHERE email=?').get(email) || null; }
+  // 仅处理逐项确认的账号和登录凭证，业务记录及个人资料目录由调用方保留。
+  retireConfirmedAccounts(entries) {
+    if (!Array.isArray(entries) || !entries.length || entries.length > 100 || entries.some(row => !row || typeof row.id !== 'string' || typeof row.email !== 'string') || new Set(entries.map(row => row.id)).size !== entries.length) throw new AccountError(400,'账号确认清单无效');
+    const confirmed=entries.map(row=>({id:row.id,email:emailAddress(row.email)}));
+    return this.transaction(()=>{
+      const accounts=confirmed.map(expected=>{
+        const account=this.byId(expected.id);
+        if (!account) {
+          if (this.byEmail(expected.email)) throw new AccountError(409,'账号编号已变化，请重新核对确认清单');
+          return null;
+        }
+        if (account.email!==expected.email) throw new AccountError(409,'账号与确认清单不一致');
+        if (account.customer_id || this.db.prepare('SELECT 1 FROM account_subscriptions WHERE account_id=?').get(account.id) || this.db.prepare('SELECT 1 FROM account_manual_vip WHERE account_id=?').get(account.id)) throw new AccountError(409,'账号仍有关联会员或支付记录，不能直接删除');
+        if (this.db.prepare('SELECT 1 FROM account_creators WHERE account_id=? OR admin_id=?').get(account.id,account.id) || this.db.prepare('SELECT 1 FROM account_manual_vip WHERE admin_id=?').get(account.id)) throw new AccountError(409,'请先完成旧业务关联迁移');
+        return account;
+      });
+      for (const account of accounts.filter(Boolean)) {
+        for (const table of ['account_sessions','account_tokens','account_mfa']) this.db.prepare(`DELETE FROM ${table} WHERE account_id=?`).run(account.id);
+        this.db.prepare('DELETE FROM accounts WHERE id=? AND email=?').run(account.id,account.email);
+      }
+      return {deleted:accounts.filter(Boolean).map(row=>row.id),alreadyAbsent:confirmed.filter((row,index)=>!accounts[index]).map(row=>row.id)};
+    });
+  }
   create({ email, name, hash = null, googleSub = null, avatar = null, verified = false }) {
     const id = crypto.randomUUID(), now = Date.now();
     try { this.db.prepare('INSERT INTO accounts(id,email,name,password_hash,google_sub,email_verified,google_avatar,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id, emailAddress(email), displayName(name), hash, googleSub, verified ? 1 : 0, avatar, now, now); }

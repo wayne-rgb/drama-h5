@@ -72,7 +72,7 @@ export function createTeamService(team, accounts, config = process.env) {
       team.transaction(() => { team.db.prepare('DELETE FROM team_invites WHERE id=? AND used_at IS NULL').run(id); team.event(owner, '撤销团队邀请', id); }); reply(res, { ok: true });
     } else if (route === '/api/team/events' && req.method === 'GET') {
       const page = Math.max(1, Math.min(1000, Math.floor(Number(url.searchParams.get('page')) || 1)));
-      const rows = team.db.prepare('SELECT e.*,m.code FROM team_events e JOIN team_members m ON m.id=e.member_id ORDER BY e.created_at DESC,e.rowid DESC LIMIT 101 OFFSET ?').all((page - 1) * 100);
+      const rows = team.db.prepare('SELECT e.*,COALESCE(m.code,h.code) AS code FROM team_events e LEFT JOIN team_members m ON m.id=e.member_id LEFT JOIN team_history_actors h ON h.id=e.member_id ORDER BY e.created_at DESC,e.rowid DESC LIMIT 101 OFFSET ?').all((page - 1) * 100);
       reply(res, { items: rows.slice(0, 100).map(row => ({ id: row.id, code: row.code, action: row.action, targetId: row.target_id, detail: JSON.parse(row.detail), createdAt: row.created_at })), hasMore: rows.length > 100 });
     } else throw new AccountError(404, '团队接口不存在');
     return true;

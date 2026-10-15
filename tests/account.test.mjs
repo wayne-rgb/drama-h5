@@ -6,6 +6,38 @@ import os from 'node:os';
 import path from 'node:path';
 import { AccountStore, digest, passwordHash, passwordMatches } from '../server/account-store.mjs';
 
+test('按编号和邮箱精确删除确认账号及凭证，其他账号与会话保持原值',()=>{
+  const store=new AccountStore(':memory:');
+  try {
+    const first=store.create({email:'retired-first@example.invalid',name:'已确认测试账号一'}),second=store.create({email:'retired-second@example.invalid',name:'已确认测试账号二'}),kept=store.create({email:'retained@example.invalid',name:'保留观众'});
+    const sessions=[first,second,kept].map(row=>store.session(row.id)),tokens=[first,second,kept].map(row=>store.token('reset',row.id));
+    for(const row of [first,second,kept])store.db.prepare('INSERT INTO account_mfa VALUES(?,?,?,?,?)').run(row.id,'测试凭证',0,'[]',Date.now());
+    const before=store.byId(kept.id),keptSession=store.db.prepare('SELECT * FROM account_sessions WHERE account_id=?').get(kept.id),keptMfa=store.db.prepare('SELECT * FROM account_mfa WHERE account_id=?').get(kept.id);
+    const confirmed=[first,second].map(row=>({id:row.id,email:row.email})),result=store.retireConfirmedAccounts(confirmed);
+    assert.deepEqual(result.deleted,[first.id,second.id]);assert.equal(store.byId(first.id),null);assert.equal(store.byId(second.id),null);
+    for(const token of sessions.slice(0,2))assert.equal(store.viewer(token),null);
+    for(const token of tokens.slice(0,2))assert.throws(()=>store.consumeToken(token,'reset'));
+    assert.deepEqual(store.byId(kept.id),before);assert.deepEqual(store.db.prepare('SELECT * FROM account_sessions WHERE account_id=?').get(kept.id),keptSession);assert.deepEqual(store.db.prepare('SELECT * FROM account_mfa WHERE account_id=?').get(kept.id),keptMfa);
+    assert.equal(store.viewer(sessions[2]).id,kept.id);assert.equal(store.consumeToken(tokens[2],'reset').accountId,kept.id);
+    assert.deepEqual(store.retireConfirmedAccounts(confirmed),{deleted:[],alreadyAbsent:[first.id,second.id]});
+  }finally{store.close();}
+});
+
+test('清单不符或关联会员支付时整批拒绝，不删除已校验账号或业务记录',()=>{
+  const store=new AccountStore(':memory:');
+  try {
+    const first=store.create({email:'confirmed@example.invalid',name:'已确认账号'}),paid=store.create({email:'paid@example.invalid',name:'付费观众'}),manual=store.create({email:'manual@example.invalid',name:'历史赠送观众'});
+    const session=store.session(first.id);
+    store.saveSubscription('保留的支付事件',{id:'保留的订阅',accountId:paid.id,planId:'monthly',status:'canceled',periodEnd:0,cancelAtPeriodEnd:true},Date.now());
+    store.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?)').run(manual.id,0,'历史操作者','保留历史赠送原因',Date.now());
+    for(const other of [paid,manual])assert.throws(()=>store.retireConfirmedAccounts([{id:first.id,email:first.email},{id:other.id,email:other.email}]),error=>error.status===409);
+    assert.throws(()=>store.retireConfirmedAccounts([{id:first.id,email:'wrong@example.invalid'}]),error=>error.status===409);
+    assert.throws(()=>store.retireConfirmedAccounts([{id:'错误编号',email:first.email}]),error=>error.status===409);
+    assert.throws(()=>store.retireConfirmedAccounts([{id:first.id,email:first.email},{id:first.id,email:first.email}]),error=>error.status===400);
+    assert.equal(store.viewer(session).id,first.id);assert.ok(store.byId(paid.id));assert.ok(store.byId(manual.id));assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM account_billing_events').get().n,1);assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM account_manual_vip').get().n,1);
+  }finally{store.close();}
+});
+
 test('密码有独立盐且错误密码与不存在账户不能通过验证', async () => {
   const password = '仅限本地测试的密码-2026';
   const first = await passwordHash(password), second = await passwordHash(password);
