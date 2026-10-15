@@ -1,6 +1,6 @@
 # 当前交付说明
 
-2026-10-13：已完成独立 Web / Windows / Android TV 内容引擎、本地 SQLite 与可选家庭同步，历史不再按端分类。最新架构、产物及未完成的平台验收见 HANDOVER.md 和 docs/LOCAL_REMOTE_SERVICES.md。以下保留早期功能计划，不作为当前架构说明。
+2026-10-15：已完成独立 Web / Windows / Android TV 内容引擎与本地 SQLite，历史不再按端分类。最新架构、产物及未完成的平台验收见 HANDOVER.md 和 docs/LOCAL_SERVICES.md。以下保留早期功能计划，不作为当前架构说明。
 
 # 红果短剧客户端体验进阶功能开发计划 (plan.md)
 

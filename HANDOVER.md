@@ -1,17 +1,15 @@
 # 红果短剧项目交接
 
-更新日期：2026-10-13。Web、Windows 桌面、Android TV 均可独立获取内容、处理播放和保存资料，不需要其他设备开机。完整说明见 [本地服务与家庭同步](docs/LOCAL_REMOTE_SERVICES.md)。
+更新日期：2026-10-15。Web、Windows 桌面、Android TV 均可独立获取内容、处理播放和保存资料，不需要其他设备开机。完整说明见 [本地服务](docs/LOCAL_SERVICES.md)。
 
 ## 架构和目录
 
 - apps/web-pc：共用 React / TypeScript 界面；Electron 使用稳定的 hongguotv://app/ 地址，管理只监听本机动态端口的独立后端。
-- custom-server：Node 本地后端直接调用 server/provider.mjs 和 shared/content-core/hongguo.js，不依赖固定 192.168.1.21:8787。
-- shared/library-store.mjs：SQLite 完整资料库、事务事件队列、删除标记与幂等接收。
-- custom-server/library-sync.mjs：远程校时、上传、增量下载、重试和实例隔离。
-- apps/sync-server：仅存家庭资料的远程服务，包含 Dockerfile / Compose。
+- server：Node 本地后端直接调用 shared/content-provider.mjs 和 shared/content-core/hongguo.js，不依赖固定 192.168.1.21:8787。
+- shared/library-store.mjs：SQLite 完整资料库、删除标记与幂等导入。
 - apps/tv-android：Kotlin / Views / Media3，minSdk 22；QuickJS 2025-09-13 自编译 JNI 执行共享内容引擎，网络、加密、Range 媒体及 SQLite 使用原生实现，不再要求首次填写本地后端地址。
 - scripts/service-launcher.mjs：启动、所属进程管理、重复启动和端口占用检查。
-- scripts/build-bundles.mjs：校验并打包各平台运行环境、Web / 远程 / Windows 桌面。
+- scripts/build-bundles.mjs：校验并打包各平台运行环境、Web 和 Windows 桌面。
 - scripts/migrate-library.mjs：幂等迁移数据库，保留源数据与删除标记。
 
 ## 开发与运行
@@ -33,41 +31,26 @@ npm run build:bundles
 
 ## 数据规则
 
-每个端的 SQLite 始终保存完整资料。未配置远程时仅本地使用；配置后同步收藏、历史、搜索及默认画质／倍速。地址、密钥和设备设置不共享。
+每个端的 SQLite 保存当前账户或设备的收藏、历史、搜索、推荐信号及默认画质／倍速。
 
-每秒记录播放，暂停、跳转、切剧、结束和离开立即记录；操作与待同步事件事务落盘。历史允许快退和重看，迟到事件不能覆盖新进度，删除标记防止旧离线记录复活。游标按远程实例隔离。
+每秒记录播放，暂停、跳转、切剧、结束和离开立即记录。历史允许快退和重看，迟到的旧导入记录不能覆盖新进度，删除标记防止旧记录复活。
 
-历史统一按最近观看排列，每部剧一张续播卡，不再分类。Web / 电脑保留删除及清空确认；TV 没有这些操作。远程播放偏好在下一次播放生效，自动降级不回写偏好。
+历史统一按最近观看排列，每部剧一张续播卡，不再分类。Web / 电脑保留删除及清空确认；TV 没有这些操作。播放偏好在下一次播放生效，自动降级不回写偏好。
 
-旧数据成功确认后才完成迁移。原开发机 custom-server/data 的八条历史已迁入 Windows 用户资料 HongguoTV/web-service。当前运行独立 Web 包的 8788 服务，3000 保留开发页面。测试家庭密钥不属于交付配置。
+旧数据成功确认后才完成迁移。当前运行独立 Web 包的 8788 服务，3000 保留开发页面。
 
 ## 交付和验收
 
-outputs/bundles 提供五平台 Web 包、Windows 桌面 ZIP、Linux x64 / arm64 远程包。TV APK 为 outputs/tv-android/hongguotv-android5.1.1-debug.apk。最终实例保护修正版已安装至 192.168.1.120，保留数据，实机启动、HEVC 解码和播放进度复查通过。旧 dist-win/hongguoTV-Windows-x64.zip 不作为本轮交付。
+outputs/bundles 提供五平台 Web 包和 Windows 桌面 ZIP。TV APK 为 outputs/tv-android/hongguotv-android5.1.1-debug.apk。修正版已安装至 192.168.1.120，保留数据，实机启动、HEVC 解码和播放进度复查通过。旧 dist-win/hongguoTV-Windows-x64.zip 不作为本轮交付。
 
-Node 39 项、Web 类型检查和构建通过；Windows Web / 桌面生命周期与实际远程跨端资料同步通过。Android JVM 19 项、lint、构建、模拟器最终 14 项通过；API 22 电视独立内容签名／解密／播放／seek 和真实 Node 远程同步通过。详见 [TV 验证](docs/TV_ANDROID_VERIFICATION.md)。
+Node、Web 类型检查和构建通过；Windows Web / 桌面生命周期通过。Android JVM、lint、构建和模拟器验证通过；API 22 电视独立内容签名／解密／播放／seek 通过。详见 [TV 验证](docs/TV_ANDROID_VERIFICATION.md)。
 
-Linux / macOS 包已生成并校验归档权限，尚未在对应宿主启动。Docker daemon 未运行，容器验收待做。API 35 TV、长时间连播和更多厂商遥控器仍待验收。未提供公网主机，远程尚未部署公网。
+Linux / macOS 包已生成并校验归档权限，尚未在对应宿主启动。Docker daemon 未运行，容器验收待做。API 35 TV、长时间连播和更多厂商遥控器仍待验收。
 
 保留此前大量未提交迁移及旧端删除，避免重置工作区或恢复 RN / iOS / kotlin-tv。首版不含账号、离线下载、自动更新、正式签名或应用商店发布。
 
 
 
-
-
-## 远程管理平台（2026-10-13）
-
-共享服务 8791 首页新增家庭密钥登录的管理界面，支持概览、设备活动、收藏／历史／搜索删除与清空、播放偏好。管理操作走既有事件协议，删除标记同步到各端。电视已配置 http://192.168.1.67:8791 并显示已同步，密钥保留在本地设置，不写入文档。新增四项管理测试，Node 共43项通过；浏览器登录、确认、清空、偏好、筛选与手机布局通过。
-
-
-## 密钥设置（2026-10-13）
-
-管理平台新增密钥设置，支持自定义／随机生成、显示／复制、确认与文件原子持久化。新密钥立即生效，旧密钥失效，资料保留；环境变量托管密钥不允许页面改写。当前家庭密钥未更换，只有实际保存时才轮换。新增4项测试，Node共47项通过；浏览器更换、当前会话、重新登录和手机布局通过。
-
-
-## TV 卡死修复（2026-10-13）
-
-远程同步原有外部SQLite事务与TvLibrary同步读锁发生倒序死锁；现统一通过先获取资料库锁的transaction入口。新增真实SQLite并发回归，旧版确定失败、修复通过。模拟器15项、API22实机5项通过，JVM19项、lint和构建通过。最终修正版已安装并保留资料，APK更新于outputs/tv-android，详细线程证据与SHA256见docs/TV_ANDROID_VERIFICATION.md。
 
 
 ### 2026-10-13 TV 分类空列表修复
@@ -89,9 +72,9 @@ Linux / macOS 包已生成并校验归档权限，尚未在对应宿主启动。
 
 ### 2026-10-13 多端混合推荐
 
-实施了共用推荐核心、三类候选混合、近期观看降权、全剧完成排除、兴趣排序及20%探索。每次新会话换序，同会话分页重试稳定且不重复；新增可同步的实际观看/曝光/主动快跳信号。Web/电脑/TV/远程管理设置支持推荐模式与重置兴趣，保留历史收藏。详情见 docs/RECOMMENDATIONS.md。
+实施了共用推荐核心、三类候选混合、近期观看降权、全剧完成排除、兴趣排序及20%探索。每次新会话换序，同会话分页重试稳定且不重复；实际观看、曝光和主动快跳信号保存在当前账户或设备。Web、电脑和 TV 设置支持推荐模式与重置兴趣，保留历史收藏。详情见 docs/RECOMMENDATIONS.md。
 
-76项Node/TV JS、26项Android JVM测试通过，lint与构建通过；14项模拟器交互资料同步回归+1项真实网络原生混合测试通过。真实源首批12真人/7漫剧/5AI；浏览器模式与重置、Windows桌面内置后端生命周期、Windows一体包验证通过。全部独立包已重打，本机8788与8791已更新，3000保持运行。
+76项Node/TV JS、26项Android JVM测试通过，lint与构建通过；14项模拟器交互资料回归和1项真实网络原生混合测试通过。真实源首批12真人/7漫剧/5AI；浏览器模式与重置、Windows桌面内置后端生命周期、Windows一体包验证通过。
 
 官网最新排序当前不可用，探索来自深页与未看/新发现题材，不把热门伪称最新。TV新APK已就绪，SHA256 bf5ddb12bdda62900c2f03d99b28b5c0787b277382bfcd04d7dd63d46722a237；实机安装等待电视ADB握手恢复，不应宣称已在API22安装新版。
 
@@ -99,7 +82,7 @@ Linux / macOS 包已生成并校验归档权限，尚未在对应宿主启动。
 
 192.168.1.120 重启后 ADB 恢复，已保留数据安装最终 APK。实机确认三类混合、同会话重试稳定、第二页无重复及新会话换序。发现并修复清空/替换播放列表产生的 ENDED 被误认为正常完播：该重入会加载第二集却保留第一集索引，从而漏记历史及推荐时长。只允许当前有效分集的媒体结束触发连播。
 
-回归用例旧版 expected 9101 / actual 9102 失败，修复后保持 9101；TV 交互9项、JVM26项、lint和APK构建通过。最终实机第一部AI剧“药香满院，种田采药赚万金”有效观看47509ms；切到“无人似你”仍是第一集，视频00:19、历史19229ms、推荐有效观看19140ms，均已在8791确认，跳过计数为0。全程没有清除历史收藏；调试器已断开，测试端口转发移除。
+回归用例旧版 expected 9101 / actual 9102 失败，修复后保持 9101；TV 交互9项、JVM26项、lint和APK构建通过。最终实机第一部AI剧“药香满院，种田采药赚万金”有效观看47509ms；切到“无人似你”仍是第一集，视频00:19、历史19229ms、推荐有效观看19140ms，跳过计数为0。全程没有清除历史收藏；调试器已断开，测试端口转发移除。
 
 最新APK SHA256：6b70d3cf82df56242f995ca322176aaafc14966bef2ce4be56645d1bbec8c1a0（替代此前bf5d...版本）。路径：outputs/tv-android/hongguotv-android5.1.1-debug.apk。此前“待安装”的记录已完成。
 
@@ -126,5 +109,5 @@ Linux / macOS 包已生成并校验归档权限，尚未在对应宿主启动。
 
 `custom-server/` 已统一为 `server/`，本地服务仍为 8788，`npm run server` 和 `npm start` 指向新路径。内容适配器为 `shared/content-provider.mjs`；第三方来源与许可证统一保存在 `shared/content-core/vendor/`。旧 8787 独立入口和 `npm run bridge` 已移除，兼容 HTTP 处理器与媒体安全测试保留为 `shared/content-http.mjs`。本次 76 项 Node 测试、Web 构建、Compose 配置检查通过；Windows Web/桌面包已重建，Web 包首页、重复启动、持久化及停止检查通过。其他平台已有产物仍是重构前版本，需要重新构建。
 
-Electron、资料迁移、服务启动和打包脚本已同步调整；旧目录原件保留于忽略的 `outputs/layout-backup-*`。原 `custom-server/data` 随主后端移动到 `server/data`，现有用户目录资料不变。根目录 Docker Compose 改为当前 8788 本地一体服务，远程 8791 配置不变。Docker 引擎未运行，只能完成 Compose 配置检查，容器构建及运行仍待验收。
+Electron、资料迁移、服务启动和打包脚本已同步调整；旧目录原件保留于忽略的 `outputs/layout-backup-*`。原 `custom-server/data` 随主后端移动到 `server/data`，现有用户目录资料不变。根目录 Docker Compose 使用当前 8788 本地一体服务。Docker 引擎未运行，只能完成 Compose 配置检查，容器构建及运行仍待验收。
 

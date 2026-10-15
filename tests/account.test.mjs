@@ -155,11 +155,11 @@ test('真实账号接口隔离个人资料，拒绝跨来源修改和未配置�
   assert.equal((await request('/api/library',undefined,{cookie:anonymousA.cookie})).status,409);
   assert.equal((await request('/api/library/operations',{...guestOperation,id:'cross-guest'},anonymousA,'https://untrusted.example')).status,403);
   assert.equal((await request('/api/library/operations',{...guestOperation,id:'null-origin'},anonymousA,'null')).status,403);
-  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},anonymousA)).status,403);
+  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},anonymousA)).status,404);
   const first = await request('/api/auth/register', { email: 'a@example.invalid', name: '测试账户一', password: '测试账户一的独立密码-2026' });
   assert.equal(first.status, 200); assert.match(first.cookieHeader, /HttpOnly/); assert.match(first.cookieHeader, /SameSite=Lax/);
   const actorA = { cookie: first.cookie, owner: first.data.user.id };
-  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},actorA)).status,403);
+  assert.equal((await request('/api/library/sync',{url:'http://127.0.0.1:9',key:'测试不能触发服务器访问'},actorA)).status,404);
   const second = await request('/api/auth/register', { email: 'b@example.invalid', name: '测试账户二', password: '测试账户二的独立密码-2026' });
   const actorB = { cookie: second.cookie, owner: second.data.user.id };
   assert.equal(second.status, 200); assert.notEqual(actorA.owner, actorB.owner);

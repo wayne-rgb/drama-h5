@@ -34,15 +34,14 @@ function copy(source,destination){
  }
  fs.mkdirSync(path.dirname(destination),{recursive:true});fs.cpSync(source,destination,{recursive:true});
 }
-function scripts(directory,remote=false){
- const service=remote?'set "HG_SERVICE=sync"\r\n':'';
- fs.writeFileSync(path.join(directory,'start.cmd'),`@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n${service}"%~dp0runtime\\node.exe" "%~dp0scripts\\service-launcher.mjs" start\r\npause\r\n`);
- fs.writeFileSync(path.join(directory,'stop.cmd'),`@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n${service}"%~dp0runtime\\node.exe" "%~dp0scripts\\service-launcher.mjs" stop\r\npause\r\n`);
- for(const action of ['start','stop'])fs.writeFileSync(path.join(directory,`${action}.sh`),`#!/bin/sh\nset -eu\nROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nchmod +x "$ROOT/runtime/node"\n${remote?'export HG_SERVICE=sync\n':''}exec "$ROOT/runtime/node" "$ROOT/scripts/service-launcher.mjs" ${action}\n`,{mode:0o755});
- fs.writeFileSync(path.join(directory,'README.txt'),`HongguoTV ${remote?'远程共享服务':'独立 Web 服务'}\nWindows: 双击 start.cmd / stop.cmd\nLinux/macOS: sh start.sh / sh stop.sh\n无需安装 Node/npm；运行环境随包提供。\n数据位于用户资料目录 HongguoTV/${remote?'remote-service':'web-service'}，更新程序不会覆盖数据。\n端口默认 ${remote?'8791':'8788'}，可通过 HG_PORT 设置；HG_DATA_DIR 可指定数据位置。\n${remote?'首次启动生成 shared-key.txt；各端填写地址和该密钥。公网部署使用 HTTPS 反向代理。':'启动脚本会显示浏览器访问地址，端口被其他程序占用时启动失败并保留日志。'}\n`);
+function scripts(directory){
+ fs.writeFileSync(path.join(directory,'start.cmd'),`@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n"%~dp0runtime\\node.exe" "%~dp0scripts\\service-launcher.mjs" start\r\npause\r\n`);
+ fs.writeFileSync(path.join(directory,'stop.cmd'),`@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\n"%~dp0runtime\\node.exe" "%~dp0scripts\\service-launcher.mjs" stop\r\npause\r\n`);
+ for(const action of ['start','stop'])fs.writeFileSync(path.join(directory,`${action}.sh`),`#!/bin/sh\nset -eu\nROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nchmod +x "$ROOT/runtime/node"\nexec "$ROOT/runtime/node" "$ROOT/scripts/service-launcher.mjs" ${action}\n`,{mode:0o755});
+ fs.writeFileSync(path.join(directory,'README.txt'),`HongguoTV 独立 Web 服务\nWindows: 双击 start.cmd / stop.cmd\nLinux/macOS: sh start.sh / sh stop.sh\n无需安装 Node/npm；运行环境随包提供。\n数据位于用户资料目录 HongguoTV/web-service，更新程序不会覆盖数据。\n端口默认 8788，可通过 HG_PORT 设置；HG_DATA_DIR 可指定数据位置。\n启动脚本会显示浏览器访问地址，端口被其他程序占用时启动失败并保留日志。\n`);
 }
-async function stage(platform,remote=false){
- const directory=path.join(output,`hongguotv-${remote?'sync':'web'}-${platform}`);fs.mkdirSync(directory,{recursive:true});pruneLegacyLayout(directory);
+async function stage(platform){
+ const directory=path.join(output,`hongguotv-web-${platform}`);fs.mkdirSync(directory,{recursive:true});pruneLegacyLayout(directory);
  const node=await runtime(platform);copy(node,path.join(directory,'runtime',platform.startsWith('win-')?'node.exe':'node'));
  const runtimeDirectory=platform.startsWith('win-')?path.dirname(node):path.dirname(path.dirname(node));copy(path.join(runtimeDirectory,'LICENSE'),path.join(directory,'runtime','LICENSE-node.txt'));
  copy(path.join(root,'LICENSE'),path.join(directory,'LICENSE'));
@@ -50,8 +49,7 @@ async function stage(platform,remote=false){
  copy(path.join(root,'scripts','service-launcher.mjs'),path.join(directory,'scripts','service-launcher.mjs'));
  copy(path.join(root,'scripts','migrate-library.mjs'),path.join(directory,'scripts','migrate-library.mjs'));
  copy(path.join(root,'server','history-store.mjs'),path.join(directory,'server','history-store.mjs'));
- if(remote){for(const name of ['index.mjs','server.mjs','admin.mjs','shared-key.mjs','public','Dockerfile','compose.yaml'])copy(path.join(root,'apps','sync-server',name),path.join(directory,'apps','sync-server',name));}
- else{
+ {
   const notices=['react','react-dom','scheduler','lucide-react','axios'].map(name=>`${name}\n${fs.readFileSync(path.join(root,'apps','web-pc','node_modules',name,'LICENSE'),'utf8')}`).join('\n\n');
   fs.writeFileSync(path.join(directory,'THIRD_PARTY_NOTICES.txt'),notices);
   for(const name of fs.readdirSync(path.join(root,'server')).filter(name=>name.endsWith('.mjs')))copy(path.join(root,'server',name),path.join(directory,'server',name));
@@ -63,15 +61,15 @@ async function stage(platform,remote=false){
   if(fs.existsSync(accidentalLink)&&fs.lstatSync(accidentalLink).isSymbolicLink())fs.unlinkSync(accidentalLink);
   run(process.execPath,[process.env.npm_execpath||path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js'),'ci','--omit=dev','--no-audit','--no-fund'],{cwd:directory});
  }
- scripts(directory,remote);
- copy(path.join(root,'docs','LOCAL_REMOTE_SERVICES.md'),path.join(directory,'DEPLOYMENT.md'));
+ scripts(directory);
+ copy(path.join(root,'docs','LOCAL_SERVICES.md'),path.join(directory,'DEPLOYMENT.md'));
  const archive=directory+(platform.startsWith('win-')?'.zip':'.tar.gz');
  if(platform.startsWith('win-'))run('powershell.exe',['-NoProfile','-Command',`Compress-Archive -LiteralPath '${directory.replaceAll("'","''")}' -DestinationPath '${archive.replaceAll("'","''")}' -Force`]);
  else if(process.platform==='win32')run('python',['-c',"import tarfile,sys,os\ndef mode(info):\n if info.issym() or info.islnk(): return None\n if info.name.endswith('/runtime/node') or info.name.endswith('.sh'): info.mode=0o755\n return info\nwith tarfile.open(sys.argv[2],'w:gz',compresslevel=6) as archive: archive.add(sys.argv[1],arcname=os.path.basename(sys.argv[1]),filter=mode)",directory,archive]);
  else run('tar',['-czf',archive,'-C',output,path.basename(directory)]);
  console.log(`已生成 ${archive}`);return directory;
 }
-for(const platform of platforms){await stage(platform);if(platform.startsWith('linux-'))await stage(platform,true);}
+for(const platform of platforms)await stage(platform);
 if(platforms.includes('win-x64')&&!process.argv.includes('--web-only')){
  const desktop=path.join(root,'dist-win','hongguoTV-win32-x64');
  pruneLegacyLayout(path.join(desktop,'resources','hongguotv'));

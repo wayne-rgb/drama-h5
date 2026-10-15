@@ -10,7 +10,7 @@ object PlaybackPolicy {
     fun normalizeBaseUrl(input: String): String {
         val value = input.trim().let { if ("://" in it) it else "http://$it" }
         val uri = try { URI(value) } catch (_: Exception) {
-            throw IllegalArgumentException("请输入有效的远程地址，例如 https://sync.example.com")
+            throw IllegalArgumentException("请输入有效的内容服务地址，例如 https://video.example.com")
         }
         require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank()) { "请输入 HTTP 或 HTTPS 服务地址" }
         require(uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null && uri.rawPath in listOf("", "/")) {

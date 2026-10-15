@@ -31,10 +31,8 @@ import kotlinx.coroutines.*
 class MainActivity : ComponentActivity() {
     private val scope = MainScope()
     private val handler = Handler(Looper.getMainLooper())
-    private lateinit var history: HistorySync
+    private lateinit var history: HistoryLibrary
     private lateinit var localContent: LocalContentService
-    private var settingsStatus:TextView?=null
-    private var settingsError:String?=null
     private var historySource = "all"
     private var historyRows = emptyList<Progress>()
     private var selectedHistory: Progress? = null
@@ -172,7 +170,7 @@ class MainActivity : ComponentActivity() {
             hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        store = TvStore(this); history = HistorySync.get(this); localContent = LocalContentService(this); artwork = ArtworkLoader(scope)
+        store = TvStore(this); history = HistoryLibrary.get(this); localContent = LocalContentService(this); artwork = ArtworkLoader(scope)
 
         root = FrameLayout(this).apply {
             setBackgroundColor(TvUi.BACKGROUND)
@@ -865,7 +863,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStart() {
-        super.onStart(); foreground = true; history.foreground(true)
+        super.onStart(); foreground = true
         if(store.baseUrl.isNotBlank())scope.launch{runCatching{history.migrate(store)}}
         if (screen == Screen.FEED && pendingSeries != null) selectFeed(feedIndex)
         else if (activeDetail != null && player == null && (screen == Screen.FEED || screen == Screen.FULL)) loadEpisode(activeIndex, savedPosition, false, resetRetry = false)
@@ -876,7 +874,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         foreground=false
         updateRecommendationPlaying(false);flushRecommendation()
-        foreground = false; history.foreground(false); resumePaused = true; saveProgress()
+        foreground = false; resumePaused = true; saveProgress()
         playbackJob?.cancel(); playbackGeneration.next(); feedJob?.cancel()
         navigationJob?.cancel(); navigationGeneration.next()
         playerView.player = null; player?.release(); player = null
@@ -892,7 +890,6 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             updateRecommendationPlaying(player?.isPlaying==true&&foreground)
             if(android.os.SystemClock.elapsedRealtime()-lastRecommendationFlush>=10000)flushRecommendation()
-            if(screen==Screen.SETTINGS)settingsStatus?.text=settingsError?:history.status
             player?.let { current ->
                 val duration = current.duration.coerceAtLeast(0)
                 timeText.text = "${TvUi.time(current.currentPosition)} / ${TvUi.time(duration)}"
@@ -905,7 +902,7 @@ class MainActivity : ComponentActivity() {
                 val snapshot = catalog
                 navigationJob = scope.launch {
                     try {
-                        val rows = history.list(store.baseUrl, source)
+                        val rows = history.list()
                         if (screen == Screen.CATALOG && catalog === snapshot && historySource == source && rows != historyRows) {
                             val focus = (currentFocus as? Button)?.text?.toString()
                             catalogScroll = catalogGrid?.layoutManager?.onSaveInstanceState()
@@ -1147,7 +1144,7 @@ class MainActivity : ComponentActivity() {
                 val detail = repository().detail(series.id)
                 ensureActive(); if (!playbackGeneration.isCurrent(generation)) return@launch
                 val typed=detail.copy(series=detail.series.copy(contentType=series.contentType))
-                pendingSeries = null; history.begin(store.baseUrl, typed.series); lastRecord = null; activeDetail = typed;activateRecommendation(typed.series)
+                pendingSeries = null; history.begin(typed.series); lastRecord = null; activeDetail = typed;activateRecommendation(typed.series)
                 val previous=feedPositions[typed.series.id];loadEpisode(previous?.first?:0,previous?.second?:0)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { if (playbackGeneration.isCurrent(generation)) feedError(error.message ?: "剧集加载失败") }
@@ -1273,15 +1270,13 @@ class MainActivity : ComponentActivity() {
         else loadCatalog(false)
     }
 
-    private fun sourceLabel(source: String) = when (source) { "web" -> "Web"; "pc" -> "电脑"; else -> "电视" }
-
     private fun loadHistory() {
         navigationJob?.cancel(); val generation = navigationGeneration.next(); val source = historySource
-        panel("观看历史").addView(TvUi.text(this, "正在读取共享历史…"))
+        panel("观看历史").addView(TvUi.text(this, "正在读取观看历史…"))
         navigationJob = scope.launch {
             try {
                 history.migrate(store)
-                val rows = history.list(store.baseUrl, source)
+                val rows = history.list()
                 ensureActive(); if (screen != Screen.CATALOG || catalog.source != "history" || !navigationGeneration.isCurrent(generation)) return@launch
                 historyRows = rows; catalog.rows = rows.map { it.series }; catalog.ended = true; renderCatalog()
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -1551,12 +1546,12 @@ class MainActivity : ComponentActivity() {
             val generation = navigationGeneration.next()
             navigationJob = scope.launch {
                 try {
-                    val record = history.progress(store.baseUrl, detail.series.id)
+                    val record = history.progress(detail.series.id)
                     ensureActive()
                     if (screen != Screen.DETAIL || browsingDetail?.series?.id != detail.series.id || !navigationGeneration.isCurrent(generation)) return@launch
                     selectedHistory = record; playDetailWithRecord(detail, record, selectedIndex, autoplay)
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { message("无法读取共享历史：${error.message}") }
+                catch (error: Exception) { message("无法读取观看历史：${error.message}") }
             }
             return
         }
@@ -1567,7 +1562,7 @@ class MainActivity : ComponentActivity() {
     private fun playDetailWithRecord(detail: Detail, record: Progress?, selectedIndex: Int?, autoplay: Boolean) {
         stopForNavigation(Screen.FULL)
         selectedHistory = null
-        history.begin(store.baseUrl, detail.series); lastRecord = null
+        history.begin(detail.series); lastRecord = null
         activeDetail = detail; feedMode = false; resumePaused = !autoplay
         activateRecommendation(detail.series)
         val index = selectedIndex ?: if (record != null) PlaybackPolicy.resumeIndex(detail.episodes, record) else 0
@@ -1581,64 +1576,26 @@ class MainActivity : ComponentActivity() {
 
     private fun showSettings() {
         stopForNavigation(Screen.SETTINGS)
-        settingsError=null
-        val column = panel("远程共享与同步")
-        column.addView(TvUi.text(this, "电视已内置内容服务。未配置远程时，收藏、历史和播放偏好保存在本机。", 16f).apply {
+        val column = panel("播放与推荐设置")
+        column.addView(TvUi.text(this, "收藏、观看历史和播放偏好保存在当前电视。", 16f).apply {
             setTextColor(TvUi.TEXT_MUTED)
         })
-        val input = EditText(this).apply {
-            setText(history.remoteUrl)
-            hint = "https://远程共享服务器"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            isSingleLine = true
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
-            background = TvUi.surface(TvUi.PANEL, TvUi.BORDER_SUBTLE, radius = 18f)
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-        }
-        column.addView(input, LinearLayout.LayoutParams(-1, dp(58)).apply {
-            topMargin = dp(8)
-            bottomMargin = dp(14)
-        })
-        val key = EditText(this).apply {
-            setText(history.remoteKey); hint = "家庭共享密钥"; textSize=20f; setTextColor(Color.WHITE); isSingleLine=true
-            inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            background=TvUi.surface(TvUi.PANEL,TvUi.BORDER_SUBTLE,radius=18f);setPadding(dp(18),dp(12),dp(18),dp(12))
-        }
-        column.addView(key,LinearLayout.LayoutParams(-1,dp(58)).apply{bottomMargin=dp(14)})
-        val status = TvUi.text(this, history.status, 14f).apply {
-            setTextColor(TvUi.TEXT_MUTED)
-        }
-        settingsStatus=status
-        val connect = TvUi.pillButton(this, "验证并开启同步", active = true) {
-            navigationJob?.cancel(); val generation = navigationGeneration.next()
-            navigationJob = scope.launch {
-                try {
-                    settingsError=null;status.text = "正在检查远程服务…"; history.configure(input.text.toString(),key.text.toString())
-                    ensureActive(); if (!navigationGeneration.isCurrent(generation)) return@launch
-                    status.text=history.status
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) { settingsError="连接失败：${error.message?:"原配置已保留"}";status.text=settingsError }
-            }
-        }
-        column.addView(connect)
-        column.addView(TvUi.pillButton(this,"取消远程同步") { scope.launch {history.disable();input.setText("");key.setText("");status.text=history.status} })
         val modeNames=arrayOf("混合推荐","真人剧","漫剧","AI剧")
         val modes=listOf("mixed","real-drama","comic-drama","ai-drama")
-        column.addView(TvUi.pillButton(this,"推荐内容：${modeNames[modes.indexOf(store.recommendationMode).coerceAtLeast(0)]}") {
+        val modeButton=TvUi.pillButton(this,"推荐内容：${modeNames[modes.indexOf(store.recommendationMode).coerceAtLeast(0)]}") {
             dialog=AlertDialog.Builder(this).setTitle("推荐内容").setSingleChoiceItems(modeNames,modes.indexOf(store.recommendationMode).coerceAtLeast(0)){ d,index->
                 store.recommendationMode=modes[index];d.dismiss();dialog=null;startFeed()
             }.create().also{it.setOnDismissListener{dialog=null};it.show()}
-        })
+        }
+        column.addView(modeButton)
         column.addView(TvUi.pillButton(this,"重置推荐偏好") {confirm("重置推荐兴趣？观看历史和收藏会保留。"){store.resetRecommendationPreferences();startFeed()}})
-        column.addView(status)
         navigation.removeView(column)
         val settingsScroll=ScrollView(this).apply {
             isFillViewport=true
             addView(column,ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         navigation.addView(settingsScroll,FrameLayout.LayoutParams(-1,-1))
-        input.requestFocus()
+        modeButton.requestFocus()
     }
 
     private fun message(value: String) { dialog = AlertDialog.Builder(this).setMessage(value).setPositiveButton("确定", null).create().also { it.setOnDismissListener { dialog = null }; it.show() } }

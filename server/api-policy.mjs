@@ -37,7 +37,6 @@ const rules = [
   [/^\/api\/me\/likes$/, ['GET'], 'viewer'],
   [/^\/api\/me\/likes\/\d{1,40}$/, ['POST'], 'viewer'],
   [/^\/api\/library$/, ['GET'], 'personal'],
-  [/^\/api\/library\/sync$/, ['GET','POST'], 'personal'],
   [/^\/api\/library\/(operations|import)$/, ['POST'], 'personal'],
   [/^\/api\/history$/, ['GET','DELETE'], 'personal'],
   [/^\/api\/history\/(sessions|progress|import)$/, ['POST'], 'personal'],

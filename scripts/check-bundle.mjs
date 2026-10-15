@@ -7,7 +7,7 @@ import path from 'node:path';
 const bundle=path.resolve(process.argv[2]||'outputs/bundles/hongguotv-web-win-x64');
 const runtime=path.join(bundle,'runtime',process.platform==='win32'?'node.exe':'node');
 const profile=mkdtempSync(path.join(os.tmpdir(),'hongguotv-bundle-check-'));
-const env={...process.env,HG_SERVICE:'web',HG_DATA_DIR:profile,HG_PORT:'0'};
+const env={...process.env,HG_DATA_DIR:profile,HG_PORT:'0'};
 const run=action=>{
  const result=spawnSync(runtime,[path.join(bundle,'scripts/service-launcher.mjs'),action],{env,encoding:'utf8',windowsHide:true});
  assert.equal(result.status,0,result.stderr);return result.stdout;
@@ -31,7 +31,7 @@ try{
  assert.equal((await fetch(origin+'/api/library/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(operation)})).status,200);
  run('stop');await stopped(first);run('start');const next=state();
  const library=await(await fetch(`http://127.0.0.1:${next.port}/api/library`)).json();
- assert.equal(library.history.find(row=>row.seriesId===operation.key).positionMs,12345);assert.equal(library.sync.enabled,false);
+ assert.equal(library.history.find(row=>row.seriesId===operation.key).positionMs,12345);
  run('stop');await stopped(next);
  console.log(JSON.stringify({bundle,profile,home:true,repeatedStart:true,persistence:true,ownedStop:true}));
 }finally{run('stop');}

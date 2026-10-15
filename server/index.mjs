@@ -9,7 +9,6 @@ import { HistoryStore } from "./history-store.mjs";
 import { createHistoryHandler } from "./history-routes.mjs";
 import { provider as coreProvider } from "../shared/content-provider.mjs";
 import { LibraryStore } from "../shared/library-store.mjs";
-import { LibrarySync } from "./library-sync.mjs";
 import { createLibraryHandler } from "./library-routes.mjs";
 import { RecommendationService, RecommendationError } from "./recommendation-service.mjs";
 import { AccountStore, AccountError } from "./account-store.mjs";
@@ -112,8 +111,7 @@ const downloadProtection=new DownloadProtection(process.env);
 const assetGuard=new PlaybackGuard({CONTENT_MAX_ACTIVE_STREAMS:128,CONTENT_MAX_VIEWER_STREAMS:16,CONTENT_MAX_IP_STREAMS:64,CONTENT_STREAM_TIMEOUT_MS:120000},trafficBudget,'');
 const historyStore = new HistoryStore(process.env.HISTORY_DB_PATH || path.join(DATA_DIR, "history.sqlite"));
 const libraryStore = new LibraryStore(path.join(DATA_DIR, "library.sqlite"));
-const librarySync = new LibrarySync(libraryStore,{allowPrivateTargets:process.env.HG_MANAGED==='1',guardWrite:()=>personalStorage.ensureFree()});
-const handleLibrary = createLibraryHandler(libraryStore, librarySync);
+const handleLibrary = createLibraryHandler(libraryStore);
 if (!libraryStore.getMeta("legacyBackendMigrated")) {
   for (const item of historyStore.list()) libraryStore.write({kind:"history", key:item.seriesId, op:"set", at:item.updatedAt, value:item});
   libraryStore.setMeta("legacyBackendMigrated", true);
@@ -134,9 +132,6 @@ function legacyLibraryHistory(historyStore, libraryStore) { return {
 }; }
 const legacyHistory = legacyLibraryHistory(historyStore, libraryStore);
 const handleHistory = createHistoryHandler(legacyHistory);
-// H5不再使用共享游客库；旧同步配置只能由桌面本地模式继续运行。
-if (process.env.HG_MANAGED === '1') librarySync.start();
-
 // 初始化官方视频解密与画质引擎
 let hgEngine = null;
 try {
@@ -164,7 +159,7 @@ try {
       { timeout: 5000 }
     );
     hgEngine = context.api;
-    console.log("✅ 共享内容与解密引擎加载成功!");
+    console.log("✅ 内置内容与解密引擎加载成功!");
   }
 } catch (e) {
   console.error("⚠️ 加载 hongguo.cjs 失败:", e.message);
@@ -236,7 +231,7 @@ function createRecommendations(libraryStore) { return new RecommendationService(
     return content.merge(items, { type, tag, tagLabel: OFFICIAL_TAGS.find(item => item.id === tag)?.name || tag, page });
   },
   readProfile: () => libraryStore.profile(),
-  now: () => Math.round(Date.now()+(libraryStore.getMeta('clockOffset')||0)),
+  now: () => Date.now(),
   topics: OFFICIAL_TAGS,
 }); }
 const recommendations = createRecommendations(libraryStore);
@@ -247,14 +242,14 @@ function personalServices(account, res, req) {
   if(previous?.ephemeral && !['GET','HEAD'].includes(req.method)){
     personalStorage.open(previous.directory,!!account.guest);
     personalLibraries.delete(account.id);previous.retired=true;
-    if(!previous.active){previous.sync.stop();previous.library.close();previous.history.close();}
+    if(!previous.active){previous.library.close();previous.history.close();}
   }
   if (!personalLibraries.has(account.id)) {
     // 缓存只限制同时打开的数据库；关闭空闲连接不删除用户资料。
     if (personalLibraries.size >= 128) {
-      const idle = [...personalLibraries.entries()].find(([,service])=>!service.active && !service.sync.running);
+      const idle = [...personalLibraries.entries()].find(([,service])=>!service.active);
       if (!idle) throw new AccountError(429,'操作过于频繁，请稍后重试');
-      idle[1].sync.stop();idle[1].library.close();idle[1].history.close();personalLibraries.delete(idle[0]);
+      idle[1].library.close();idle[1].history.close();personalLibraries.delete(idle[0]);
     }
     const directory = path.join(DATA_DIR, account.guest ? 'guests' : 'accounts', account.id);
     // 空资料的读取仅用内存；首次实际写入才创建磁盘库，访问页面不会积累游客文件。
@@ -263,16 +258,14 @@ function personalServices(account, res, req) {
     const library = new LibraryStore(ephemeral?':memory:':path.join(directory, 'library.sqlite'),{compactLocal:true});
     const history = new HistoryStore(ephemeral?':memory:':path.join(directory, 'history.sqlite'));
     if(!ephemeral){fs.chmodSync(directory,0o700);for(const name of ['library.sqlite','history.sqlite'])fs.chmodSync(path.join(directory,name),0o600);}
-    const sync = new LibrarySync(library,{allowPrivateTargets:accounts.isLocal(req),guardWrite:bytes=>{personalStorage.check(directory,!!account.guest,bytes);return()=>personalStorage.refresh(directory);}});
-    if (!account.guest && accounts.canConfigureSync(account,req)) sync.start();
-    personalLibraries.set(account.id, { active:0, directory, ephemeral, library, history, sync, handleLibrary: createLibraryHandler(library, sync), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
+    personalLibraries.set(account.id, { active:0, directory, ephemeral, library, history, handleLibrary: createLibraryHandler(library), handleHistory: createHistoryHandler(legacyLibraryHistory(history, library)), recommendations: createRecommendations(library) });
     if(!ephemeral)personalStorage.refresh(directory);
   }
   const service = personalLibraries.get(account.id);
   if(!['GET','HEAD'].includes(req.method)){service.library.maintain();personalStorage.refresh(service.directory);}
   personalStorage.attach(req,res,service.directory,!!account.guest,[service.library.db,service.history.db]);
   personalLibraries.delete(account.id);personalLibraries.set(account.id,service);service.active++;
-  let released=false;const release=()=>{if(!released){released=true;service.active--;if(service.retired&&!service.active){service.sync.stop();service.library.close();service.history.close();}}};
+  let released=false;const release=()=>{if(!released){released=true;service.active--;if(service.retired&&!service.active){service.library.close();service.history.close();}}};
   res.once('finish',release);res.once('close',release);
   return service;
 }
@@ -699,14 +692,14 @@ const server = http.createServer(async (req, res) => {
   if (isApi) {
     try {
       const audience = resourceAudience(req);
-      req.playbackPrivileged = !!audience && !audience.guest && (accounts.canConfigureSync(audience,req) || accountStore.membership(audience.id).active);
+      req.playbackPrivileged = !!audience && !audience.guest && (accounts.privilegedPlayback(audience,req) || accountStore.membership(audience.id).active);
       const address = accounts.address(req), viewer = audience ? audienceKey(audience) : `ip:${address}`;
       req.guardPublicAsset = () => {
         let checkedAt=0;
         req.revalidatePlayback=(force=false)=>{
           if(!force&&Date.now()-checkedAt<1000)return;
           const current=resourceAudience(req);
-          req.playbackPrivileged=!!current&&!current.guest&&(accounts.canConfigureSync(current,req)||accountStore.membership(current.id).active);
+          req.playbackPrivileged=!!current&&!current.guest&&(accounts.privilegedPlayback(current,req)||accountStore.membership(current.id).active);
           checkedAt=Date.now();
         };
         req.revalidatePlayback(true);const signal=coverGuard.acquire(req,res,viewer,address,!!resourceAudience(req));req.downloadMetered=true;return signal;
@@ -1216,14 +1209,13 @@ server.listen(PORT, process.env.HG_HOST || "0.0.0.0", () => {
   console.log(`===============================================`);
   console.log(`🚀 红果本地服务已启动!`);
   console.log(`📡 监听地址: http://${process.env.HG_HOST || '0.0.0.0'}:${actualPort}`);
-  console.log(`🎬 内容、推荐、分类、播放、本地资料与可选家庭同步`);
+  console.log(`🎬 内容、推荐、分类、播放与本地资料`);
   console.log(`===============================================`);
 });
 
 let shuttingDown = false;
 function shutdown() {
-  if (shuttingDown) return; shuttingDown = true; librarySync.stop();
-  for (const service of personalLibraries.values()) service.sync.stop();
+  if (shuttingDown) return; shuttingDown = true;
   server.close(async () => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } await content.close(); trafficBudget.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
   server.closeAllConnections();
 }

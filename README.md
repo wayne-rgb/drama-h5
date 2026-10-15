@@ -2,7 +2,7 @@
 
 源码仓库：[sgsjsvc/hongguoTV](https://github.com/sgsjsvc/hongguoTV)。
 
-非官方短剧客户端，提供独立 Web、Windows 桌面和 Android 5.1.1+ TV 应用。各端内置内容获取与播放处理，本地保存收藏、历史、搜索和偏好，可选连接家庭共享服务双向同步。
+非官方短剧客户端，提供独立 Web、Windows 桌面和 Android 5.1.1+ TV 应用。各端内置内容获取与播放处理，并在当前账户或设备本地保存收藏、历史、搜索和偏好。
 
 ## 项目目录与重新建仓
 
@@ -16,9 +16,7 @@
 
 Web 解压后运行 start.cmd 或 sh start.sh，停止使用对应 stop 脚本。Windows 桌面运行 红果短剧.exe。TV 不需要填写本地后端地址；获取与播放内容仍需互联网。
 
-各端填写同一远程地址与家庭密钥即可同步；未配置时正常本地使用。历史统一海报网格，无端分类，TV 仅允许查看和续播。
-
-部署、平台要求、数据路径和迁移见 [本地服务与远程同步](docs/LOCAL_REMOTE_SERVICES.md)。Linux / macOS 宿主与 Docker 运行验收待完成；公网部署等待主机信息。
+历史统一海报网格，无端分类，TV 仅允许查看和续播。部署、平台要求、数据路径和迁移见 [本地服务](docs/LOCAL_SERVICES.md)。Linux / macOS 宿主与 Docker 运行验收待完成。
 
 ## 开发
 

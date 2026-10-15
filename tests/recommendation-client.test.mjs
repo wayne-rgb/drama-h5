@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from '../apps/web-pc/src/recommendation-session.mjs';
-test('local or synchronized mode and reset changes require a new metadata session after return',async()=>{
+test('local recommendation mode and reset changes require a new metadata session after return',async()=>{
  const feed=new RecommendationSession(async(_,session)=>({items:[{id:'a'}],session}),()=> 'session');
  const original={recommendationMode:'mixed',recommendationResetAt:0};
  await feed.start(original);feed.cancel();

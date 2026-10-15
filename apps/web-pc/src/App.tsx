@@ -37,7 +37,7 @@ import {
   removeSearchHistory,
   clearSearchHistory,
   getSettings, 
-  saveSettings, getPlaybackPreferences, savePlaybackPreference, getSyncStatus, configureSync, refreshLibrary
+  saveSettings, getPlaybackPreferences, savePlaybackPreference, refreshLibrary
 } from "./api";
 import { 
   BannerItem, 
@@ -275,11 +275,6 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   }, [mobileSettingsOpen]);
   const likesCount = useLikeCount(accountState.session?.user?.id, `${tab}:${favSubTab}:${!!activeSeries}`);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
-  const [syncStatus, setSyncStatus] = useState(getSyncStatus());
-  const [remoteUrl, setRemoteUrl] = useState("");
-  const [remoteKey, setRemoteKey] = useState("");
-  const [syncSaving, setSyncSaving] = useState(false);
-  const remoteUrlTouched = useRef(false);
   const [toast, setToast] = useState<LocalizedMessage | null>(null);
   const [loading, setLoading] = useState(false);
   if (!detailWatchRef.current) detailWatchRef.current = new RecommendationWatch(saveRecommendationSignal);
@@ -416,7 +411,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     try {
       const items = await getHistoryList();
       if (request === historyRequest.current) { setHistoryList(items); setHistoryError(""); }
-    } catch { if (request === historyRequest.current) setHistoryError("历史记录服务不可用，待上传进度将在恢复连接后补传。"); }
+    } catch { if (request === historyRequest.current) setHistoryError("历史记录服务不可用，待保存进度将在恢复连接后补传。"); }
   };
   useEffect(() => {
     if (tab !== "favorites" || activeSeries || favSubTab !== "history") return;
@@ -441,7 +436,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
         if (tab === "recommend" && !activeSeries && series && streamCurrentEpisode) streamWatchRef.current.begin(epoch.session, series);
         else if (activeSeries) detailWatchRef.current.begin(historyUuid(), activeSeries);
       }
-      setRecommendationMode(pref.recommendationMode); setFavorites(getFavorites()); setSearchHistoryList(getSearchHistory()); const status=getSyncStatus(); setSyncStatus(status); if(!remoteUrlTouched.current)setRemoteUrl(status.url); if(!activeSeries && tab!=="recommend"){const pref=getPlaybackPreferences();setPlaybackSpeed(pref.speed);setCurrentQuality(pref.quality);} };
+      setRecommendationMode(pref.recommendationMode); setFavorites(getFavorites()); setSearchHistoryList(getSearchHistory()); if(!activeSeries && tab!=="recommend"){const pref=getPlaybackPreferences();setPlaybackSpeed(pref.speed);setCurrentQuality(pref.quality);} };
     window.addEventListener("library-updated", update); void refreshLibrary().then(update).catch(()=>{});
     return () => window.removeEventListener("library-updated", update);
   }, [activeSeries,tab,streamCurrentEpisode?.id]);
@@ -4129,7 +4124,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
             {/* B. 观看历史列表 (带进度条、集数、时间百分比、一键续播、悬浮单条删除) */}
             {personalContentTab === "history" && (
               <div>
-                {!mobilePrototype && <p className="mb-5 text-sm text-slate-400">{t("从最近观看的位置继续，记录保存在本地并按远程配置自动同步。")}</p>}
+                {!mobilePrototype && <p className="mb-5 text-sm text-slate-400">{t("从最近观看的位置继续，记录会自动保存到当前账户。")}</p>}
                 {historyError && <div className="mb-5 text-rose-300">{localizeError(historyError)} <button className="underline" onClick={() => void refreshHistory()}>{t("重试")}</button></div>}
                 {historyList.length === 0 ? (
                   <div className="text-center py-28 text-slate-500 text-sm space-y-3">
@@ -4272,21 +4267,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               <p className="text-xs text-slate-400">{t("混合推荐包含真人剧、漫剧与 AI 剧，根据观看兴趣调整，并保留新内容探索。")}</p>
               {showRecommendationResetConfirm ? <div className="space-y-3 text-sm"><p>{t("确定重新学习推荐偏好？收藏和观看历史会保留。")}</p><div className="flex gap-3"><button className="px-4 py-2 rounded-xl bg-rose-600" onClick={() => {streamWatchRef.current.leave();resetRecommendationPreferences();setShowRecommendationResetConfirm(false);showToast("推荐偏好已重置，下次进入推荐页生效");}}>{t("确认重置")}</button><button className="px-4 py-2 rounded-xl bg-slate-800" onClick={() => setShowRecommendationResetConfirm(false)}>{t("取消")}</button></div></div> : <button className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700" onClick={() => setShowRecommendationResetConfirm(true)}>{t("重置推荐偏好")}</button>}
             </div>
-            {accountState.session?.capabilities.librarySync ? <div className="bg-[#0a0f1d] border border-slate-800 rounded-2xl p-6 space-y-5">
-              <p className="text-sm text-slate-400">{t("收藏、历史、搜索记录与播放偏好先保存在本地。配置远程服务后，连接同一家庭的设备可互相续播。")}</p>
-              <div role="status" className="p-4 rounded-xl bg-slate-950 text-sm">
-                <span className="text-rose-400 font-semibold">{localizeLabel({unconfigured:"未配置远程",pending:"待同步",syncing:"同步中",synced:"已同步",offline:"离线待同步"}[syncStatus.state] || "连接失败")}</span>
-                {syncStatus.pending > 0 && <span className="ms-3 text-slate-400">{t("待同步数量", { count: syncStatus.pending })}</span>}
-                {syncStatus.error && <p className="mt-2 text-amber-300">{localizeError(syncStatus.error)}</p>}
-              </div>
-              <label className="block text-sm text-slate-300">{t("远程服务地址")}<input dir="ltr" aria-label={t("远程服务地址")} value={remoteUrl} onChange={e=>{remoteUrlTouched.current=true;setRemoteUrl(e.target.value)}} placeholder="https://sync.example.com" className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
-              <label className="block text-sm text-slate-300">{t("家庭共享密钥")}<input aria-label={t("家庭共享密钥")} type="password" autoComplete="new-password" value={remoteKey} onChange={e=>setRemoteKey(e.target.value)} placeholder={syncStatus.enabled?t("留空沿用当前地址已保存的密钥"):t("填写远程服务生成的共享密钥")} className="mt-2 w-full px-4 py-3 rounded-xl bg-slate-950 border border-slate-800 focus:border-rose-500 outline-none" /></label>
-              <div className="flex gap-3">
-                <button disabled={syncSaving} onClick={async()=>{setSyncSaving(true);try{await configureSync(remoteUrl,remoteKey);setRemoteKey("");setSyncStatus(getSyncStatus());showToast("远程连接已验证，开始同步")}catch(error:any){showToast(error.response?.data?.error||"连接失败，原配置已保留")}finally{setSyncSaving(false)}}} className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50">{t("验证并启用同步")}</button>
-                {syncStatus.enabled && <button disabled={syncSaving} onClick={async()=>{try{await configureSync("","",false);setSyncStatus(getSyncStatus());showToast("已关闭远程同步，本地数据保留")}catch{showToast("配置保存失败")}}} className="px-4 py-3 rounded-xl bg-slate-800">{t("关闭同步")}</button>}
-              </div>
-              <p className="text-xs text-slate-500">{t("关闭同步后继续使用本地数据；更换地址需要重新验证连接。")}</p>
-            </div> : <p className="text-sm text-slate-400 p-5 bg-[#0a0f1d] border border-slate-800 rounded-2xl">{t(accountState.session?.user ? '追剧、观看历史和偏好自动保存到你的账户' : '游客的追剧、观看历史和偏好仅属于当前浏览器')}</p>}
+            <p className="text-sm text-slate-400 p-5 bg-[#0a0f1d] border border-slate-800 rounded-2xl">{t(accountState.session?.user ? '追剧、观看历史和偏好自动保存到你的账户' : '游客的追剧、观看历史和偏好仅属于当前浏览器')}</p>
           </div>
         )}
       </main>

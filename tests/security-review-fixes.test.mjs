@@ -20,12 +20,12 @@ test('迁移按批次原子提交，失败不留下部分资料，重复及乱�
   const first={migrationId:'回归',total:3,operations:[favorite('1'),favorite('2')]};
   assert.deepEqual(store.importOperations(first),{ok:true,next:2,complete:false});
   assert.deepEqual(store.importOperations(first),{ok:true,next:2,complete:false});
-  assert.equal(store.changes().events.length,2);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM library_events').get().count,2);
   assert.throws(()=>store.importOperations({...first,operations:[{...favorite('1'),value:{id:'1',title:'改变原始批次'}},favorite('2')]}),error=>error.status===409);
   assert.throws(()=>store.importOperations({...first,total:4,offset:3,operations:[favorite('4')]}),error=>error.status===409);
   assert.deepEqual(store.importOperations({migrationId:'回归',total:3,offset:2,operations:[favorite('3')]}),{ok:true,next:3,complete:true});
   assert.equal(store.snapshot().favorites.length,3);assert.equal(store.getMeta('migration:回归'),true);
-  assert.equal(store.importOperations(first).complete,true);assert.equal(store.changes().events.length,3);
+  assert.equal(store.importOperations(first).complete,true);assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM library_events').get().count,3);
 });
 
 test('单批导入有上限，大资料可以连续迁移，空迁移和旧操作编号重试保持兼容',t=>{

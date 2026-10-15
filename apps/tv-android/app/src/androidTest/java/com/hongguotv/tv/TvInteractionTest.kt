@@ -28,9 +28,6 @@ class TvInteractionTest {
         context.getSharedPreferences("hongguotv_tv_v1", Context.MODE_PRIVATE).edit().clear().commit()
         val library=TvLibrary.get(context)
         library.writableDatabase.execSQL("DELETE FROM records")
-        library.writableDatabase.execSQL("DELETE FROM versions")
-        library.writableDatabase.execSQL("DELETE FROM outbox")
-        library.setSetting("remoteUrl","")
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {

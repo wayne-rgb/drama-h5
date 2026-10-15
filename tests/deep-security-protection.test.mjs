@@ -69,8 +69,8 @@ test('真实MP4时长字段支持两种版本，高清倍速传输按码率计�
   assert.equal(mp4TransferRate(1000,Buffer.alloc(8)),undefined);
 });
 
-test('资料页同时限制数量及正文体积，游标完整遍历，旧剧续播与全量同步保持可用',t=>{
-  const store=new LibraryStore(':memory:',{compactLocal:true}),remote=new LibraryStore(':memory:');t.after(()=>{store.close();remote.close();});
+test('资料页同时限制数量及正文体积，游标完整遍历且旧剧续播保持可用',t=>{
+  const store=new LibraryStore(':memory:',{compactLocal:true});t.after(()=>store.close());
   for(let index=0;index<64;index++){
     store.write({id:`追剧${index}`,kind:'favorite',key:String(index+1),op:'set',at:1000,value:{id:String(index+1),title:`完整追剧${index}`,description:'真实简介'.repeat(3000),tags:'爱情'}});
     store.write({kind:'history',key:String(index+1),op:'set',at:1000,value:{seriesId:String(index+1),title:'真实续播',badge:'全1集',episodeId:'101',episodeNumber:1,positionMs:1000,durationMs:1000,completed:true}});
@@ -82,7 +82,6 @@ test('资料页同时限制数量及正文体积，游标完整遍历，旧剧�
   assert.equal(store.snapshotPage().preferences.quality,'360P');assert.equal(store.snapshotPage().preferences.speed,1.5);assert.equal(store.record('history','1').positionMs,1000);
   assert.equal(store.profile().history.length,64);assert.equal(store.profile().recommendationSignals.length,64);assert.equal(store.profile().history[0].completed,true);
   assert.throws(()=>store.listPage('favorite',{cursor:'不合法的游标'}));
-  store.seedTarget('回归远端');while(store.pending('回归远端').length){const events=store.pending('回归远端');remote.receive(events);store.acknowledge('回归远端',events.map(event=>event.id));}assert.deepEqual(remote.snapshot(),store.snapshot());
 });
 
 test('注册账户单库保护拒绝继续增长，超额旧资料仍可分页读取和清理',async t=>{

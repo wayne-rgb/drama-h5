@@ -22,8 +22,7 @@ import {
 const SETTINGS_KEY="hg_settings_v1";
 export type PlaybackSource = { url: string; contentType: string; format: 'mp4' | 'hls'; quality: string; version: string | null; expiresAt: number | null; variants?: { key: string; url: string }[]; fallback?: PlaybackSource };
 export type HistorySource="all"|"web"|"pc"|"tv";
-export type SyncStatus={state:string;enabled:boolean;url:string;pending:number;lastSyncedAt:number|null;error:string};
-let cache:{favorites:Series[];history:HistoryItem[];searchHistory:string[];recommendationSignals:RecommendationSignal[];preferences:{quality:string;speed:number;recommendationMode:RecommendationMode;recommendationResetAt:number};sync:SyncStatus}={favorites:[],history:[],searchHistory:[],recommendationSignals:[],preferences:{quality:"auto",speed:1,recommendationMode:"mixed",recommendationResetAt:0},sync:{state:"unconfigured",enabled:false,url:"",pending:0,lastSyncedAt:null,error:""}};
+let cache:{favorites:Series[];history:HistoryItem[];searchHistory:string[];recommendationSignals:RecommendationSignal[];preferences:{quality:string;speed:number;recommendationMode:RecommendationMode;recommendationResetAt:number}}={favorites:[],history:[],searchHistory:[],recommendationSignals:[],preferences:{quality:"auto",speed:1,recommendationMode:"mixed",recommendationResetAt:0}};
 let clockOffset=0;
 let activeHistory:Series|null=null;
 let refreshInFlight:Promise<any>|null=null;
@@ -126,7 +125,7 @@ export async function refreshLibrary(){if(teamPreview)return cache;if(refreshInF
    libraryPagination[kind]={...page,next:(cache as any)[field].length>=page.count?null:next};
   }
  }
- cache.sync=data.sync||cache.sync;libraryRevision=data.revision;libraryVersion=data.version;
+ libraryRevision=data.revision;libraryVersion=data.version;
  // 尚未上传的真实本地进度不能被轮询返回的旧值覆盖。
  for(const {event} of journal.entries())if(event.kind==='history'){
   const newer=cache.history.filter(item=>item.updatedAt>event.at);
@@ -149,8 +148,6 @@ export async function getServerProgress(id:string):Promise<HistoryItem|null>{if(
 export async function getHistoryList(_source:HistorySource="all"):Promise<HistoryItem[]>{await refreshLibrary();return cache.history;}
 export async function removeHistoryItem(id:string,_source:HistorySource="all"){if(teamPreview)return;operation("history",id,"delete");await journal.flush();await refreshLibrary();}
 export async function clearHistory(_source:HistorySource="all"){if(teamPreview)return;operation("history","*","clear");await journal.flush();await refreshLibrary();}
-export function getSyncStatus(){return cache.sync;}
-export async function configureSync(url:string,key:string,enabled=true){const data=(await client().post("/api/library/sync",enabled?{url,key}:{enabled:false})).data;cache.sync=data;await refreshLibrary();return data;}
 if(!teamPreview&&!migrationOnly&&!['/admin','/creator'].includes(window.location.pathname.replace(/\/+$/,''))){setInterval(()=>void refreshLibrary().catch(()=>{}),1000);window.addEventListener("online",()=>void refreshLibrary().catch(warning));window.addEventListener("storage",event=>{if(identityKnown&&event.key==="hg_account_owner"&&event.newValue&&event.newValue!==libraryOwner)window.location.reload();});}
 
 export const api = {

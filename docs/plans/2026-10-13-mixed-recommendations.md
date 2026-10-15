@@ -4,7 +4,7 @@
 
 **Architecture:** 纯 JavaScript 推荐核心由 Node 本地服务与 TV QuickJS 共同运行。远程仅同步资料及显式偏好，不依赖远程才能推荐。每个播放会话携带独立随机 session ID，分页结果可重试且已发内容不重复。
 
-**Tech Stack:** Node SQLite、Kotlin/Android SQLite、QuickJS、React、现有家庭同步协议。
+**Tech Stack:** Node SQLite、Kotlin/Android SQLite、QuickJS、React。
 
 ### 1. 共用规则和本地服务
 新增共享推荐排序模块及测试。候选来自三种官网分类热门、最新和兴趣题材；默认配比 50/30/20，至少 20% 探索，七天观看降权、全剧完播默认排除。稳定种子打破同分，每次新会话种子不同。来源失败用可用类型补足，首屏不等待所有来源。会话分页去重、过期及并发请求保护。

@@ -101,11 +101,11 @@ test("存储不可用时仍能切换界面，并报告无法持久化", () => {
 
 test("其他标签页的语言修改和已存在的错误提示随语言更新", () => {
   const runtime = loadRuntime();
-  const error = "远程地址无效";
+  const error = "资料分页无效";
   runtime.storage.set(languageKey, "fr-CA");
   runtime.listeners.get("storage")({ key: languageKey });
   assert.equal(runtime.document.documentElement.lang, "fr-CA");
-  assert.equal(runtime.localizeError(error), "Entrez une adresse valide pour le service distant.");
+  assert.equal(runtime.localizeError(error), "Page de bibliothèque non valide");
   assert.equal(runtime.localizeError("未知服务错误"), runtime.t("操作失败，请稍后重试"));
   runtime.storage.clear();
   runtime.listeners.get("storage")({ key: null });

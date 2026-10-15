@@ -16,8 +16,6 @@ import { readJson } from '../shared/http-json.mjs';
 import { PlaybackGuard } from '../server/playback-guard.mjs';
 import { TrafficBudget } from '../server/traffic-budget.mjs';
 import desktopProxy from '../apps/web-pc/electron/desktop-proxy.cjs';
-import { LibraryStore } from '../shared/library-store.mjs';
-import { LibrarySync } from '../server/library-sync.mjs';
 
 const origin = 'http://127.0.0.1:8793';
 const uploadId = '00000000-0000-4000-8000-000000000001';
@@ -47,7 +45,7 @@ test('公开目录、播放入口和账户流程只允许声明的方法，未�
   }
   for(const route of ['/api/auth/register','/api/auth/login','/api/auth/recover','/api/auth/reset','/api/auth/verify','/api/auth/logout'])assert.doesNotThrow(()=>f.authorize(route,'POST'));
   for(const route of ['/api/account/session','/api/auth/google/start','/api/auth/google/callback','/api/episodes/101/interactions','/api/episodes/101/comments'])assert.doesNotThrow(()=>f.authorize(route,'GET'));
-  for(const route of ['/api','/api/admin/unknown','/api/account/export','/api/episodes/101/source','/api/series/91/internal'])assert.throws(()=>f.authorize(route,'GET',f.actors.admin),error=>error.status===404);
+  for(const route of ['/api','/api/admin/unknown','/api/account/export','/api/episodes/101/source','/api/series/91/internal','/api/library/sync'])assert.throws(()=>f.authorize(route,'GET',f.actors.admin),error=>error.status===404);
 });
 
 test('账户、会员、互动和后台接口拒绝游客及普通用户提权，创作者权限限于报告入口', t => {
@@ -79,10 +77,9 @@ test('私有读取与写入拒绝外站来源，预检不能增加方法或绕�
 });
 
 test('个人库和历史每条接口绑定会话归属，猜测账户编号或缺少归属声明不能读取', t => {
-  const f=fixture(t), routes=[['/api/library','GET'],['/api/library/sync','GET'],['/api/library/operations','POST'],['/api/library/import','POST'],['/api/history','GET'],['/api/history','DELETE'],['/api/history/sessions','POST'],['/api/history/progress','POST'],['/api/history/import','POST'],['/api/history/91','GET'],['/api/history/91','DELETE'],['/api/recommend','GET']];
+  const f=fixture(t), routes=[['/api/library','GET'],['/api/library/operations','POST'],['/api/library/import','POST'],['/api/history','GET'],['/api/history','DELETE'],['/api/history/sessions','POST'],['/api/history/progress','POST'],['/api/history/import','POST'],['/api/history/91','GET'],['/api/history/91','DELETE'],['/api/recommend','GET']];
   for(const [route,method] of routes){const req=f.request(route,method,f.actors.viewer),res={setHeader(){}};assert.throws(()=>f.policy(req,res,new URL(route,origin)),error=>error.status===409);req.headers['x-library-owner']=f.actors.admin.user.id;assert.throws(()=>f.policy(req,res,new URL(route,origin)),error=>error.status===409);req.headers['x-library-owner']=f.actors.viewer.user.id;assert.doesNotThrow(()=>f.policy(req,res,new URL(route,origin)));}
-  const sync=f.request('/api/library/sync','POST',f.actors.viewer);sync.headers['x-library-owner']=f.actors.viewer.user.id;
-  assert.throws(()=>f.policy(sync,{setHeader(){}},new URL(sync.url,origin)),error=>error.status===403);
+  assert.throws(()=>f.authorize('/api/library/sync','POST',f.actors.admin),error=>error.status===404);
 });
 
 test('读取正文期间退出会话，完成读取后拒绝提交而不继续使用旧身份', async t => {
@@ -94,18 +91,6 @@ test('读取正文期间退出会话，完成读取后拒绝提交而不继续�
   const result=readJson(input), rejected=assert.rejects(result,error=>error.status===401);
   await reading;f.users.logout(f.actors.viewer.token);finish();await rejected;
   assert.equal(f.users.byId(f.actors.viewer.user.id).name,'普通观众');
-});
-
-test('远程同步握手等待期间管理员退出，配置不能继续保存或开始同步', async t => {
-  const f=fixture(t),library=new LibraryStore(':memory:'),sync=new LibrarySync(library);
-  t.after(()=>{sync.stop();library.close();});
-  const req=f.request('/api/library/sync','POST',f.actors.admin);req.headers['x-library-owner']=f.actors.admin.user.id;
-  f.policy(req,{setHeader(){}},new URL(req.url,origin));
-  let complete;sync.request=()=>new Promise(resolve=>{complete=resolve;});
-  const configured=sync.configure({url:'https://sync.example',key:'isolated-test-key-123456'},req.revalidateAccess);
-  const rejected=assert.rejects(configured,error=>error.status===409);
-  f.users.logout(f.actors.admin.token);complete({protocolVersion:1,instanceId:'qa-instance',serverTime:Date.now()});
-  await rejected;assert.equal(library.getMeta('syncConfig'),null);assert.equal(sync.view().enabled,false);
 });
 
 test('桌面豁免要求真实本机与可信来源，null来源、伪造Host和转发头均不能取得本地权限', () => {

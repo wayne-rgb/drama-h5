@@ -62,15 +62,6 @@ test('没有客户端时间的旧接口操作不被整理，重试仍保持原�
   assert.deepEqual(store.write(input),saved);assert.equal(store.snapshot().history[0].positionMs,600);
 });
 
-test('已有同步关系保留全部未确认事件，整理后的快照也能首次同步并保留清空标记',t=>{
-  const store=new LibraryStore(':memory:',{compactLocal:true}),remote=new LibraryStore(':memory:');t.after(()=>{store.close();remote.close();});
-  for(let index=1;index<=700;index++)store.write(progress(`进度${index}`,index));while(store.maintain(true)){}
-  store.write({id:'清空',kind:'history',key:'*',op:'clear',at:800});store.seedTarget('远端');const before=count(store);
-  for(let index=1;index<=700;index++)store.write(progress(`同步进度${index}`,1000+index,index));assert.equal(count(store),before+700);assert.equal(store.maintain(true),0);
-  while(store.pending('远端').length){const events=store.pending('远端');remote.receive(events);store.acknowledge('远端',events.map(event=>event.id));}
-  assert.deepEqual(remote.snapshot(),store.snapshot());assert.equal(remote.snapshot().history[0].positionMs,700);
-});
-
 test('关闭紧急限制时无效监测参数只采用默认值，开启时仍严格拒绝配置错误',()=>{
   const config={CONTENT_DAILY_BYTES:0,CONTENT_VIEWER_DAILY_BYTES:'无效',CONTENT_IP_DAILY_BYTES:-1,CONTENT_VIP_RESERVED_BYTES:-1},budget=new TrafficBudget(':memory:',config);
   try{assert.deepEqual(budget.limits,[100*1024**3,5*1024**3,50*1024**3]);assert.doesNotThrow(()=>budget.check('观众','网络'));const meter=budget.meter('观众','网络');meter.consume(4);meter.close();}finally{budget.close();}

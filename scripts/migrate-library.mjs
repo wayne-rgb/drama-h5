@@ -7,7 +7,7 @@ const store=new LibraryStore(path.join(newDirectory,'library.sqlite'));const mar
 try{
  if(!store.getMeta(marker)){
   const libraryFile=path.join(oldDirectory,'library.sqlite');
-  if(fs.existsSync(libraryFile)){const old=new LibraryStore(libraryFile);try{const events=old.db.prepare('SELECT event_json FROM library_records').all().map(row=>JSON.parse(row.event_json));for(let i=0;i<events.length;i+=256)store.receive(events.slice(i,i+256),{canonical:true});}finally{old.close();}}
+  if(fs.existsSync(libraryFile)){const old=new LibraryStore(libraryFile);try{const events=old.db.prepare('SELECT event_json FROM library_records').all().map(row=>JSON.parse(row.event_json));for(let i=0;i<events.length;i+=256)store.importEvents(events.slice(i,i+256),{canonical:true});}finally{old.close();}}
   else if(fs.existsSync(path.join(oldDirectory,'history.sqlite'))){const old=new HistoryStore(path.join(oldDirectory,'history.sqlite'));try{for(const item of old.list())store.write({id:'legacy-directory:'+item.seriesId,kind:'history',key:item.seriesId,op:'set',at:item.updatedAt,value:item});}finally{old.close();}}
   else throw Error('source has no supported library/history database');
   store.setMeta(marker,true);

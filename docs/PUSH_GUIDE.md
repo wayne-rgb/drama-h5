@@ -23,7 +23,6 @@ git push origin HEAD:main
 | --- | --- |
 | `apps/web-pc/` | Web 源码、Electron 主进程、依赖锁文件与配置 |
 | `apps/tv-android/` | TV 源码、资源、测试、QuickJS 源码与许可证、Gradle Wrapper |
-| `apps/sync-server/` | 共享服务、管理平台、Docker 配置 |
 | `server/` | 本地资料、推荐及播放后端 |
 | `shared/` | 共用内容引擎与适配器、推荐算法、分类契约、资料模型、第三方来源说明 |
 | `assets/branding/` | 图标原始素材与设计说明 |
@@ -44,8 +43,8 @@ git push origin HEAD:main
 | `dist-win/`、所有 `dist/` 和 `build/` | 桌面程序目录及 Web/Android 构建产物 |
 | `.gradle/`、`.kotlin/`、`.cxx/` | 构建缓存与中间文件 |
 | `.workbuddy-ai/`、IDE 配置 | 本机助手记录与编辑器设置 |
-| `server/data/`、`apps/sync-server/data/`、`server/.local/` | 本地业务资料、配置、运行日志和密钥 |
-| `.env`、`local.properties`、数据库、日志、签名文件和 `shared-key.txt` | 机器路径、运行数据及凭据 |
+| `server/data/`、`server/.local/` | 本地业务资料、配置和运行日志 |
+| `.env`、`local.properties`、数据库、日志和签名文件 | 机器路径、运行数据及凭据 |
 
 本机用户目录中的应用资料也不属于源码仓库。可安装包以后单独作为 Release 附件分发，不提交到源码历史。不要使用强制添加绕过忽略规则。
 

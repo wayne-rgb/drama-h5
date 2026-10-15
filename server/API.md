@@ -1,4 +1,4 @@
-> 当前资料接口改为本地 /api/library 与可选远程 /api/sync；详见 [本地服务与远程同步](../docs/LOCAL_REMOTE_SERVICES.md)。旧 /api/history 保留兼容，来源分类不再用于页面。内容直接调用内置引擎，不需要固定上游。
+> 当前资料接口使用本地 `/api/library`；详见 [本地服务](../docs/LOCAL_SERVICES.md)。旧 `/api/history` 保留兼容，来源分类不再用于页面。内容直接调用内置引擎，不需要固定上游。
 
 # 红果短剧全能 Bridge 服务端 API 规范文档 (v2.5 全量版)
 
@@ -51,7 +51,7 @@
 
 ### 账号与会员接口
 
-账号数据保存在 `accounts.sqlite`。已登录账号的追剧、历史、偏好与推荐分别使用独立资料库；读取和写入 `/api/library`、`/api/history`、`/api/recommend` 时必须携带与会话一致的 `X-Library-Owner`（账号 ID）。游客保留原本机／家庭资料，登录不会自动将游客资料导入个人账号。切换账号时旧队列保持原归属，过期会话或归属不符返回 `409`。
+账号数据保存在 `accounts.sqlite`。已登录账号的追剧、历史、偏好与推荐分别使用独立资料库；读取和写入 `/api/library`、`/api/history`、`/api/recommend` 时必须携带与会话一致的 `X-Library-Owner`（账号 ID）。游客保留原本机资料，登录不会自动将游客资料导入个人账号。切换账号时旧队列保持原归属，过期会话或归属不符返回 `409`。
 
 | 请求 | 接口 | 内容 |
 | :--- | :--- | :--- |
@@ -494,9 +494,9 @@
   - 🔐 **服务端底层实时解密**：原生 CENC AES-128-CTR 块解密，输出纯净标准 MP4。
   - ⚡ **完整 HTTP Range 分段请求**：支持任意时间戳拖拽快进/快退，毫秒级响应。
 
-### 15. 家庭共享观看历史
+### 15. 本地观看历史
 
-新增 `/api/history` 查询／删除、`/api/history/sessions` 会话注册、`/api/history/progress` 实时进度及 `/api/history/import` 本地迁移接口。支持 `all/web/pc/tv` 来源，SQLite 持久化，所有进度单位为毫秒。完整契约、删除规则与部署位置见 [共享历史说明](../docs/SHARED_HISTORY.md)。
+`/api/history` 提供查询／删除，`/api/history/sessions` 注册会话，`/api/history/progress` 保存实时进度，`/api/history/import` 迁移旧资料。支持 `all/web/pc/tv` 来源，SQLite 持久化，所有进度单位为毫秒。
 
 
 
@@ -507,7 +507,7 @@
 
 H5 的 `/api/account/session` 同时返回 `libraryOwner`，未登录时签发独立的 `hg_guest_session`（HttpOnly、SameSite=Lax，HTTPS 下附加 Secure）。游客签名由持久化服务密钥验证，追剧、历史、搜索和偏好存于独立游客目录；个人资料接口必须携带该会话及匹配的 `X-Library-Owner`，仅传入其他用户编号不能读取或修改其记录。原共享游客库保留给 `HG_MANAGED=1` 的桌面本地模式，不复制到任意新游客。
 
-H5 普通账户和游客不能配置家庭同步，也不会启动旧家庭同步配置的后台请求；该操作仅允许管理员，桌面本地模式继续支持。界面按 `capabilities.librarySync` 显示操作入口。个人数据库连接缓存上限为128，关闭空闲连接不会删除资料。页面及接口统一设置 nosniff、DENY、防止外站嵌入的 CSP 和来源策略。
+旧版本保存的远程资料配置在数据库打开时清除，服务不再提供对应接口，也不会启动后台网络请求。个人数据库连接缓存上限为128，关闭空闲连接不会删除资料。页面及接口统一设置 nosniff、DENY、防止外站嵌入的 CSP 和来源策略。
 
 后台通过真实分类接口提供可选题材，保存不随界面翻译变化的 `categoryIds`；用户输入的剧名、简介和 `tags` 保留原始内容。自有上架内容独立进入推荐池，不等待外部内容源，列表接口只传递卡片元数据。
 

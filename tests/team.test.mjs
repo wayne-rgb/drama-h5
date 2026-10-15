@@ -94,7 +94,7 @@ test('团队预览拦截个人资料、互动和管理写入，普通观看仍�
   const cases=[
     ['/api/account/session'],['/api/library'],['/api/history'],['/api/recommend'],['/api/me/likes'],['/api/admin/accounts'],
     ['/api/account/profile',{name:'不得写入的资料'}],['/api/library/operations',{kind:'history',key:series.id,op:'set',value:{seriesId:series.id}}],
-    ['/api/library/import',{operations:[]}],['/api/library/sync',{enabled:false}],['/api/history/progress',{seriesId:series.id}],
+    ['/api/library/import',{operations:[]}],['/api/history/progress',{seriesId:series.id}],
     ['/api/episodes/123/likes',{liked:true}],['/api/episodes/123/comments',{body:'不得写入的互动'}],
     ['/api/analytics/sessions',{seriesId:series.id}],['/api/billing/checkout',{planId:'monthly'}],['/api/auth/logout',{}],
     ['/api/admin/membership',{accountId:viewer.id,revoke:true}],['/api/team/members'],

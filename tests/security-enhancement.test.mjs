@@ -12,7 +12,6 @@ import {createApiPolicy} from '../server/api-policy.mjs';
 import {PersonalStorage} from '../server/personal-storage.mjs';
 import {TrafficBudget} from '../server/traffic-budget.mjs';
 import {LibraryStore} from '../shared/library-store.mjs';
-import {LibrarySync} from '../server/library-sync.mjs';
 import {fork} from 'node:child_process';
 
 test('个人资料新游客数量有界，旧数据超额仍可读取且不会删除记录',async t=>{
@@ -48,26 +47,6 @@ test('视频公共额度不能消耗会员保留额度，会员仍遵守同一�
 test('旧流量账本已消耗的字节同样计入会员保留边界',()=>{
   const budget=new TrafficBudget(':memory:',{CONTENT_ENFORCE_DAILY_LIMITS:'1',CONTENT_DAILY_BYTES:100,CONTENT_VIEWER_DAILY_BYTES:100,CONTENT_IP_DAILY_BYTES:100,CONTENT_VIP_RESERVED_BYTES:20});
   try{budget.db.prepare('INSERT INTO traffic_budget VALUES(?,?,?)').run(budget.currentDay(),'global',80);assert.throws(()=>budget.check('游客','地址'),error=>error.status===429);assert.doesNotThrow(()=>budget.check('会员','地址',true));}finally{budget.close();}
-});
-
-test('同步公网模式拒绝内网，本机模式保留正常同步但不跟随跳转或泄露共享密钥',async t=>{
-  const store=new LibraryStore(':memory:');t.after(()=>store.close());let redirected=0;
-  const target=http.createServer((req,res)=>{redirected++;res.end('{}');});await new Promise(resolve=>target.listen(0,'127.0.0.1',resolve));
-  const server=http.createServer((req,res)=>{res.writeHead(302,{Location:`http://127.0.0.1:${target.address().port}/private`});res.end();});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  t.after(async()=>{for(const value of [server,target])await new Promise(resolve=>{value.close(resolve);value.closeAllConnections();});});
-  const config={url:`http://127.0.0.1:${server.address().port}`,key:'isolated-test-shared-key'};
-  await assert.rejects(new LibrarySync(store).request(config,'/api/sync/handshake'),error=>error.status===502);
-  // 请求头使用合法的ASCII密钥，跳转目的地不应收到任何请求。
-  await assert.rejects(new LibrarySync(store,{allowPrivateTargets:true}).request({...config,key:'isolated-test-shared-key'},'/api/sync/handshake'),error=>error.status===502);
-  assert.equal(redirected,0);
-});
-
-test('同步响应大小限制在读取阶段生效，远程错误文本不会传给用户',async t=>{
-  const store=new LibraryStore(':memory:'),sync=new LibrarySync(store,{allowPrivateTargets:true});sync.client.defaults.maxContentLength=32;
-  const server=http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');if(req.url==='/error'){res.writeHead(500);res.end(JSON.stringify({error:'内部路径与密钥不得显示'}));}else res.end(JSON.stringify({value:'实际响应'.repeat(20)}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  t.after(async()=>{store.close();await new Promise(resolve=>{server.close(resolve);server.closeAllConnections();});});
-  const config={url:`http://127.0.0.1:${server.address().port}`,key:'isolated-test-shared-key'};
-  for(const route of ['/large','/error'])await assert.rejects(sync.request(config,route),error=>error.status===502&&error.message==='远程同步失败，请检查地址与密钥');
 });
 
 test('TOTP按RFC6238标准向量生成六位动态码',()=>{
@@ -115,13 +94,6 @@ test('登录设备接口仅返回并撤销当前账户的会话，不能撤销�
   const foreignId=store.db.prepare('SELECT token_hash FROM account_sessions WHERE account_id=?').get(other.id).token_hash;
   assert.equal((await fetch(base+'/api/account/sessions/revoke',{method:'POST',headers,body:JSON.stringify({id:foreignId})})).status,200);assert.ok(store.viewer(foreign));
   assert.equal((await fetch(base+'/api/account/sessions/revoke',{method:'POST',headers,body:JSON.stringify({others:true})})).status,200);assert.equal(store.viewer(second),null);assert.ok(store.viewer(current));
-});
-
-test('后台同步接收数据同样遵守存储保护，拒绝时保留旧资料且不会确认新事件',async t=>{
-  const store=new LibraryStore(':memory:');t.after(()=>store.close());store.write({kind:'favorite',key:'1',op:'set',value:{id:'1',title:'现有收藏'}});
-  const remote=new LibraryStore(':memory:');t.after(()=>remote.close());const event=remote.write({kind:'favorite',key:'2',op:'set',value:{id:'2',title:'待同步收藏'}});
-  const sync=new LibrarySync(store,{guardWrite:()=>{throw new AccountError(507,'个人资料存储额度不足，请稍后重试');}});
-  assert.throws(()=>sync.receive([event],{canonical:true}),error=>error.status===507);assert.deepEqual(store.snapshot().favorites.map(row=>row.id),['1']);assert.equal(store.db.prepare('SELECT 1 FROM library_events WHERE id=?').get(event.id),undefined);
 });
 
 test('密码重置撤销未完成的验证器绑定候选及旧会话',async t=>{

@@ -7,8 +7,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const remote=process.env.HG_SERVICE==='sync';
-const profile=process.env.HG_DATA_DIR||path.join(process.platform==='win32'?(process.env.APPDATA||os.homedir()):process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support'):(process.env.XDG_DATA_HOME||path.join(os.homedir(),'.local','share')),'HongguoTV',remote?'remote-service':'web-service');
+const profile=process.env.HG_DATA_DIR||path.join(process.platform==='win32'?(process.env.APPDATA||os.homedir()):process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support'):(process.env.XDG_DATA_HOME||path.join(os.homedir(),'.local','share')),'HongguoTV','web-service');
 mkdirSync(profile,{recursive:true,mode:0o700});
 const stateFile=path.join(profile,'service-state.json'),lockFile=path.join(profile,'service.lock');
 const readState=()=>{try{return JSON.parse(readFileSync(stateFile,'utf8'));}catch{return null;}};
@@ -31,11 +30,10 @@ if(command==='stop'){
  for(let attempt=0;attempt<100;attempt++){ready=await control(readState());if(ready)break;await new Promise(resolve=>setTimeout(resolve,150));}
  if(!ready)throw Error(`启动未就绪，请查看 ${path.join(profile,'service-errors.log')}；如端口占用，设置 HG_PORT 后重试。`);
  console.log(`服务地址：http://localhost:${ready.port}\n数据：${profile}\n日志：${path.join(profile,'service.log')}`);
- if(remote)console.log(`家庭密钥文件：${path.join(profile,'shared-key.txt')}`);
 }else if(command==='run'){
  const token=process.argv[3];if(!token)throw Error('managed startup token required');
  let stopped=false,backendReady=false;
- const child=fork(path.join(root,remote?'apps/sync-server/index.mjs':'server/index.mjs'),[],{execPath:process.execPath,cwd:root,env:{...process.env,HG_MANAGED:'1',HG_DATA_DIR:profile,PORT:process.env.HG_PORT||(remote?'8791':'8788')},windowsHide:true,stdio:['ignore','inherit','inherit','ipc']});
+ const child=fork(path.join(root,'server/index.mjs'),[],{execPath:process.execPath,cwd:root,env:{...process.env,HG_MANAGED:'1',HG_DATA_DIR:profile,PORT:process.env.HG_PORT||'8788'},windowsHide:true,stdio:['ignore','inherit','inherit','ipc']});
  const controller=http.createServer((req,res)=>{
   if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(403);res.end();return;}
   res.setHeader('Content-Type','application/json');
@@ -43,11 +41,10 @@ if(command==='stop'){
   else if(req.url==='/stop'&&req.method==='POST'){res.end('{"ok":true}');shutdown();}
   else{res.writeHead(404);res.end('{}');}
  });
- const state={pid:process.pid,backendPid:child.pid,token,port:Number(process.env.HG_PORT||(remote?'8791':'8788')),controlPort:0};
+ const state={pid:process.pid,backendPid:child.pid,token,port:Number(process.env.HG_PORT||'8788'),controlPort:0};
  controller.listen(0,'127.0.0.1',()=>{state.controlPort=controller.address().port;publish();});
  const publish=()=>{if(backendReady&&state.controlPort&&state.port)writeFileSync(stateFile,JSON.stringify(state),{mode:0o600});};
  child.on('message',message=>{if(message?.type==='ready'){backendReady=true;state.port=message.port;publish();}});
- // Remote service uses the same ready IPC contract as the local server.
  child.on('exit',(code)=>{removeOwned(stateFile,token);removeOwned(lockFile,token);controller.close();process.exitCode=code||0;});
  function shutdown(){if(stopped)return;stopped=true;if(child.connected)child.send({type:'shutdown'});const timeout=setTimeout(()=>child.kill('SIGTERM'),5000);timeout.unref();}
  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,shutdown);

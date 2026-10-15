@@ -45,6 +45,6 @@ test('unified local service starts, serves Web, persists records and shuts down 
   const restarted = await start();
   const library = await (await fetch(restarted + '/api/library')).json();
   assert.equal(library.favorites.find(row => row.id === operation.key)?.title, operation.value.title);
-  assert.equal(library.sync.enabled, false);
+  assert.equal(Object.hasOwn(library, 'sync'), false);
   await stop();
 });

@@ -54,7 +54,7 @@ export function createAccountService(store, config = process.env) {
     isLocal: req => localAccess.local(req),
     address: req => clientAddress(req, rates.trusted),
     audience: req => viewer(req) || store.guest(cookies(req).hg_guest_session),
-    canConfigureSync: (account, req) => !!req && localAccess.local(req) || isAdministrator(account,config),
+    privilegedPlayback: (account, req) => !!req && localAccess.local(req) || isAdministrator(account,config),
     guardLibrary(req) {
       const local = localAccess.local(req), account = viewer(req), guest = !account && !local ? store.guest(cookies(req).hg_guest_session) : null;
       const owner = account?.id || (guest ? `guest:${guest.id}` : 'guest');
@@ -63,7 +63,6 @@ export function createAccountService(store, config = process.env) {
       if (account || guest ? requested !== owner : requested && requested !== owner) throw new AccountError(409, '登录状态已变化，请刷新页面');
       // 本地资料只给核实来源的本机访问；普通账户与游客资料始终绑定真实会话。
       sameOrigin(req);
-      if (req.method === 'POST' && new URL(req.url,origin).pathname === '/api/library/sync' && !local && !isAdministrator(account,config)) throw new AccountError(403,'需要管理员权限');
       return account || guest;
     },
     async handle(req, res, url) {
@@ -91,7 +90,7 @@ export function createAccountService(store, config = process.env) {
             const session = store.guestSession();guest={id:session.id,guest:true};setCookie(res,'hg_guest_session',session.token,31536000);
           }
           if (!account && local) res.setHeader('Access-Control-Allow-Origin', '*');
-          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), adminAccount:isAdministratorAccount(account,config), adminMfaEnabled:!!account?.mfa_enabled, adminMfaRequired:config.ADMIN_REQUIRE_MFA==='1', creator: store.isCreator(account?.id), librarySync: local || isAdministrator(account,config) }, plans: membershipPlans, siteUrl: origin });
+          reply(res, { user: store.publicAccount(account), libraryOwner: account?.id || (guest ? `guest:${guest.id}` : 'guest'), capabilities: { ...capabilities, admin: isAdministrator(account, config), adminAccount:isAdministratorAccount(account,config), adminMfaEnabled:!!account?.mfa_enabled, adminMfaRequired:config.ADMIN_REQUIRE_MFA==='1', creator: store.isCreator(account?.id) }, plans: membershipPlans, siteUrl: origin });
         }
         else if (route === '/api/auth/register' && req.method === 'POST') {
           rateLimit(req, 'register', 10);

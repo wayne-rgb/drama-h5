@@ -1,6 +1,6 @@
 # 多端混合推荐
 
-Web、Windows 桌面和 Android TV 共用 `shared/recommendation-core.cjs`。本地服务负责生成推荐；远程共享服务仅同步观看资料、推荐信号及显式偏好，未配置远程仍可推荐。
+Web、Windows 桌面和 Android TV 共用 `shared/recommendation-core.cjs`。本地服务负责生成推荐，各端使用当前账户或设备保存的观看资料、推荐信号及显式偏好。
 
 ## 候选与排序
 
@@ -12,9 +12,9 @@ Web、Windows 桌面和 Android TV 共用 `shared/recommendation-core.cjs`。本
 
 ## 信号与偏好
 
-`recommendation` 资料以 `sessionId:seriesId` 为键，保存 `seriesId/title/tags/contentType/watchMs/exposures/skips/completed` 累计信号。`watchMs` 为实际播放的单调时钟时长，不是视频时间轴，快进和倍速不会虚增。每 10 秒及关键生命周期操作持久化，通过现有事务 outbox 幂等同步；原观看历史仍每秒持久化。
+`recommendation` 资料以 `sessionId:seriesId` 为键，保存 `seriesId/title/tags/contentType/watchMs/exposures/skips/completed` 累计信号。`watchMs` 为实际播放的单调时钟时长，不是视频时间轴，快进和倍速不会虚增。每 10 秒及关键生命周期操作持久化；原观看历史仍每秒持久化。
 
-显式偏好 `recommendationMode` 支持 `mixed/real-drama/comic-drama/ai-drama`，`recommendationResetAt` 使用与同步事件一致的服务器校时时间域。重置兴趣保留收藏和历史，旧信号停止续写，新观看重新累计。Web、电脑、TV 设置及远程管理平台都提供推荐模式与兴趣重置；模式在下一次进入推荐/选择新剧时生效。
+显式偏好 `recommendationMode` 支持 `mixed/real-drama/comic-drama/ai-drama`。重置兴趣保留收藏和历史，旧信号停止续写，新观看重新累计。Web、电脑和 TV 设置均提供推荐模式与兴趣重置；模式在下一次进入推荐或选择新剧时生效。
 
 ## 服务与边界
 

@@ -20,7 +20,7 @@ class RecommendationLibraryTest {
             assertEquals(3000L,signal.getLong("watchMs"))
             assertTrue(signal.has("updatedAt"))
             assertEquals(12345L,profile.getJSONObject("preferences").getLong("recommendationResetAt"))
-            assertEquals(3,library.pending().size)
+            assertEquals(1,library.rows("recommendation").size)
         }finally{library.close()}
     }
 }

@@ -4,7 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Portable library lives in SQLite; connection credentials stay device-local. */
+/** 收藏、历史和偏好保存在电视本机 SQLite。 */
 class TvStore(context:Context) {
     private val preferences=context.applicationContext.getSharedPreferences("hongguotv_tv_v1",Context.MODE_PRIVATE)
     private val library=TvLibrary.get(context)
@@ -50,7 +50,7 @@ class TvStore(context:Context) {
         set(value){require(value in listOf("mixed","real-drama","comic-drama","ai-drama"));library.write("preference","recommendationMode","set",JSONObject().put("value",value))}
     val recommendationResetAt:Long get()=library.rows("preference").firstOrNull{it.getString("key")=="recommendationResetAt"}?.getJSONObject("value")?.optLong("value",0)?:0
     fun resetRecommendationPreferences(){library.transaction {
-        val at=recommendationResetWatermark(System.currentTimeMillis(),setting("clockOffset","0").toLong(),setting("lastTime","0").toLong())
+        val at=recommendationResetWatermark(System.currentTimeMillis(),setting("lastTime","0").toLong())
         write("preference","recommendationResetAt","set",JSONObject().put("value",at))
     }}
     fun saveRecommendation(session:String,series:Series,watchMs:Long,exposures:Int,skips:Int,completed:Boolean){
@@ -69,7 +69,7 @@ class TvStore(context:Context) {
     fun searches()=library.rows("search").map{it.getJSONObject("value").getString("query")}
 }
 
-internal fun recommendationResetWatermark(systemNow:Long,clockOffset:Long,lastTime:Long):Long {
-    val clock=(systemNow+clockOffset).coerceAtLeast(0)
+internal fun recommendationResetWatermark(systemNow:Long,lastTime:Long):Long {
+    val clock=systemNow.coerceAtLeast(0)
     return maxOf(clock,if(kotlin.math.abs(lastTime-clock)>300000)clock else lastTime+1)
 }

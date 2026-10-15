@@ -63,9 +63,9 @@ export class LibraryStore {
       CREATE TABLE IF NOT EXISTS library_events(revision INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,device_id TEXT NOT NULL,seq INTEGER NOT NULL,kind TEXT NOT NULL,item_key TEXT NOT NULL,event_time INTEGER NOT NULL,event_json TEXT NOT NULL,fingerprint TEXT NOT NULL,is_local INTEGER NOT NULL,UNIQUE(device_id,seq));
       CREATE INDEX IF NOT EXISTS library_event_item ON library_events(kind,item_key,event_time);
       CREATE TABLE IF NOT EXISTS library_records(kind TEXT NOT NULL,item_key TEXT NOT NULL,event_json TEXT NOT NULL,PRIMARY KEY(kind,item_key));
-      CREATE INDEX IF NOT EXISTS library_record_order ON library_records(kind,json_extract(event_json,'$.at') DESC,json_extract(event_json,'$.deviceId') DESC,json_extract(event_json,'$.seq') DESC);
-      CREATE TABLE IF NOT EXISTS library_ack(target TEXT NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(target,event_id));`);
-    for(const key of ['deviceId','instanceId'])if(!this.getMeta(key))this.setMeta(key,randomUUID());
+      CREATE INDEX IF NOT EXISTS library_record_order ON library_records(kind,json_extract(event_json,'$.at') DESC,json_extract(event_json,'$.deviceId') DESC,json_extract(event_json,'$.seq') DESC);`);
+    this.db.exec("DROP TABLE IF EXISTS library_ack; DELETE FROM library_meta WHERE key='syncConfig' OR key='clockOffset' OR key='instanceId' OR key LIKE 'seed:%' OR key LIKE 'cursor:%'");
+    if(!this.getMeta('deviceId'))this.setMeta('deviceId',randomUUID());
     if(compactLocal){
       this.db.exec(`CREATE TABLE IF NOT EXISTS library_receipts(id TEXT PRIMARY KEY,device_id TEXT NOT NULL,seq INTEGER NOT NULL,event_time INTEGER NOT NULL,fingerprint TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS library_compact_floor(kind TEXT NOT NULL,item_key TEXT NOT NULL,event_time INTEGER NOT NULL,PRIMARY KEY(kind,item_key));
@@ -88,7 +88,7 @@ export class LibraryStore {
         if(receipt){const retry=validateEvent({...input,deviceId:receipt.device_id,seq:receipt.seq,at:input.at??receipt.event_time});if(fingerprint(retry)!==receipt.fingerprint)throw new LibraryError(409,'操作编号不能重复用于不同内容');return retry;}
       }
       const seq=(this.getMeta('sequence')||0)+1;
-      const clock=Math.round(Date.now()+(this.getMeta('clockOffset')||0));
+      const clock=Date.now();
       const last=this.getMeta('lastTime')||0;
       const at=input.at??Math.max(clock,Math.abs(last-clock)>300000?clock:last+1);
       const event=validateEvent({...input,id:input.id||randomUUID(),deviceId:this.getMeta('deviceId'),seq,at});
@@ -98,7 +98,7 @@ export class LibraryStore {
         if(floor&&event.at<=floor.event_time)return {...event,ignored:true};
       }
       if(event.op==='clear'&&this.canCompact()&&compactableKinds.includes(event.kind))this.db.prepare("DELETE FROM library_records WHERE kind=? AND item_key<>'*' AND json_extract(event_json,'$.at')<=?").run(event.kind,event.at);
-      this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event,1);
+      this.setMeta('sequence',seq);this.setMeta('lastTime',at);this.insert(event);
       if(this.compactLocal&&input.at==null&&compactableKinds.includes(event.kind))this.db.prepare('INSERT OR IGNORE INTO library_pins VALUES(?)').run(event.id);
       return event;
   }
@@ -127,18 +127,18 @@ export class LibraryStore {
       return {ok:true,next,complete};
     });
   }
-  insert(event,isLocal,original=event) {
+  insert(event,original=event) {
     const known=this.db.prepare('SELECT * FROM library_events WHERE id=?').get(event.id);
     if(known){
       if(known.fingerprint!==fingerprint(original)&&fingerprint(JSON.parse(known.event_json))!==fingerprint(original))throw new LibraryError(409,'event ID was reused');
       return JSON.parse(known.event_json);
     }
-    try {this.db.prepare('INSERT INTO library_events(id,device_id,seq,kind,item_key,event_time,event_json,fingerprint,is_local) VALUES(?,?,?,?,?,?,?,?,?)').run(event.id,event.deviceId,event.seq,event.kind,event.key,event.at,JSON.stringify(event),fingerprint(original),isLocal);}
+    try {this.db.prepare('INSERT INTO library_events(id,device_id,seq,kind,item_key,event_time,event_json,fingerprint,is_local) VALUES(?,?,?,?,?,?,?,?,1)').run(event.id,event.deviceId,event.seq,event.kind,event.key,event.at,JSON.stringify(event),fingerprint(original));}
     catch(error){if(error.message.includes('UNIQUE'))throw new LibraryError(409,'device sequence was reused');throw error;}
     this.materialize(event);return event;
   }
   canCompact(){
-    return this.compactLocal&&!this.getMeta('syncConfig')&&!this.db.prepare("SELECT 1 FROM library_meta WHERE key LIKE 'seed:%' OR key LIKE 'cursor:%' LIMIT 1").get()&&!this.db.prepare('SELECT 1 FROM library_ack LIMIT 1').get()&&!this.db.prepare('SELECT 1 FROM library_events WHERE is_local=0 LIMIT 1').get();
+    return this.compactLocal;
   }
   maintain(force=false){
     if(!this.compactLocal || !force&&!this.compactionBacklog&&this.compactionTicks++%64!==0 || !this.canCompact())return 0;
@@ -164,11 +164,11 @@ export class LibraryStore {
     if(row&&compareEvents(event,JSON.parse(row.event_json))<=0)return;
     this.db.prepare('INSERT INTO library_records VALUES(?,?,?) ON CONFLICT(kind,item_key) DO UPDATE SET event_json=excluded.event_json').run(event.kind,event.key,JSON.stringify(event));
   }
-  receive(inputs,{clampFuture=false,canonical=false}={}) {
+  importEvents(inputs,{canonical=false}={}) {
     if(!Array.isArray(inputs)||inputs.length>256)fail('at most 256 events are allowed');
     const events=inputs.map(validateEvent);
     return this.transaction(()=>events.map(original=>{
-      const event=clampFuture?{...original,at:Math.min(original.at,Date.now()+300000)}:original;
+      const event=original;
       const known=this.db.prepare('SELECT * FROM library_events WHERE id=?').get(event.id);
       if(canonical&&known){
         const previous=JSON.parse(known.event_json);
@@ -181,7 +181,7 @@ export class LibraryStore {
         }
         return event;
       }
-      return this.insert(event,0,original);
+      return this.insert(event,original);
     }));
   }
   snapshot() {
@@ -194,9 +194,6 @@ export class LibraryStore {
       searchHistory:active.filter(e=>e.kind==='search').slice(0,10).map(e=>e.value.query),
       preferences:Object.fromEntries([['quality','auto'],['speed',1],['recommendationMode','mixed'],['recommendationResetAt',0],...active.filter(e=>e.kind==='preference').map(e=>[e.key,e.value.value])])};
   }
-  pending(target,limit=256){return this.db.prepare('SELECT event_json FROM library_events WHERE is_local=1 AND id NOT IN(SELECT event_id FROM library_ack WHERE target=?) ORDER BY revision LIMIT ?').all(target,limit).map(row=>JSON.parse(row.event_json));}
-  acknowledge(target,ids){this.transaction(()=>{const statement=this.db.prepare('INSERT OR IGNORE INTO library_ack VALUES(?,?)');for(const id of ids)statement.run(target,id);});}
-  changes(cursor=0,limit=256){number(cursor,'cursor');number(limit,'limit',1,256);const rows=this.db.prepare('SELECT revision,event_json FROM library_events WHERE revision>? ORDER BY revision LIMIT ?').all(cursor,limit+1);return{events:rows.slice(0,limit).map(row=>({revision:row.revision,...JSON.parse(row.event_json)})),cursor:rows.length?rows[Math.min(rows.length,limit)-1].revision:cursor,hasMore:rows.length>limit};}
   record(kind,key){
     const row=this.db.prepare('SELECT event_json FROM library_records WHERE kind=? AND item_key=?').get(kind,key);
     const clear=this.db.prepare("SELECT event_json FROM library_records WHERE kind=? AND item_key='*'").get(kind),event=row&&JSON.parse(row.event_json);
@@ -228,11 +225,4 @@ export class LibraryStore {
     };
     return {...snapshot,favorites:select('favorite'),history:select('history').map(({id,...item})=>({...item,seriesId:id,completed:!!item.completed})),recommendationSignals:select('recommendation').map(({id,...item})=>({...item,seriesId:id.split(':')[1],completed:!!item.completed}))};
   }
-  seedTarget(target){if(this.getMeta(`seed:${target}`))return;this.transaction(()=>{
-    for(const row of this.db.prepare('SELECT event_json FROM library_records').all()){
-      const event=JSON.parse(row.event_json);
-      this.db.prepare('UPDATE library_events SET is_local=1 WHERE id=?').run(event.id);
-    }
-    this.setMeta(`seed:${target}`,true);
-  });}
 }
