@@ -706,9 +706,9 @@ const server = http.createServer(async (req, res) => {
         };
         req.revalidatePlayback(true);const signal=coverGuard.acquire(req,res,viewer,address,!!resourceAudience(req));req.downloadMetered=true;return signal;
       };
-      if (/^\/api\/episodes\/\d+\/stream$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
+      if (/^\/api\/episodes\/\d+\/(?:stream|hls\/[^/]+\/[^/]+)$/.test(pathname) && ['GET','HEAD'].includes(req.method)) {
         if ((req.headers.range || '').length > 80) throw new AccountError(400, '请求格式无效');
-        requestGuard.checkVideo(viewer, address);
+        requestGuard.checkVideo(viewer, address, pathname.includes('/hls/'));
         playbackSignal = playbackGuard.acquire(req, res, viewer, address,!!audience);
         req.downloadMetered=true;
       } else {
@@ -948,14 +948,16 @@ const server = http.createServer(async (req, res) => {
     // 9. 官方多画质清晰度列表 (GET /api/episodes/:id/qualities)
     // 动态从官方接口读取该视频实际拥有的全部可解码播放清晰度档位，严格过滤会导致解码器崩溃的 bytevc2 私有流
     const qMatch = /^\/api\/episodes\/(\d+)\/qualities$/.exec(pathname);
-    const guardedPlayback = /^\/api\/episodes\/(\d+)\/(qualities|play|stream)$/.exec(pathname);
+    const guardedPlayback = /^\/api\/episodes\/(\d+)\/(qualities|play|stream|hls(?:\/[^/]+\/[^/]+))$/.exec(pathname);
     if (guardedPlayback) {
       if (!['GET','HEAD'].includes(req.method)) throw new AccountError(405,'请求方式无效');
       accounts.sameOrigin(req);
-      if(guardedPlayback[2]==='stream'&&!resourceAudience(req)&&!accounts.isLocal(req))throw new AccountError(401,'请刷新页面后重试');
+      const kind = guardedPlayback[2].startsWith('hls/') ? 'hls' : guardedPlayback[2];
+      if(['stream','hls'].includes(kind)&&!resourceAudience(req)&&!accounts.isLocal(req))throw new AccountError(401,'请刷新页面后重试');
       const seriesId = u.searchParams.get('seriesId') || u.searchParams.get('series_id') || vidToSeriesMap.get(guardedPlayback[1]);
       const resolved = await content.resolveEpisode(req, seriesId, guardedPlayback[1]);
-      if (await content.ownPlayback(req,res,guardedPlayback[2],resolved)) return;
+      if (await content.ownPlayback(req,res,kind,resolved)) return;
+      if (kind === 'hls') throw new AccountError(404, '视频源暂不可用，请重试');
     }
     if (qMatch) {
       const episodeId = qMatch[1];
@@ -1217,7 +1219,7 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return; shuttingDown = true; librarySync.stop();
   for (const service of personalLibraries.values()) service.sync.stop();
-  server.close(() => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } content.close(); trafficBudget.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
+  server.close(async () => { for (const service of personalLibraries.values()) { service.library.close(); service.history.close(); } await content.close(); trafficBudget.close(); accountStore.close(); libraryStore.close(); historyStore.close(); process.exit(0); });
   server.closeAllConnections();
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, shutdown);

@@ -192,7 +192,7 @@ export class LibraryStore {
       history:active.filter(e=>e.kind==='history').map(e=>({...e.value,updatedAt:e.at})),
       recommendationSignals:active.filter(e=>e.kind==='recommendation').map(e=>({...e.value,sessionId:e.key.split(':')[0],updatedAt:e.at})),
       searchHistory:active.filter(e=>e.kind==='search').slice(0,10).map(e=>e.value.query),
-      preferences:Object.fromEntries([['quality','1080P'],['speed',1],['recommendationMode','mixed'],['recommendationResetAt',0],...active.filter(e=>e.kind==='preference').map(e=>[e.key,e.value.value])])};
+      preferences:Object.fromEntries([['quality','auto'],['speed',1],['recommendationMode','mixed'],['recommendationResetAt',0],...active.filter(e=>e.kind==='preference').map(e=>[e.key,e.value.value])])};
   }
   pending(target,limit=256){return this.db.prepare('SELECT event_json FROM library_events WHERE is_local=1 AND id NOT IN(SELECT event_id FROM library_ack WHERE target=?) ORDER BY revision LIMIT ?').all(target,limit).map(row=>JSON.parse(row.event_json));}
   acknowledge(target,ids){this.transaction(()=>{const statement=this.db.prepare('INSERT OR IGNORE INTO library_ack VALUES(?,?)');for(const id of ids)statement.run(target,id);});}
@@ -217,7 +217,7 @@ export class LibraryStore {
   }
   snapshotPage(){
     const favorites=this.listPage('favorite'),history=this.listPage('history'),recommendation=this.listPage('recommendation'),preferences=this.listPage('preference'),search=this.listPage('search',{limit:10});
-    return {favorites:favorites.items,history:history.items,recommendationSignals:recommendation.items,searchHistory:search.items.map(item=>item.query),preferences:{quality:'1080P',speed:1,recommendationMode:'mixed',recommendationResetAt:0,...Object.fromEntries(preferences.items.map(item=>[item.key,item.value]))},pagination:{favorite:{next:favorites.next,count:favorites.count},history:{next:history.next,count:history.count},recommendation:{next:recommendation.next,count:recommendation.count}}};
+    return {favorites:favorites.items,history:history.items,recommendationSignals:recommendation.items,searchHistory:search.items.map(item=>item.query),preferences:{quality:'auto',speed:1,recommendationMode:'mixed',recommendationResetAt:0,...Object.fromEntries(preferences.items.map(item=>[item.key,item.value]))},pagination:{favorite:{next:favorites.next,count:favorites.count},history:{next:history.next,count:history.count},recommendation:{next:recommendation.next,count:recommendation.count}}};
   }
   profile(){
     // 推荐只读取真实偏好字段，不加载完整简介、封面和事件日志。

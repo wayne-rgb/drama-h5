@@ -211,9 +211,9 @@ export class TeamStore {
     if (this.owner(member)) return member;
     const series = /^\/api\/admin\/series(?:\/(\d+)(?:\/(?:episodes|publish|reorder)(?:\/\d+)?)?)?$/.exec(route);
     if (series) { if (!this.has(member, 'editor') || !series[1] && req.method !== 'GET') fail(403, '没有此操作的团队权限'); if (series[1]) this.requireSeries(req, 'editor', series[1]); return member; }
-    if (/^\/api\/admin\/uploads(?:\/[a-f0-9-]+)?$/.test(route)) {
+    if (/^\/api\/admin\/uploads(?:\/[a-f0-9-]+(?:\/hls\/retry)?)?$/.test(route)) {
       if (!this.has(member, 'editor')) fail(403, '没有此操作的团队权限');
-      const id = /^\/api\/admin\/uploads\/([^/]+)$/.exec(route)?.[1], asset = id && this.content.asset(id);
+      const id = /^\/api\/admin\/uploads\/([^/]+)(?:\/hls\/retry)?$/.exec(route)?.[1], asset = id && this.content.asset(id);
       if (id && (!asset || asset.owner_id !== member.id || !this.allowed(member, 'editor', asset.series_id))) fail(403, '没有此作品的操作权限');
       return member;
     }

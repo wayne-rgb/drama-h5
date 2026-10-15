@@ -21,6 +21,7 @@ export class ContentStore {
       CREATE TABLE IF NOT EXISTS content_episodes(id TEXT PRIMARY KEY,series_id TEXT NOT NULL,number INTEGER NOT NULL,title TEXT NOT NULL,asset_id TEXT NOT NULL,UNIQUE(series_id,number));
       CREATE TABLE IF NOT EXISTS content_assets(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,offset INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'uploading',metadata TEXT,error TEXT,created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS content_asset_locations(asset_id TEXT PRIMARY KEY,storage_id TEXT NOT NULL,object_key TEXT NOT NULL,version TEXT NOT NULL,size INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS content_hls_jobs(asset_id TEXT PRIMARY KEY,status TEXT NOT NULL,version TEXT NOT NULL,storage_id TEXT NOT NULL,object_key TEXT NOT NULL,reserved_bytes INTEGER NOT NULL DEFAULT 0,size INTEGER NOT NULL DEFAULT 0,manifest TEXT,error TEXT,updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS episode_likes(episode_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(episode_id,account_id));
       CREATE TABLE IF NOT EXISTS liked_episode_content(episode_id TEXT PRIMARY KEY,series_id TEXT NOT NULL,metadata TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS likes_account ON episode_likes(account_id,created_at,episode_id);
@@ -47,7 +48,11 @@ export class ContentStore {
     this.db.prepare('INSERT INTO content_audit VALUES(?,?,?,?,?,?)').run(row.id,row.admin_id,row.action,row.target_id,row.detail,row.created_at);
     captureAuditContext(this,row);
   }
-  asset(id) { const row = this.db.prepare('SELECT * FROM content_assets WHERE id=?').get(id); return row ? { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null } : null; }
+  asset(id) { const row = this.db.prepare('SELECT * FROM content_assets WHERE id=?').get(id); return row ? { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null, hls: this.hlsJob(id) } : null; }
+  hlsJob(id) {
+    const row = this.db.prepare('SELECT * FROM content_hls_jobs WHERE asset_id=?').get(id);
+    return row ? { ...row, manifest: row.manifest ? JSON.parse(row.manifest) : null } : null;
+  }
   assetLocation(id) {
     const row = this.db.prepare('SELECT * FROM content_asset_locations WHERE asset_id=?').get(id);
     return row ? { assetId: row.asset_id, storageId: row.storage_id, objectKey: row.object_key, version: row.version, size: row.size } : null;

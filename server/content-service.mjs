@@ -5,7 +5,8 @@ import { createTeamService } from './team-routes.mjs';
 import { ContentStore, textValue } from './content-store.mjs';
 import { createUploads } from './content-upload.mjs';
 import { LocalMediaStorage } from './media-storage.mjs';
-import { mp4PlaybackSource, sendMedia } from './media-delivery.mjs';
+import { mp4PlaybackSource, hlsPlaybackSource, sendMedia } from './media-delivery.mjs';
+import { Readable } from 'node:stream';
 import { readJson } from '../shared/http-json.mjs';
 import { ContentAnalytics } from './content-analytics.mjs';
 import { CommentModeration } from './comment-moderation.mjs';
@@ -88,7 +89,7 @@ export function createContentService(directory, accountStore, accounts, provider
   };
   return {
     store, team, detail, resolveEpisode, analytics,
-    close: () => { uploads.close(); store.close(); },
+    close: () => { const pending = uploads.close(); store.close(); return pending; },
     publicDetail: async (req, id) => {
       const initial=contentViewer(req),value=await detail(id,preview(initial,id)),user=contentViewer(req);
       if(value.owned){
@@ -113,6 +114,30 @@ export function createContentService(directory, accountStore, accounts, provider
       if (asset?.status !== 'ready') throw new AccountError(503, '视频尚未处理完成');
       const quality = `${Math.min(asset.metadata.width, asset.metadata.height)}P`;
       const requested = new URL(req.url,'http://localhost').searchParams.get('quality');
+      const job = store.hlsJob(asset.id);
+      if (kind === 'hls') {
+        const match = /^\/api\/episodes\/\d+\/hls\/([a-f0-9-]{36})\/([^/]+)$/.exec(new URL(req.url, 'http://localhost').pathname);
+        if (!match || job?.status !== 'ready' || match[1] !== job.version) throw new AccountError(404, '视频源暂不可用，请重试');
+        const previous = req.revalidatePlayback;
+        req.revalidatePlayback = force => { previous?.(force); const current = store.hlsJob(asset.id); if (current?.status !== 'ready' || current.version !== job.version) throw new AccountError(409, '视频源暂不可用，请重试'); };
+        const name = match[2], resource = storage.locateRendition(job, name);
+        if (name.endsWith('.m3u8')) {
+          const chunks = []; for await (const chunk of resource.open()) chunks.push(chunk);
+          const text = Buffer.concat(chunks).toString('utf8').split('\n').map(line => line && !line.startsWith('#') ? `${line}?${new URLSearchParams({ seriesId: resolved.series.id })}` : line).join('\n');
+          const bytes = Buffer.from(text);
+          sendMedia(req, res, { ...resource, stat: { ...resource.stat, size: bytes.length }, open: ({ start, end }) => Readable.from([bytes.subarray(start, end + 1)]) }, { ...asset, mime: 'application/vnd.apple.mpegurl' });
+        } else sendMedia(req, res, resource, { ...asset, mime: 'video/mp2t', metadata: { duration: 4 } });
+        return true;
+      }
+      if (job?.status === 'ready' && kind !== 'stream') {
+        const levels = job.manifest.levels;
+        // MP4校验与HLS完成可能跨过两次请求，按当前成品选择实际可用档位。
+        const selected = requested && levels.some(level => level.key === requested) ? requested : 'auto';
+        resolved.revalidate(true);
+        if (kind === 'qualities') reply(res, { episodeId: resolved.episode.id, defaultQuality: 'auto', qualities: [{ key: 'auto', label: 'auto', qualityNum: 0, isDefault: true }, ...levels.map(level => ({ key: level.key, label: level.key, qualityNum: level.size, codec: 'H.264', isDefault: false }))] });
+        else reply(res, hlsPlaybackSource(resolved.episode.id, resolved.series.id, selected, job));
+        return true;
+      }
       if (kind!=='qualities' && requested && requested!=='auto' && requested!==quality) throw new AccountError(400,'当前视频不支持所选画质');
       if (kind === 'qualities') reply(res, { episodeId: resolved.episode.id, defaultQuality: quality, qualities: [{ key: quality, label: quality, qualityNum: Math.min(asset.metadata.width, asset.metadata.height), codec: 'H.264', isDefault: true }] });
       else if (kind === 'play') {
@@ -182,6 +207,8 @@ export function createContentService(directory, accountStore, accounts, provider
           reply(res,store.assignCreator(admin,assignment[1],data.creatorId,data.creatorId ? accountStore.byId(data.creatorId) : null)); return true;
         }
         const offset = (Math.max(1,Math.min(1000,Math.floor(Number(url.searchParams.get('page')))||1))-1)*100;
+        const retryHls = /^\/api\/admin\/uploads\/([a-f0-9-]{36})\/hls\/retry$/.exec(route);
+        if (retryHls && req.method === 'POST') { store.audit(admin, '重试HLS转码', retryHls[1]); reply(res, uploads.retryHls(retryHls[1])); return true; }
         const upload = /^\/api\/admin\/uploads\/([a-f0-9-]+)$/.exec(route), series = /^\/api\/admin\/series\/(\d+)(?:\/(episodes|publish|reorder)(?:\/(\d+))?)?$/.exec(route), moderation = /^\/api\/admin\/comments\/([a-f0-9-]+)$/.exec(route);
         if (route === '/api/admin/series' && req.method === 'GET') reply(res, { items: store.list({ preview: true, query: url.searchParams.get('q') || '', page: url.searchParams.get('page'), memberId: team.owner(admin) ? '' : admin.id }) });
         else if (route === '/api/admin/series' && req.method === 'POST') { const data=await input();guardAsset(req,data.coverId);reply(res, store.saveSeries(admin, data)); }

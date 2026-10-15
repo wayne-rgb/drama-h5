@@ -27,6 +27,23 @@ export class LocalMediaStorage {
     return { assetId: asset.id, storageId: this.id, objectKey: asset.id, version: asset.id, size };
   }
 
+  renditionPath(key, name) {
+    if (typeof key !== 'string' || !/^hls-[a-f0-9-]{36}(?:\.pending)?$/.test(key) || name !== undefined && !/^(?:master\.m3u8|r\d{2,4}\.m3u8|s\d{2,4}-\d{6}\.ts)$/.test(name)) throw new AccountError(400, '媒体文件标识无效');
+    const directory = path.join(this.root, key);
+    for (const filename of [directory, ...(name ? [path.join(directory, name)] : [])]) {
+      try { if (fs.lstatSync(filename).isSymbolicLink()) throw new AccountError(503, '媒体文件位置无效'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return name ? path.join(directory, name) : directory;
+  }
+
+  locateRendition(job, name) {
+    if (job.storage_id !== this.id || job.status !== 'ready' || !Object.hasOwn(job.manifest?.files || {}, name)) throw new AccountError(404, '视频源暂不可用，请重试');
+    const filename = this.renditionPath(job.object_key, name), stat = fs.statSync(filename);
+    if (!stat.isFile() || stat.size !== job.manifest.files[name]) throw new AccountError(503, '媒体文件不完整');
+    return { location: { version: job.version }, stat, open: range => fs.createReadStream(filename, range) };
+  }
+
   locate(store, asset) {
     let location = store.assetLocation(asset.id);
     // 兼容历史文件及旧版本写入的素材，不改变文件名和分集标识。

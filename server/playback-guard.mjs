@@ -24,7 +24,8 @@ export class PlaybackGuard {
     // 统计不可用也继续复核播放权限；不能把计量降级变成VIP鉴权绕过。
     {
       const consume = (chunk, encoding) => {
-        if (chunk === undefined || chunk === null || !String(res.getHeader('Content-Type') || '').toLowerCase().startsWith(this.mediaPrefix) || ![200, 206].includes(res.statusCode)) return true;
+        const contentType = String(res.getHeader('Content-Type') || '').toLowerCase();
+        if (chunk === undefined || chunk === null || !(contentType.startsWith(this.mediaPrefix) || this.mediaPrefix === 'video/' && contentType === 'application/vnd.apple.mpegurl') || ![200, 206].includes(res.statusCode)) return true;
         try { req.revalidatePlayback?.(); meter?.setPrivileged?.(req.playbackPrivileged); meter?.consume(typeof chunk === 'string' ? Buffer.byteLength(chunk, typeof encoding === 'string' ? encoding : undefined) : chunk.byteLength); return true; }
         catch { res.destroy(); return false; }
       };

@@ -36,7 +36,11 @@ export function createMediaProcessor(storage, config = process.env) {
       if (!video || video.codec_name !== 'h264' || !(video.width > 0 && video.height > 0) || !['yuv420p', 'yuvj420p'].includes(video.pix_fmt) || audio.some(row => row.codec_name !== 'aac') || !Number.isFinite(Number(info.format?.duration)) || Number(info.format.duration) <= 0 || video.width > 4096 || video.height > 4096) throw new Error('请上传8位H.264视频及AAC音轨的MP4文件，分辨率不超过4096像素');
       await executeMedia(config.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-nostdin', '-threads', '1', '-protocol_whitelist', 'file,pipe', '-i', source, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', '-y', filePath(asset.id, '.processing')], { timeout: 1800000, maxBuffer: 1048576, signal });
       await files.rename(filePath(asset.id, '.processing'), filePath(asset.id));
-      return { duration: Number(info.format.duration), width: video.width, height: video.height };
+      const rotation = Math.abs(Number(video.side_data_list?.find(row => row.rotation !== undefined)?.rotation || video.tags?.rotate || 0)) % 180;
+      const [sarWidth, sarHeight] = String(video.sample_aspect_ratio || '1:1').split(':').map(Number);
+      const displayWidth = Math.round(video.width * (sarWidth > 0 && sarHeight > 0 ? sarWidth / sarHeight : 1));
+      const [numerator, denominator] = String(video.avg_frame_rate || '24/1').split('/').map(Number);
+      return { duration: Number(info.format.duration), width: rotation === 90 ? video.height : displayWidth, height: rotation === 90 ? displayWidth : video.height, fps: Math.min(30, numerator / denominator || 24), audio: audio.length > 0 };
     },
     async image(asset, signal) {
       const source = sourcePath(asset), image = await files.readFile(source);

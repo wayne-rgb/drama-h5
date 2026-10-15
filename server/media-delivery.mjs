@@ -6,6 +6,14 @@ export function mp4PlaybackSource(episodeId, seriesId, quality = 'auto', version
   return { url, path: url, contentType: 'video/mp4', format: 'mp4', quality, version, expiresAt: null };
 }
 
+export function hlsPlaybackSource(episodeId, seriesId, quality, job) {
+  const base = `/api/episodes/${encodeURIComponent(episodeId)}/hls/${encodeURIComponent(job.version)}/`;
+  const suffix = `?${new URLSearchParams({ seriesId })}`;
+  return { url: `${base}master.m3u8${suffix}`, contentType: 'application/vnd.apple.mpegurl', format: 'hls', quality, version: job.version, expiresAt: null,
+    variants: job.manifest.levels.map(level => ({ key: level.key, url: `${base}r${level.size}.m3u8${suffix}` })),
+    fallback: mp4PlaybackSource(episodeId, seriesId, 'auto') };
+}
+
 // 传输层只读取已定位的资源；权限、限速和流量计量仍由请求上下文提供。
 export function sendMedia(req, res, resource, asset, { quality, cover = false, publicCover = false, revalidateCover } = {}) {
   const { stat, location } = resource;
@@ -35,6 +43,8 @@ export function sendMedia(req, res, resource, asset, { quality, cover = false, p
     status = 206;
   }
   req.revalidatePlayback?.(true);
+  // 计量器通过 getHeader 读取媒体类型，先显式登记，避免 writeHead 的原始头绕过字节统计。
+  res.setHeader('Content-Type', asset.mime);
   res.writeHead(status, {
     'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes',
     'Cache-Control': publicCover ? 'private, max-age=300' : 'private, no-store', 'X-Content-Type-Options': 'nosniff',

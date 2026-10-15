@@ -12,6 +12,7 @@ const rules = [
   [/^\/api\/(banners|sections|home|search|ranks|category\/(tags|list)|rank\/(types|list|page))$/, ['GET','HEAD'], 'public'],
   [/^\/api\/series\/\d{1,40}(?:\/(related|recommend))?$/, ['GET','HEAD'], 'public'],
   [/^\/api\/episodes\/\d{1,40}\/(qualities|play|stream)$/, ['GET','HEAD'], 'public'],
+  [/^\/api\/episodes\/\d{1,40}\/hls\/[a-f0-9-]{36}\/(?:master\.m3u8|r\d{2,4}\.m3u8|s\d{2,4}-\d{6}\.ts)$/, ['GET','HEAD'], 'public'],
   [/^\/api\/content\/covers\/[a-f0-9-]{36}$/, ['GET','HEAD'], 'public'],
   [/^\/api\/episodes\/\d{1,40}\/interactions$/, ['GET'], 'public'],
   [/^\/api\/episodes\/\d{1,40}\/comments$/, ['GET','POST'], 'comments'],
@@ -49,6 +50,7 @@ const rules = [
   [/^\/api\/admin\/series\/\d{1,40}\/(episodes|publish|reorder|creator)$/, ['POST'], 'admin'],
   [/^\/api\/admin\/series\/\d{1,40}\/episodes\/\d{1,40}$/, ['DELETE'], 'admin'],
   [/^\/api\/admin\/uploads\/[a-f0-9-]{36}$/, ['GET','PUT','DELETE'], 'admin'],
+  [/^\/api\/admin\/uploads\/[a-f0-9-]{36}\/hls\/retry$/, ['POST'], 'admin'],
   [/^\/api\/admin\/comments\/[a-f0-9-]{36}$/, ['POST'], 'admin'],
 ];
 

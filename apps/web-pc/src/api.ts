@@ -19,10 +19,10 @@ import {
 } from "./types";
 
 const SETTINGS_KEY="hg_settings_v1";
-export type PlaybackSource = { url: string; contentType: string; format: string; quality: string; version: string | null; expiresAt: number | null };
+export type PlaybackSource = { url: string; contentType: string; format: 'mp4' | 'hls'; quality: string; version: string | null; expiresAt: number | null; variants?: { key: string; url: string }[]; fallback?: PlaybackSource };
 export type HistorySource="all"|"web"|"pc"|"tv";
 export type SyncStatus={state:string;enabled:boolean;url:string;pending:number;lastSyncedAt:number|null;error:string};
-let cache:{favorites:Series[];history:HistoryItem[];searchHistory:string[];recommendationSignals:RecommendationSignal[];preferences:{quality:string;speed:number;recommendationMode:RecommendationMode;recommendationResetAt:number};sync:SyncStatus}={favorites:[],history:[],searchHistory:[],recommendationSignals:[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0},sync:{state:"unconfigured",enabled:false,url:"",pending:0,lastSyncedAt:null,error:""}};
+let cache:{favorites:Series[];history:HistoryItem[];searchHistory:string[];recommendationSignals:RecommendationSignal[];preferences:{quality:string;speed:number;recommendationMode:RecommendationMode;recommendationResetAt:number};sync:SyncStatus}={favorites:[],history:[],searchHistory:[],recommendationSignals:[],preferences:{quality:"auto",speed:1,recommendationMode:"mixed",recommendationResetAt:0},sync:{state:"unconfigured",enabled:false,url:"",pending:0,lastSyncedAt:null,error:""}};
 let clockOffset=0;
 let activeHistory:Series|null=null;
 let refreshInFlight:Promise<any>|null=null;
@@ -109,7 +109,7 @@ async function migrate(){if(migration)return migration;const keys=["hg_favorites
  })();try{await migration;}finally{migration=null;}}
 export async function refreshLibrary(){if(refreshInFlight)return refreshInFlight;refreshInFlight=(async()=>{await ensureLibraryIdentity();if(libraryOwner==="guest"||libraryOwner.startsWith('guest:'))await migrate();await journal.flush();const started=Date.now();const data=(await client().get("/api/library",{params:libraryVersion?{since:libraryRevision,version:libraryVersion}:{}})).data;clockOffset=(data.serverTime||Date.now())-(started+Date.now())/2;
  if(!data.unchanged){
-  const old=cache;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"1080P",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
+  const old=cache;cache={...data,recommendationSignals:data.recommendationSignals||[],preferences:{quality:"auto",speed:1,recommendationMode:"mixed",recommendationResetAt:0,...data.preferences},history:(data.history||[]).map((item:any)=>({...item,position:item.positionMs/1000,duration:item.durationMs/1000}))};
   if(data.reset)loadedPersonalPages.clear();
   else for(const [kind,field,id] of [['favorite','favorites','id'],['history','history','seriesId'],['recommendation','recommendationSignals','seriesId']] as const){
    const retained=(old[field] as any[]).filter(item=>(loadedPersonalPages.has(kind)||kind==='favorite'&&item.id===activeHistory?.id)&&!(data.changes||[]).some((event:any)=>event.kind===kind&&(event.op==='clear'||event.op==='delete'&&event.key===item[id])&&event.at>=item.updatedAt));
@@ -239,12 +239,17 @@ export const api = {
   async getPlaybackSource(episodeId: string, quality: string, seriesId: string, signal?: AbortSignal): Promise<PlaybackSource> {
     const response = await client().get(`/api/episodes/${encodeURIComponent(episodeId)}/play`, { params: { quality, seriesId }, signal });
     const data = response.data;
-    const value = data?.url || data?.path;
-    if (typeof value !== 'string' || !value || data.contentType !== 'video/mp4' || data.format && data.format !== 'mp4') throw Error('当前剧集没有可用的视频源，请稍后重试');
+    const value = data?.url;
+    if (typeof value !== 'string' || !value || !(['mp4', 'hls'].includes(data.format)) || data.contentType !== (data.format === 'hls' ? 'application/vnd.apple.mpegurl' : 'video/mp4')) throw Error('当前剧集没有可用的视频源，请稍后重试');
     const base = window.location.protocol === 'file:' ? getSettings().baseUrl.replace(/\/+$/, '') + '/' : window.location.href;
-    const url = new URL(value, base);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw Error('当前剧集没有可用的视频源，请稍后重试');
-    return { url: url.href, contentType: data.contentType, format: data.format || 'mp4', quality: data.quality || quality, version: data.version || null, expiresAt: data.expiresAt ?? null };
+    const resolve = (value: string) => {
+      const url = new URL(value, base);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.origin !== new URL(base).origin) throw Error('当前剧集没有可用的视频源，请稍后重试');
+      return url.href;
+    };
+    return { url: resolve(value), contentType: data.contentType, format: data.format, quality: data.quality || quality, version: data.version || null, expiresAt: data.expiresAt ?? null,
+      variants: data.variants?.map((variant: { key: string; url: string }) => ({ key: variant.key, url: resolve(variant.url) })),
+      fallback: data.fallback?.format === 'mp4' ? { ...data.fallback, url: resolve(data.fallback.url) } : undefined };
   },
 
   // 旧版调用保留同站入口；新播放器从播放接口获取资源。

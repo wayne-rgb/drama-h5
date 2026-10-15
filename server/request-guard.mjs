@@ -15,6 +15,9 @@ export class RequestGuard {
     this.video = positiveLimit(config, 'CONTENT_VIEWER_REQUESTS_PER_MINUTE', 120);
     this.videoIp = positiveLimit(config, 'CONTENT_IP_REQUESTS_PER_MINUTE', 600);
     this.videoGlobal = positiveLimit(config, 'CONTENT_GLOBAL_REQUESTS_PER_MINUTE', 1200);
+    this.hls = positiveLimit(config, 'CONTENT_HLS_VIEWER_REQUESTS_PER_MINUTE', this.video * 3);
+    this.hlsIp = positiveLimit(config, 'CONTENT_HLS_IP_REQUESTS_PER_MINUTE', this.videoIp * 3);
+    this.hlsGlobal = positiveLimit(config, 'CONTENT_HLS_GLOBAL_REQUESTS_PER_MINUTE', this.videoGlobal * 3);
     this.maximum = positiveLimit(config, 'API_MAX_ACTIVE_REQUESTS', 128, 4096);
   }
   rate(entries) {
@@ -39,8 +42,9 @@ export class RequestGuard {
     }
     for (const row of rows) row.tokens--;
   }
-  checkVideo(viewer, address) {
-    this.rate([[`video:viewer:${viewer}`, this.video], [`video:ip:${address}`, this.videoIp], ['video:global', this.videoGlobal]]);
+  checkVideo(viewer, address, hls = false) {
+    const scope = hls ? 'hls' : 'video';
+    this.rate([[`${scope}:viewer:${viewer}`, hls ? this.hls : this.video], [`${scope}:ip:${address}`, hls ? this.hlsIp : this.videoIp], [`${scope}:global`, hls ? this.hlsGlobal : this.videoGlobal]]);
   }
   acquire(req, res, viewer, address, costly = false, upload = false) {
     // 已认证管理上传按分块计数，不能用浏览接口额度误伤正常批量大文件上传。

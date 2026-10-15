@@ -14,6 +14,7 @@ import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { useContentAnalytics } from './use-content-analytics';
 import { usePlaybackSource } from './use-playback-source';
+import { useMediaPlayback } from './use-media-playback';
 import { 
   api,
   saveRecommendationSignal, resetRecommendationPreferences, commitRecommendationPreferences,
@@ -300,9 +301,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const [videoQualities, setVideoQualities] = useState<VideoQualityItem[]>([]);
   const [currentQuality, setCurrentQuality] = useState<string>(() => {
     try {
-      return getPlaybackPreferences().quality || "1080P";
+      return getPlaybackPreferences().quality || "auto";
     } catch {
-      return "1080P";
+      return "auto";
     }
   });
   const [showQualityMenu, setShowQualityMenu] = useState(false);
@@ -370,6 +371,20 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     tab === 'recommend' && !activeSeries && !!streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id && streamDetail?.id === streamList[streamIndex]?.id && (streamEpisodeIndex < 3 || hasVipAccess), streamPlaybackAttempt, accountState.session?.libraryOwner);
   useEffect(() => { if (detailSource.error) setPlaybackError(playbackFailure(detailSource.error)); }, [detailSource.error]);
   useEffect(() => { if (streamSource.error) setStreamError(playbackFailure(streamSource.error)); }, [streamSource.error]);
+  useEffect(() => {
+    const source = detailSource.source;
+    if (source?.format !== 'hls' || !source.variants) return;
+    setVideoQualities([{ key: 'auto', label: 'auto', qualityNum: 0 }, ...source.variants.map(item => ({ key: item.key, label: item.key, qualityNum: parseInt(item.key, 10) }))]);
+    setCurrentQuality(value => value === 'auto' || source.variants!.some(item => item.key === value) ? value : 'auto');
+  }, [detailSource.source]);
+  useEffect(() => {
+    const source = streamSource.source;
+    if (source?.format !== 'hls' || !source.variants) return;
+    setStreamQualities([{ key: 'auto', label: 'auto', qualityNum: 0 }, ...source.variants.map(item => ({ key: item.key, label: item.key, qualityNum: parseInt(item.key, 10) }))]);
+    setStreamQuality(value => value === 'auto' || source.variants!.some(item => item.key === value) ? value : 'auto');
+  }, [streamSource.source]);
+  useMediaPlayback(videoRef, detailSource.source, currentQuality, message => { setPlaybackBuffering(false); setPlaybackError(message); setIsPlaying(false); });
+  useMediaPlayback(streamVideoRef, streamSource.source, streamQuality, message => { setStreamBuffering(false); setStreamError(message); setStreamIsPlaying(false); });
 
 
   const showToast = (key: string, values?: MessageValues) => {
@@ -704,6 +719,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     if (qKey === streamQuality) {
       setStreamShowQualityMenu(false);
       return;
+    }
+    if (streamSource.source?.format === 'hls') {
+      setStreamQuality(qKey); setStreamShowQualityMenu(false); savePlaybackPreference('quality', qKey); return;
     }
     const video = streamVideoRef.current;
     const prevTime = video ? video.currentTime : streamCurrentTime;
@@ -1502,6 +1520,9 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       setShowQualityMenu(false);
       return;
     }
+    if (detailSource.source?.format === 'hls') {
+      setCurrentQuality(qKey); setShowQualityMenu(false); savePlaybackPreference('quality', qKey); return;
+    }
     const video = videoRef.current;
     const prevTime = video ? video.currentTime : currentTime;
     const wasPaused = video ? video.paused : false;
@@ -1844,7 +1865,6 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     {detailSource.source && <video
                       ref={videoRef}
                       key={currentEpisode.id}
-                      src={detailSource.source?.url}
                       autoPlay={!accountPanel}
                       playsInline
                       onTimeUpdate={handleTimeUpdate}
@@ -2908,7 +2928,6 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       <video
                         ref={streamVideoRef}
                         key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}-${streamPlaybackAttempt}`}
-                        src={videoStreamUrl}
                         onError={() => { setStreamBuffering(false); setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
                         onWaiting={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}
                         onStalled={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}

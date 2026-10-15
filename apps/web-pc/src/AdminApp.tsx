@@ -14,7 +14,7 @@ import AuditLog from './AuditLog';
 import './account.css';
 import './admin.css';
 
-type Asset = { id: string; name: string; kind: string; size: number; offset: number; status: string; error?: string; owner_id: string };
+type Asset = { id: string; name: string; kind: string; size: number; offset: number; status: string; error?: string; owner_id: string; hls?: { status: string; size: number; error?: string; manifest?: { levels: { key: string }[] } } };
 type AdminDetail = Omit<Detail, 'episodes'> & { creatorId: string | null; language: string; status: string; coverId: string | null; categoryIds?: string[]; assets?: Asset[]; episodes: (Detail['episodes'][number] & { assetId: string })[] };
 const adminRequest = (route: string, body?: unknown) => accountRequest(`/api/admin/${route}`,body);
 export default function AdminApp() {
@@ -55,12 +55,18 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
   },[contentType,canEdit]);
   const [number,setNumber] = useState(1), [episodeTitle,setEpisodeTitle] = useState(''), [assetId,setAssetId] = useState('');
   const [member,setMember] = useState<Account|null>(null), [end,setEnd] = useState(''), [reason,setReason] = useState('');
-  const selectedAssets=assets.filter(asset=>asset.id===selected?.coverId||selected?.episodes.some(episode=>episode.assetId===asset.id));
+  const selectedAssets=[...(selected?.assets || []),...assets].filter((asset,index,all)=>all.findIndex(row=>row.id===asset.id)===index&&(asset.id===selected?.coverId||selected?.episodes.some(episode=>episode.assetId===asset.id)));
   const defaultVipEnd = (user:Account) => { const date=new Date(Math.max(Date.now()+30*86400000,user.membership.periodEnd||0)); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
   const labels: Record<typeof tab,MessageKey> = {series:'短剧管理',accounts:'用户与会员',comments:'评论管理',audit:'操作记录',analytics:'内容分析',security:'账户安全',team:'团队成员'};
   const navigationIcons = {series:Film,accounts:Users,comments:MessageSquare,audit:History,analytics:BarChart3,security:ShieldCheck,team:Users};
   const visibleTabs=(Object.keys(labels) as (typeof tab)[]).filter(key=>key==='security'||owner||key==='series'&&canEdit||key==='comments'&&hasTeamRole(teamMember,'moderator')||key==='analytics'&&hasTeamRole(teamMember,'analyst'));
   const statusLabels: Record<string,MessageKey> = {draft:'草稿',published:'已上架',uploading:'上传中',processing:'处理中',ready:'可用',failed:'失败',visible:'可见',hidden:'已隐藏',deleted:'已删除'};
+  useEffect(() => {
+    if (!selected?.assets?.some(asset => ['queued','processing'].includes(asset.hls?.status || ''))) return;
+    const id = selected.id;
+    const timer = setInterval(() => { void adminRequest(`series/${id}`).then(data => setSelected(previous => previous?.id === id ? { ...previous, assets: data.assets } : previous)).catch(() => {}); }, 2000);
+    return () => clearInterval(timer);
+  }, [selected?.id, selected?.assets]);
   const run = async (action:()=>Promise<void>) => { if(busy)return; setBusy(true);setError('');try{await action();}catch(error){setError(accountError(error));}finally{setBusy(false);} };
   const rememberAssets = (rows:Asset[]) => setAssets(current=>[...rows,...current].filter((row,index,all)=>all.findIndex(asset=>asset.id===row.id)===index));
   const load = async () => {
@@ -128,6 +134,7 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
         </form></details>
         <div className="admin-episodes">{selected.episodes.map((ep,index)=><div key={ep.id}>
           <span>{t('第{{number}}集',{number:ep.number})}{ep.title!==`第${ep.number}集`&&<> · <bdi>{ep.title}</bdi></>} · {t(index<3?'免费':'VIP会员')}</span>
+          {(() => { const hls = selectedAssets.find(asset => asset.id === ep.assetId)?.hls; return hls ? <span role="status">{t(hls.status === 'ready' ? 'HLS已就绪' : hls.status === 'failed' ? 'HLS失败，MP4可用' : 'HLS转码中，MP4可用')}{hls.status === 'ready' && <> · {hls.manifest?.levels.map(level => level.key).join(' / ')} · {(hls.size / 1024 ** 2).toFixed(1)} MB</>}{hls.status === 'failed' && <><small>{hls.error && localizeError(hls.error)}</small><button disabled={busy} onClick={() => void run(async () => { await adminRequest(`uploads/${ep.assetId}/hls/retry`, {}); const data = await adminRequest(`series/${selected.id}`); setSelected(data); })}>{t('重试转码')}</button></>}</span> : null; })()}
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===0} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index-1],ids[index]]=[ids[index],ids[index-1]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('上移')}</button>
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)||index===selected.episodes.length-1} onClick={()=>void run(async()=>{const ids=selected.episodes.map(ep=>ep.id);[ids[index],ids[index+1]]=[ids[index+1],ids[index]];edit(await adminRequest(`series/${selected.id}/reorder`,{ids}));await load();})}>{t('下移')}</button>
           <button disabled={busy||selected.status==='published'} onClick={()=>{setNumber(ep.number);setEpisodeTitle(ep.title);setAssetId(ep.assetId);}}>{t('编辑')}</button>

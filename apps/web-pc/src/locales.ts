@@ -6,6 +6,14 @@ import { teamMessages } from './team-locales';
 export const messages = {
   ...teamMessages,
   ...analyticsMessages,
+  "HLS已就绪": ["HLS ready", "HLS listo", "HLS pronto", "HLS جاهز", "HLS prêt"],
+  "HLS失败，MP4可用": ["HLS failed; MP4 available", "HLS falló; MP4 disponible", "HLS falhou; MP4 disponível", "فشل HLS؛ MP4 متاح", "Échec HLS; MP4 disponible"],
+  "HLS转码中，MP4可用": ["Preparing HLS; MP4 available", "Preparando HLS; MP4 disponible", "Preparando HLS; MP4 disponível", "جارٍ تجهيز HLS؛ MP4 متاح", "Préparation HLS; MP4 disponible"],
+  "重试转码": ["Retry transcoding", "Reintentar conversión", "Tentar conversão novamente", "إعادة التحويل", "Réessayer le transcodage"],
+  "转码空间不足，MP4仍可播放，请释放空间后重试": ["Not enough transcoding space. MP4 is playable. Free space and retry.", "Falta espacio para convertir. MP4 funciona. Libera espacio y reintenta.", "Sem espaço para conversão. MP4 funciona. Libere espaço e tente novamente.", "مساحة التحويل غير كافية. MP4 قابل للتشغيل. حرر مساحة وأعد المحاولة.", "Espace insuffisant. Le MP4 fonctionne. Libérez de l’espace et réessayez."],
+  "转码工具不可用，MP4仍可播放，请配置FFmpeg后重试": ["Transcoder unavailable. MP4 is playable. Configure FFmpeg and retry.", "Conversor no disponible. MP4 funciona. Configura FFmpeg y reintenta.", "Conversor indisponível. MP4 funciona. Configure FFmpeg e tente novamente.", "أداة التحويل غير متاحة. MP4 يعمل. اضبط FFmpeg وأعد المحاولة.", "Transcodeur indisponible. Le MP4 fonctionne. Configurez FFmpeg et réessayez."],
+  "HLS转码失败，MP4仍可播放，请重试": ["HLS transcoding failed. MP4 is playable. Please retry.", "Falló la conversión HLS. MP4 funciona. Reintenta.", "A conversão HLS falhou. MP4 funciona. Tente novamente.", "فشل تحويل HLS. MP4 يعمل. أعد المحاولة.", "Échec du transcodage HLS. Le MP4 fonctionne. Réessayez."],
+  "auto": ["Auto", "Automática", "Automática", "تلقائي", "Auto"],
   "资料分页无效": ["Invalid library page", "Página de biblioteca no válida", "Página da biblioteca inválida", "صفحة المكتبة غير صالحة", "Page de bibliothèque non valide"],
   "资料类型无效": ["Invalid library type", "Tipo de biblioteca no válido", "Tipo de biblioteca inválido", "نوع المكتبة غير صالح", "Type de bibliothèque non valide"],
   "资料版本无效": ["Invalid library version", "Versión de biblioteca no válida", "Versão da biblioteca inválida", "إصدار المكتبة غير صالح", "Version de bibliothèque non valide"],
@@ -630,6 +638,7 @@ export const messages = {
 
 // 描述性键名对应完整的中文句子，插值字段与其余语言保持一致。
 export const chineseMessages: Partial<Record<keyof typeof messages, string>> = {
+  "auto": "自动",
   ...analyticsChineseMessages,
   "历史操作名称说明": "历史记录中的剧名、集数可能与当前编辑结果不同。",
   "未关联操作记录说明": "这些历史操作无法确认所属作品；原始记录已保留，不会猜测归属。",

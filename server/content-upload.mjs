@@ -6,9 +6,12 @@ import { AccountError } from './account-store.mjs';
 import { readBody } from '../shared/http-json.mjs';
 import { LocalMediaStorage } from './media-storage.mjs';
 import { createMediaProcessor } from './media-processing.mjs';
+import { createHlsJobs } from './hls-jobs.mjs';
+import { mediaUsage } from './hls-encoding.mjs';
 
 export function createUploads(store, directory, config = process.env, storage = new LocalMediaStorage(directory, config)) {
   const media = storage.root, processor = createMediaProcessor(storage, config);
+  const hlsJobs = createHlsJobs(store, directory, storage, config);
   const active = new Set();
   const processing = new Set(); let closing = false;
   const queue = [];
@@ -29,8 +32,8 @@ export function createUploads(store, directory, config = process.env, storage = 
       try { return [name, fs.statSync(path.join(media, name)).size]; }
       catch (error) { if (error.code === 'ENOENT') return [name, 0]; throw error; }
     }));
-    const occupied = [...sizes.values()].reduce((total, size) => total + size, 0);
-    let reserved = 0;
+    const occupied = mediaUsage(media);
+    let reserved = store.db.prepare("SELECT COALESCE(SUM(reserved_bytes),0) AS bytes FROM content_hls_jobs WHERE status IN ('queued','processing')").get().bytes;
     for (const asset of store.db.prepare("SELECT id,kind,size FROM content_assets WHERE status IN ('uploading','processing')").all()) {
       const actual = ['', '.part', '.processing'].reduce((total, suffix) => total + (sizes.get(`${asset.id}${suffix}`) || 0), 0);
       reserved += Math.max(0, asset.size * (asset.kind === 'video' ? 2 : 1) - actual);
@@ -47,7 +50,9 @@ export function createUploads(store, directory, config = process.env, storage = 
     store.transaction(() => {
       store.saveAssetLocation(storage.reference(asset, size));
       store.db.prepare("UPDATE content_assets SET status='ready',size=?,metadata=?,error=NULL WHERE id=?").run(size, metadata ? JSON.stringify(metadata) : null, asset.id);
+      if (asset.kind === 'video') hlsJobs.enqueue(asset);
     });
+    hlsJobs.wake();
   };
   const processVideo = async asset => {
     const controller = new AbortController(); processing.add(controller);
@@ -98,8 +103,8 @@ export function createUploads(store, directory, config = process.env, storage = 
   }
   runQueue();
   return {
-    filePath, maximum,
-    close() { closing = true; queue.length = 0; for (const controller of processing) controller.abort(); },
+    filePath, maximum, retryHls: id => hlsJobs.retry(id),
+    close() { closing = true; const pending = hlsJobs.close(); queue.length = 0; for (const controller of processing) controller.abort(); return pending; },
     async cancel(admin, id) {
       const asset = store.asset(id);
       if (!asset || asset.owner_id !== admin.id) throw new AccountError(404, '上传不存在');
