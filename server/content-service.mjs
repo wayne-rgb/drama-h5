@@ -45,26 +45,34 @@ export function createContentService(directory, accountStore, accounts, provider
     if (index < 0) throw new AccountError(404, '分集不属于此短剧');
     const required = index >= 3;
     if (enforce && required && !isAdmin(viewer) && !accountStore.membership(viewer?.id || '').active) throw new AccountError(403, 'VIP_REQUIRED');
-    if (enforce) {
-      const audience=accounts.audience(req);
-      let checkedAt = 0;
-      req.revalidatePlayback = (force = false) => {
-        const now = Date.now();
-        if (!force && now - checkedAt < 1000) return;
-        const current = accounts.viewer(req);
-        const currentAudience=accounts.audience(req);
-        if(audience&&(!currentAudience||currentAudience.id!==audience.id||!!currentAudience.guest!==!!audience.guest))throw new AccountError(401,'请刷新页面后重试');
-        req.playbackPrivileged = isAdmin(current) || !!current && accountStore.membership(current.id).active;
-        if (series.owned && store.row(series.id)?.status !== 'published' && !isAdmin(current)) throw new AccountError(404, '短剧未上架');
-        if (required && !isAdmin(current) && (!current || current.id !== viewer?.id || !accountStore.membership(current.id).active)) throw new AccountError(403, 'VIP_REQUIRED');
-        checkedAt = now;
-      };
-    }
-    return { series, episode: series.episodes[index], viewer, required };
+    const audience=accounts.audience(req);
+    let checkedAt = 0;
+    const revalidate = (force = false) => {
+      const now = Date.now();
+      if (!force && now - checkedAt < 1000) return;
+      const current = accounts.viewer(req),currentAudience=accounts.audience(req);
+      if(audience&&(!currentAudience||currentAudience.id!==audience.id||!!currentAudience.guest!==!!audience.guest))throw new AccountError(401,'请刷新页面后重试');
+      const administrator=isAdmin(current),member=!!current&&accountStore.membership(current.id).active;
+      req.playbackPrivileged=administrator||member;
+      let currentRequired=required;
+      if(series.owned){
+        const row=store.row(series.id),episode=store.db.prepare('SELECT number,asset_id FROM content_episodes WHERE id=? AND series_id=?').get(episodeId,series.id);
+        if(!row || row.status!=='published'&&!administrator)throw new AccountError(404,'短剧未上架');
+        if(!episode)throw new AccountError(404,'分集不属于此短剧');
+        // 重新发布后使用当前集序复核免费资格，替换素材也不能继续发送旧视频。
+        if(enforce&&episode.asset_id!==series.episodes[index].assetId)throw new AccountError(409,'视频源暂不可用，请重试');
+        currentRequired=episode.number>3;
+      }
+      if (enforce && currentRequired && !administrator && (!current || current.id !== viewer?.id || !member)) throw new AccountError(403, 'VIP_REQUIRED');
+      checkedAt = now;
+    };
+    revalidate(true);
+    if(enforce)req.revalidatePlayback=revalidate;
+    return { series, episode: series.episodes[index], viewer, required, revalidate };
   };
   const commentModeration = new CommentModeration(store, detail);
   const contentAudit = new ContentAudit(store,accountStore);
-  const streamFile = (req, res, asset, quality, cover = false, publicCover = false) => {
+  const streamFile = (req, res, asset, quality, cover = false, publicCover = false, revalidateCover) => {
     const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
     if(!cover&&asset.metadata?.duration>0)req.downloadRate=24*stat.size/asset.metadata.duration;
     if(cover && publicCover){
@@ -73,7 +81,11 @@ export function createContentService(directory, accountStore, accounts, provider
       // 访问资格已在封面入口校验；缓存命中没有响应正文，不预留或扣减媒体字节。
       if((req.headers['if-none-match']||'').split(',').some(value=>value.trim()===etag||value.trim()===`W/${etag}`||value.trim()==='*')){res.writeHead(304);return res.end();}
     }
-    if(cover)req.guardPublicAsset?.();
+    if(cover){
+      req.guardPublicAsset?.();
+      const previous=req.revalidatePlayback;
+      req.revalidatePlayback=force=>{previous?.(force);revalidateCover?.(force);};
+    }
     let start = 0, end = stat.size - 1, status = 200;
     if (req.headers.range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
@@ -89,7 +101,22 @@ export function createContentService(directory, accountStore, accounts, provider
   return {
     store, detail, resolveEpisode, analytics,
     close: () => { uploads.close(); store.close(); },
-    publicDetail: async (req, id) => { const value = await detail(id,isAdmin(accounts.viewer(req))), user = accounts.viewer(req); if(value.owned && value.status!=='published' && !isAdmin(user))throw new AccountError(404,'短剧未上架'); const vip = isAdmin(user) || accountStore.membership(user?.id || '').active; const {creatorId,...publicValue}=value; return { ...publicValue, episodes: value.episodes.map((ep, index) => ({ id: ep.id, number: ep.number, title: ep.title, vipRequired: index >= 3, locked: index >= 3 && !vip })) }; },
+    publicDetail: async (req, id) => {
+      const initial=accounts.viewer(req),value=await detail(id,isAdmin(initial)),user=accounts.viewer(req);
+      if(value.owned){
+        const privatePreview=value.status!=='published',previous=req.revalidateAccess;
+        req.revalidateAccess=()=>{
+          previous?.();
+          const current=accounts.viewer(req),row=store.row(id);
+          if(privatePreview){accounts.sameOrigin(req);if(!initial||current?.id!==initial.id||!isAdmin(current))throw new AccountError(404,'短剧未上架');}
+          if(!row||row.status!=='published'&&!isAdmin(current))throw new AccountError(404,'短剧未上架');
+        };
+        req.revalidateAccess();
+      }
+      const vip=isAdmin(user)||accountStore.membership(user?.id||'').active;
+      const {creatorId,...publicValue}=value;
+      return {...publicValue,episodes:value.episodes.map((ep,index)=>({id:ep.id,number:ep.number,title:ep.title,vipRequired:index>=3,locked:index>=3&&!vip}))};
+    },
     list: options => store.list(options),
     merge: (items, options = {}) => [...store.list(options), ...items].filter((item, index, all) => all.findIndex(row => row.id === item.id) === index),
     async ownPlayback(req, res, kind, resolved) {
@@ -127,10 +154,17 @@ export function createContentService(directory, accountStore, accounts, provider
       }
       if (cover && ['GET', 'HEAD'].includes(req.method)) {
         accounts.sameOrigin(req);
-        const asset = store.asset(cover[1]), published = store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
-        const user=accounts.viewer(req), creatorCover=user&&accountStore.isCreator(user.id)&&store.db.prepare('SELECT 1 FROM content_series WHERE cover_id=? AND creator_id=?').get(cover[1],user.id);
-        if (asset?.kind !== 'image' || asset.status !== 'ready' || !published && !isAdmin(user) && !creatorCover) throw new AccountError(404, '封面不存在');
-        streamFile(req, res, asset, undefined, true, !!published); return true;
+        const asset = store.asset(cover[1]);
+        let checkedAt=0;
+        const revalidateCover=(force=false)=>{
+          if(!force&&Date.now()-checkedAt<1000)return;
+          const published=store.db.prepare("SELECT 1 FROM content_series WHERE cover_id=? AND status='published'").get(cover[1]);
+          const user=accounts.viewer(req),creatorCover=user&&accountStore.isCreator(user.id)&&store.db.prepare('SELECT 1 FROM content_series WHERE cover_id=? AND creator_id=?').get(cover[1],user.id);
+          if(asset?.kind!=='image'||asset.status!=='ready'||!published&&!isAdmin(user)&&!creatorCover)throw new AccountError(404,'封面不存在');
+          checkedAt=Date.now();return !!published;
+        };
+        const published=revalidateCover(true);
+        streamFile(req, res, asset, undefined, true, published, revalidateCover); return true;
       }
       if (adminRoute) {
         const admin = requireAdmin(req);
@@ -195,6 +229,9 @@ export function createContentService(directory, accountStore, accounts, provider
       const viewer = accounts.viewer(req);
       if (social) {
         const resolved = await resolveEpisode(req, url.searchParams.get('seriesId'), social[1], false);
+        // 正文等待期间可能下架或移除分集，互动写入和延迟响应也要复核当前内容资格。
+        const previous=req.revalidateAccess;
+        req.revalidateAccess=()=>{previous?.();resolved.revalidate(true);};
         if (store.db.prepare('SELECT 1 FROM episode_likes WHERE episode_id=?').get(social[1])) store.rememberLikedEpisode(resolved.series,resolved.episode);
         if (social[2] === 'interactions' && req.method === 'GET') reply(res, store.interactions(social[1], viewer));
         else if (social[2] === 'likes' && req.method === 'POST') { const user = accounts.requireViewer(req); limit(req, user); const data = await input(); if (typeof data.liked !== 'boolean') throw new AccountError(400, '点赞状态无效'); store.transaction(() => { if (data.liked) store.rememberLikedEpisode(resolved.series,resolved.episode); const changed=data.liked ? store.db.prepare('INSERT OR IGNORE INTO episode_likes VALUES(?,?,?)').run(social[1],user.id,Date.now()) : store.db.prepare('DELETE FROM episode_likes WHERE episode_id=? AND account_id=?').run(social[1],user.id); if(changed.changes)analytics.feedback(resolved.series.id,social[1],data.liked?'like':'unlike'); }); reply(res, store.interactions(social[1], user)); }
