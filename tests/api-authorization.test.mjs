@@ -55,7 +55,13 @@ test('账户、会员、互动和后台接口拒绝游客及普通用户提权�
   const privateRoutes=[['/api/account/profile','POST'],['/api/account/avatar','GET'],['/api/auth/verification','POST'],['/api/me/likes','GET'],['/api/me/likes/101','POST'],['/api/episodes/101/likes','POST'],['/api/episodes/101/comments','POST'],[`/api/comments/${uploadId}`,'DELETE'],[`/api/comments/${uploadId}/report`,'POST'],['/api/billing/checkout','POST'],['/api/billing/portal','POST'],['/api/billing/confirm','POST']];
   for(const [route,method] of privateRoutes){assert.throws(()=>f.authorize(route,method,f.actors.guest),error=>error.status===401,route);assert.doesNotThrow(()=>f.authorize(route,method,f.actors.viewer));}
   const adminRoutes=[['/api/admin/series','GET'],['/api/admin/series','POST'],['/api/admin/creators','GET'],['/api/admin/creators','POST'],['/api/admin/uploads','GET'],['/api/admin/uploads','POST'],['/api/admin/accounts','GET'],['/api/admin/membership','POST'],['/api/admin/comment-series','GET'],['/api/admin/comments','GET'],['/api/admin/audit-series','GET'],['/api/admin/audit','GET'],['/api/admin/series/91','GET'],['/api/admin/series/91','POST'],['/api/admin/series/91/episodes','POST'],['/api/admin/series/91/publish','POST'],['/api/admin/series/91/reorder','POST'],['/api/admin/series/91/creator','POST'],['/api/admin/series/91/episodes/101','DELETE'],[`/api/admin/uploads/${uploadId}`,'GET'],[`/api/admin/uploads/${uploadId}`,'PUT'],[`/api/admin/uploads/${uploadId}`,'DELETE'],[`/api/admin/comments/${uploadId}`,'POST']];
-  for(const [route,method] of adminRoutes){for(const actor of [f.actors.viewer,f.actors.member,f.actors.creator])assert.throws(()=>f.authorize(route,method,actor),error=>error.status===403,route);assert.doesNotThrow(()=>f.authorize(route,method,f.actors.admin));}
+  for(const [route,method] of adminRoutes){
+    if(route==='/api/admin/creators'||route==='/api/admin/series/91/creator') {
+      for(const actor of [f.actors.admin,f.actors.viewer,f.actors.member,f.actors.creator])assert.throws(()=>f.authorize(route,method,actor),error=>error.status===404,route);
+      continue;
+    }
+    for(const actor of [f.actors.viewer,f.actors.member,f.actors.creator])assert.throws(()=>f.authorize(route,method,actor),error=>error.status===403,route);assert.doesNotThrow(()=>f.authorize(route,method,f.actors.admin));
+  }
   for(const route of ['/api/analytics/series','/api/analytics/report']){assert.throws(()=>f.authorize(route,'GET',f.actors.member),error=>error.status===403);assert.doesNotThrow(()=>f.authorize(route,'GET',f.actors.creator));}
   for(const route of ['/api/analytics/sessions','/api/analytics/progress']){assert.throws(()=>f.authorize(route,'POST'),error=>error.status===401);assert.doesNotThrow(()=>f.authorize(route,'POST',f.actors.guest));}
 });

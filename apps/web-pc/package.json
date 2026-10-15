@@ -12,6 +12,7 @@
     "build:desktop": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@noble/hashes": "2.0.1",
     "axios": "1.20.0",
     "hls.js": "1.6.16",
     "lucide-react": "^0.475.0",

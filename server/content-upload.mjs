@@ -16,6 +16,16 @@ export function createUploads(store, directory, config = process.env, storage = 
   const processing = new Set(); let closing = false;
   const queue = [];
   const filePath = (id, suffix = '') => storage.filePath(id, suffix);
+  const fileDigest = async filename => {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+    return hash.digest('hex');
+  };
+  const revision = (asset, value) => {
+    if (value === undefined && asset.upload_revision === 1) return;
+    if (String(value) !== String(asset.upload_revision)) throw new AccountError(409, '上传状态已变化，请刷新任务');
+  };
+  const canManage = (admin,asset) => asset && (asset.owner_id===admin.id || JSON.parse(admin.roles||'[]').includes('owner'));
   const maximum = Math.min(10 * 1024 ** 3, Math.max(1024 ** 2, Number(config.CONTENT_MAX_VIDEO_BYTES) || 2 * 1024 ** 3));
   const storageMaximum = Number(config.CONTENT_MAX_STORAGE_BYTES || 100 * 1024 ** 3);
   if (!Number.isSafeInteger(storageMaximum) || storageMaximum <= 0) throw new Error('上传存储额度配置无效');
@@ -104,24 +114,46 @@ export function createUploads(store, directory, config = process.env, storage = 
   runQueue();
   return {
     filePath, maximum, retryHls: id => hlsJobs.retry(id),
-    close() { closing = true; const pending = hlsJobs.close(); queue.length = 0; for (const controller of processing) controller.abort(); return pending; },
-    async cancel(admin, id) {
+    busy: () => active.size > 0 || processing.size > 0 || queue.length > 0,
+    async verifySource(req, admin, id, input) {
       const asset = store.asset(id);
-      if (!asset || asset.owner_id !== admin.id) throw new AccountError(404, '上传不存在');
+      if (!canManage(admin,asset)) throw new AccountError(404, '上传不存在');
+      revision(asset, input.revision);
+      if (asset.status !== 'uploading' || active.has(id)) throw new AccountError(409, '此上传正在写入，请稍后重试');
+      if (!/^[a-f0-9]{64}$/.test(input.sha256 || '') || !/^[a-f0-9]{64}$/.test(input.prefixSha256 || '') || input.offset !== asset.offset) throw new AccountError(400, '原文件校验信息无效');
+      if (asset.source_sha256 && input.sha256 !== asset.source_sha256) throw new AccountError(409, '原文件内容不匹配，请重新选择');
+      active.add(id);
+      try {
+        const filename=filePath(id,'.part'), stat=await files.stat(filename);
+        if (stat.size !== asset.offset || await fileDigest(filename) !== input.prefixSha256) throw new AccountError(409, '已上传内容不匹配，不能继续此任务');
+        req.revalidateAccess?.();
+        return store.transaction(() => {
+          store.db.prepare('UPDATE content_assets SET source_sha256=?,upload_revision=upload_revision+1 WHERE id=?').run(input.sha256,id);
+          store.audit(admin,'校验上传原文件',id,{seriesId:asset.series_id}); return store.asset(id);
+        });
+      } finally { active.delete(id); }
+    },
+    close() { closing = true; const pending = hlsJobs.close(); queue.length = 0; for (const controller of processing) controller.abort(); return pending; },
+    async cancel(admin, id, expectedRevision) {
+      const asset = store.asset(id);
+      if (!canManage(admin,asset)) throw new AccountError(404, '上传不存在');
+      revision(asset, expectedRevision);
       if (active.has(id) || asset.status === 'processing') throw new AccountError(409, '此上传正在写入，请稍后重试');
-      if (asset.status === 'uploading') {
-        store.db.prepare("UPDATE content_assets SET status='failed',error='上传已取消' WHERE id=?").run(id);
-      }
-      if (['uploading','failed'].includes(asset.status)) {
-        await clearFailed(asset);
-      }
-      return store.asset(id);
+      active.add(id);
+      try {
+        if (asset.status === 'uploading') {
+          store.transaction(() => { store.db.prepare("UPDATE content_assets SET status='failed',error='上传已取消' WHERE id=?").run(id); store.audit(admin,'取消文件上传',id,{seriesId:asset.series_id}); });
+        }
+        if (['uploading','failed'].includes(asset.status)) await clearFailed(asset);
+        return store.asset(id);
+      } finally {active.delete(id);}
     },
     create(admin, input) {
       if (!['video', 'image'].includes(input.kind) || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > (input.kind === 'image' ? 8 * 1024 ** 2 : maximum)) throw new AccountError(400, '上传类型或文件大小无效');
       if (input.kind === 'video' ? input.mime !== 'video/mp4' : !['image/jpeg', 'image/png', 'image/webp'].includes(input.mime)) throw new AccountError(400, '视频需为MP4，封面需为JPEG、PNG或WebP');
       if (input.seriesId!==undefined && (!/^\d{1,40}$/.test(input.seriesId) || !store.row(input.seriesId))) throw new AccountError(400,'短剧不存在');
       if (input.seriesId!==undefined && input.kind==='video' && (!Number.isInteger(input.number) || input.number<1 || input.number>10000)) throw new AccountError(400,'集数无效');
+      if (input.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(input.sha256)) throw new AccountError(400,'原文件校验信息无效');
       const pending = store.db.prepare("SELECT COUNT(*) AS count FROM content_assets WHERE status IN ('uploading','processing')").get().count;
       if (pending >= 20) throw new AccountError(429, '待处理上传过多，请先完成已有上传');
       checkStorage(input);
@@ -129,15 +161,19 @@ export function createUploads(store, directory, config = process.env, storage = 
       fs.writeFileSync(filePath(id, '.part'), Buffer.alloc(0), { mode: 0o600, flag: 'wx' });
       try {
         store.transaction(() => {
-          store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,created_at) VALUES(?,?,?,?,?,?,?)').run(id, admin.id, String(input.name || '').slice(0, 200), input.kind, input.mime, input.size, Date.now());
+          const extension = { 'video/mp4':'mp4','image/png':'png','image/jpeg':'jpg','image/webp':'webp' }[input.mime];
+          store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,created_at,source_sha256) VALUES(?,?,?,?,?,?,?,?)').run(id, admin.id, `${id}.${extension}`, input.kind, input.mime, input.size, Date.now(),input.sha256 || null);
           if (input.seriesId) store.db.prepare('UPDATE content_assets SET series_id=?,episode_number=? WHERE id=?').run(input.seriesId,input.kind==='video'?input.number:null,id);
+          store.audit(admin,'创建文件上传',id,{kind:input.kind,seriesId:input.seriesId || null});
         });
       } catch (error) { fs.unlinkSync(filePath(id, '.part')); throw error; }
       return store.asset(id);
     },
     async chunk(req, admin, id) {
       const asset = store.asset(id);
-      if (!asset || asset.owner_id !== admin.id) throw new AccountError(404, '上传不存在');
+      if (!canManage(admin,asset)) throw new AccountError(404, '上传不存在');
+      revision(asset, req.headers['x-upload-revision']);
+      if (asset.upload_revision > 1 && !asset.source_sha256) throw new AccountError(409,'请先校验原文件再继续上传');
       if (asset.status !== 'uploading') throw new AccountError(409, '该上传已经结束');
       if (active.has(id)) throw new AccountError(409, '此上传正在写入，请稍后重试');
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(req.headers['content-range'] || '');
@@ -153,11 +189,20 @@ export function createUploads(store, directory, config = process.env, storage = 
         const handle = await files.open(filePath(id, '.part'), 'r+');
         try { req.revalidateAccess?.(); let written = 0; while (written < data.length) written += (await handle.write(data, written, data.length - written, start + written)).bytesWritten; } finally { await handle.close(); }
         req.revalidateAccess?.();
-        store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(end + 1, id);
+        if (end + 1 === total && asset.source_sha256 && await fileDigest(filePath(id,'.part')) !== asset.source_sha256) {
+          await files.truncate(filePath(id,'.part'),start);
+          throw new AccountError(409,'原文件内容不匹配，请重新选择');
+        }
+        req.revalidateAccess?.();
+        store.transaction(() => {
+          store.db.prepare('UPDATE content_assets SET offset=? WHERE id=?').run(end + 1, id);
+          if (end + 1 === total) {
+            store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id);
+            store.audit(admin, '完成文件上传', id, { kind: asset.kind, seriesId:asset.series_id });
+          }
+        });
         if (end + 1 === total) {
-          store.db.prepare("UPDATE content_assets SET status='processing' WHERE id=?").run(id);
           queue.push(asset); runQueue();
-          store.audit(admin, '完成文件上传', id, { kind: asset.kind, name: asset.name });
         }
         return store.asset(id);
       } finally { active.delete(id); }

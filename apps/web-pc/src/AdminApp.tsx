@@ -14,8 +14,8 @@ import AuditLog from './AuditLog';
 import './account.css';
 import './admin.css';
 
-type Asset = { id: string; name: string; kind: string; size: number; offset: number; status: string; error?: string; owner_id: string; hls?: { status: string; size: number; error?: string; manifest?: { levels: { key: string }[] } } };
-type AdminDetail = Omit<Detail, 'episodes'> & { creatorId: string | null; language: string; status: string; coverId: string | null; categoryIds?: string[]; assets?: Asset[]; episodes: (Detail['episodes'][number] & { assetId: string })[] };
+type Asset = { id: string; name: string; kind: string; size: number; offset: number; status: string; error?: string; owner_id: string; series_id?:string; hls?: { status: string; size: number; error?: string; manifest?: { levels: { key: string }[] } } };
+type AdminDetail = Omit<Detail, 'episodes'> & { language: string; status: string; coverId: string | null; categoryIds?: string[]; assets?: Asset[]; episodes: (Detail['episodes'][number] & { assetId: string })[] };
 const adminRequest = (route: string, body?: unknown) => accountRequest(`/api/admin/${route}`,body);
 export default function AdminApp() {
   return <TeamGate>{session => <AdminWorkspace key={session.member.id} member={session.member}/>}</TeamGate>;
@@ -55,7 +55,7 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
   },[contentType,canEdit]);
   const [number,setNumber] = useState(1), [episodeTitle,setEpisodeTitle] = useState(''), [assetId,setAssetId] = useState('');
   const [member,setMember] = useState<Account|null>(null), [end,setEnd] = useState(''), [reason,setReason] = useState('');
-  const selectedAssets=[...(selected?.assets || []),...assets].filter((asset,index,all)=>all.findIndex(row=>row.id===asset.id)===index&&(asset.id===selected?.coverId||selected?.episodes.some(episode=>episode.assetId===asset.id)));
+  const selectedAssets=[...(selected?.assets || []),...assets].filter((asset,index,all)=>all.findIndex(row=>row.id===asset.id)===index&&(asset.series_id===selected?.id||asset.id===selected?.coverId||selected?.episodes.some(episode=>episode.assetId===asset.id)));
   const defaultVipEnd = (user:Account) => { const date=new Date(Math.max(Date.now()+30*86400000,user.membership.periodEnd||0)); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
   const labels: Record<typeof tab,MessageKey> = {series:'短剧管理',accounts:'用户与会员',comments:'评论管理',audit:'操作记录',analytics:'内容分析',security:'账户安全',team:'团队成员'};
   const navigationIcons = {series:Film,accounts:Users,comments:MessageSquare,audit:History,analytics:BarChart3,security:ShieldCheck,team:Users};
@@ -119,7 +119,7 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
         <button disabled={busy||!owner&&!selected}>{t(selected?'保存基本信息':'保存并上传')}</button>
       </form></details>
       {selected&&<>
-        <div className="admin-publish"><span>{t(statusLabels[selected.status])} · {selected.episodes.length} {t('集')}</span><button disabled={busy||uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'检查并发布')}</button>{selected.episodes.length>0&&<a href={`/?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div>
+        <div className="admin-publish"><span>{t(statusLabels[selected.status])} · {selected.episodes.length} {t('集')}</span><button disabled={busy||selected.status!=='published'&&uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{edit(await adminRequest(`series/${selected.id}/publish`,{status:selected.status==='published'?'draft':'published'}));await load();})}>{t(selected.status==='published'?'下架':'检查并发布')}</button>{selected.episodes.length>0&&<a href={`/?series=${selected.id}&episode=${selected.episodes[0].id}`} target="_blank" rel="noopener noreferrer">{t('预览')}</a>}</div>
         {uploadingSeries.includes(selected.id)&&<p>{t('请先完成或移除未完成的上传任务')}</p>}
         <h3>{t('分集管理')}</h3>{selected.status==='published'&&<p>{t('下架后可调整分集')}</p>}
         <details><summary>{t('复用素材或编辑分集')}</summary><form onSubmit={event=>{event.preventDefault();void run(async()=>{
@@ -141,7 +141,7 @@ function AdminWorkspace({ member: teamMember }: { member: TeamMember }) {
           <button disabled={busy||selected.status==='published'||uploadingSeries.includes(selected.id)} onClick={()=>void run(async()=>{const response=await axios.delete(`/api/admin/series/${selected.id}/episodes/${ep.id}`);edit(response.data);await load();})}>{t('移除')}</button>
         </div>)}</div>
       </>}
-      </section><AdminUploadQueue key={teamMember.id} accountId={teamMember.id} series={selected} visible={tab==='series'&&!!selected} onUpdated={uploaded} onActivity={setUploadingSeries}/></div></div>}
+      </section><AdminUploadQueue key={teamMember.id} accountId={teamMember.id} administrator={owner} series={selected} visible={tab==='series'&&!!selected} onUpdated={uploaded} onActivity={setUploadingSeries}/></div></div>}
     {tab==='accounts'&&<section className="admin-panel"><h2>{t('用户与会员')}</h2><p>{t('手动会员与支付订阅独立，撤销手动会员不会取消付费订阅')}</p>{accounts.map(user=><button className="admin-account-row" key={user.id} onClick={()=>{setMember(user);setEnd(defaultVipEnd(user));setReason('');}}><strong>{user.name}</strong><span>{user.email}</span><span>{t(user.membership.active?'VIP会员':'普通账户')}</span></button>)}{member&&<form onSubmit={event=>{event.preventDefault();void run(async()=>{await adminRequest('membership',{accountId:member.id,periodEnd:new Date(`${end}T23:59:59`).getTime(),reason});await load();setMember(null);});}}><h3>{member.email}</h3><label>{t('有效期至')}<input required type="date" value={end} onChange={event=>setEnd(event.target.value)}/></label><label>{t('操作原因')}<input required maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></label><button disabled={busy}>{t('开通或延长VIP')}</button><button type="button" disabled={busy||!reason.trim()} onClick={()=>void run(async()=>{await adminRequest('membership',{accountId:member.id,revoke:true,reason});await load();setMember(null);})}>{t('撤销手动会员')}</button></form>}</section>}
     {tab==='comments'&&<CommentModeration key={teamMember.id}/>}
     {tab==='audit'&&<AuditLog key={teamMember.id}/>}

@@ -114,7 +114,7 @@ export class ContentAnalytics {
     const { user, admin } = this.scope(req);
     const scope = this.team ? 'EXISTS(SELECT 1 FROM team_series_members t WHERE t.series_id=content_series.id AND t.member_id=?)' : 'creator_id=?';
     const rows = this.db.prepare(`SELECT id,title,creator_id,status,cover_id,(SELECT COUNT(*) FROM content_episodes e WHERE e.series_id=content_series.id) AS episode_count FROM content_series WHERE ?=1 OR ${scope} ORDER BY updated_at DESC`).all(admin ? 1 : 0, user.id);
-    return { items: rows.map(row => ({ id: row.id, title: row.title, creatorId: row.creator_id, status: row.status,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',episodeCount:row.episode_count })) };
+    return { items: rows.map(row => ({ id: row.id, title: row.title, status: row.status,cover:row.cover_id?`/api/content/covers/${row.cover_id}`:'',episodeCount:row.episode_count })) };
   }
   report(req, params) {
     const seriesId = params.get('seriesId') || '', { user, admin } = this.scope(req, seriesId);

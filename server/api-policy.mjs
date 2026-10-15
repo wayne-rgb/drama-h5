@@ -9,6 +9,8 @@ const rules = [
   [/^\/api\/team\/invites$/, ['GET','POST'], 'team-owner'],
   [/^\/api\/team\/members\/[a-f0-9-]{36}$/, ['POST'], 'team-owner'],
   [/^\/api\/team\/invites\/[a-f0-9-]{36}\/revoke$/, ['POST'], 'team-owner'],
+  [/^\/api\/team\/maintenance\/preview$/, ['GET'], 'team-owner'],
+  [/^\/api\/team\/maintenance\/(pause|resume|migrate|restore)$/, ['POST'], 'team-owner'],
   [/^\/api\/(banners|sections|home|search|ranks|category\/(tags|list)|rank\/(types|list|page))$/, ['GET','HEAD'], 'public'],
   [/^\/api\/series\/\d{1,40}(?:\/(related|recommend))?$/, ['GET','HEAD'], 'public'],
   [/^\/api\/episodes\/\d{1,40}\/(qualities|play|stream)$/, ['GET','HEAD'], 'public'],
@@ -43,14 +45,15 @@ const rules = [
   [/^\/api\/recommend$/, ['GET'], 'personal'],
   [/^\/api\/analytics\/(sessions|progress)$/, ['POST'], 'audience'],
   [/^\/api\/analytics\/(series|report)$/, ['GET'], 'creator'],
-  [/^\/api\/admin\/(series|creators|uploads)$/, ['GET','POST'], 'admin'],
+  [/^\/api\/admin\/(series|uploads)$/, ['GET','POST'], 'admin'],
   [/^\/api\/admin\/(accounts|comment-series|comments|audit-series|audit)$/, ['GET'], 'admin'],
   [/^\/api\/admin\/membership$/, ['POST'], 'admin'],
   [/^\/api\/admin\/series\/\d{1,40}$/, ['GET','POST'], 'admin'],
-  [/^\/api\/admin\/series\/\d{1,40}\/(episodes|publish|reorder|creator)$/, ['POST'], 'admin'],
+  [/^\/api\/admin\/series\/\d{1,40}\/(episodes|publish|reorder)$/, ['POST'], 'admin'],
   [/^\/api\/admin\/series\/\d{1,40}\/episodes\/\d{1,40}$/, ['DELETE'], 'admin'],
   [/^\/api\/admin\/uploads\/[a-f0-9-]{36}$/, ['GET','PUT','DELETE'], 'admin'],
   [/^\/api\/admin\/uploads\/[a-f0-9-]{36}\/hls\/retry$/, ['POST'], 'admin'],
+  [/^\/api\/admin\/uploads\/[a-f0-9-]{36}\/verify$/, ['POST'], 'admin'],
   [/^\/api\/admin\/comments\/[a-f0-9-]{36}$/, ['POST'], 'admin'],
 ];
 
@@ -65,7 +68,7 @@ export function createApiPolicy(accounts, store, config = process.env, team) {
       if (!['public','comments'].includes(permission)) accounts.sameOrigin(req);
       res.setHeader('Access-Control-Allow-Origin', ['public','comments'].includes(permission) ? '*' : req.headers.origin || config.APP_ORIGIN || '');
       res.setHeader('Access-Control-Allow-Methods', methods.join(', '));
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, Content-Range, X-Library-Owner');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, Content-Range, X-Library-Owner, X-Upload-Revision');
       res.setHeader('Vary', 'Origin');
       return;
     }

@@ -3,46 +3,42 @@ import axios from 'axios';
 import { Upload, ImagePlus, CheckCircle2, AlertCircle } from 'lucide-react';
 import { accountRequest, accountError } from './account';
 import { useI18n, MessageKey } from './i18n';
+import { uploadDigest, legacyUploadDigest } from './upload-digest';
 
 type Episode = { id: string; number: number; title: string; assetId: string };
 type Series = { id: string; title: string; status: string; coverId: string | null; cover: string; episodes: Episode[] };
 type Task = {
-  id: string; seriesId: string; seriesTitle: string; name: string; size: number; modified: number; digest: string;
+  id: string; seriesId: string; seriesTitle: string; name: string; size: number;
   kind: 'video' | 'image'; mime: string; number: number; title: string; assetId?: string;
   mode: 'append' | 'replace'; expectedEpisodeId?: string; expectedAssetId?: string;
   state: 'confirm' | 'queued' | 'uploading' | 'processing' | 'saving' | 'ready' | 'failed' | 'paused' | 'needsFile';
   progress: number; error?: string;
+  sha256?: string; revision?: number; legacyDigest?:string;
 };
+type UploadAsset={id:string;series_id:string;episode_number:number|null;name:string;size:number;offset:number;kind:'video'|'image';mime:string;status:string;owner_id:string|null;source_sha256:string|null;upload_revision:number};
 const request = (route: string, data?: unknown) => accountRequest(`/api/admin/${route}`, data);
 const labels: Record<Task['state'], MessageKey> = {
   confirm:'待确认', queued:'等待上传', uploading:'上传中', processing:'处理中', saving:'正在保存分集',
   ready:'已保存', failed:'失败', paused:'已暂停', needsFile:'请重新选择原文件',
 };
 const activeStates = ['queued', 'uploading', 'processing', 'saving'];
-// 文件身份包含首尾内容、大小和修改时间；续传前避免把另一份同名文件拼入原上传。
-async function identity(file: File) {
-  const parts = await Promise.all([file.slice(0,65536).arrayBuffer(),file.slice(Math.max(0,file.size-65536)).arrayBuffer()]);
-  const bytes = new Uint8Array(parts[0].byteLength+parts[1].byteLength);
-  bytes.set(new Uint8Array(parts[0])); bytes.set(new Uint8Array(parts[1]),parts[0].byteLength);
-  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(byte=>byte.toString(16).padStart(2,'0')).join('');
-}
 function fileNumber(name: string) {
   const stem=name.replace(/\.mp4$/i,'');
   const match=/(?:第\s*|ep(?:isode)?[\s_.-]*)(\d+)\s*(?:集)?/i.exec(stem) || /^(\d+)(?:\D|$)/.exec(stem) || /(?:^|[\s_.-])(\d+)$/.exec(stem);
   const value=Number(match?.[1]); return value>0&&value<=10000 ? value : null;
 }
 
-export default function AdminUploadQueue({accountId, series, visible, onUpdated, onActivity}: {
-  accountId: string; series: Series | null; visible: boolean;
+export default function AdminUploadQueue({accountId, administrator=false, series, visible, onUpdated, onActivity}: {
+  accountId: string; administrator?:boolean; series: Series | null; visible: boolean;
   onUpdated: (data: any) => void; onActivity: (seriesIds: string[]) => void;
 }) {
   const {t,localizeError}=useI18n();
-  const key=`drama_batch_upload_v1:${accountId}`;
+  const key=`drama_batch_upload_v2:${accountId}`, legacyKey=`drama_batch_upload_v1:${accountId}`;
   const [tasks,setTasks]=useState<Task[]>(()=>{
     try {
-      const saved=JSON.parse(localStorage.getItem(key)||'[]');
+      const saved=JSON.parse(localStorage.getItem(key)||localStorage.getItem(legacyKey)||'[]');
       if(!Array.isArray(saved))return [];
-      return saved.filter(task=>task.id&&task.seriesId&&task.name).map(task=>({...task,state:activeStates.includes(task.state)?'queued':task.state}));
+      return saved.filter(task=>task.id&&task.seriesId&&task.name).map(({digest,modified,...task})=>({...task,legacyDigest:task.legacyDigest||digest||undefined,state:activeStates.includes(task.state)?'queued':task.state}));
     } catch { return []; }
   });
   const tasksRef=useRef(tasks), files=useRef(new Map<string,File>()), running=useRef(new Set<string>());
@@ -50,22 +46,40 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
   const [error,setError]=useState(''), [selecting,setSelecting]=useState(false), [maximum,setMaximum]=useState(2*1024**3);
   const [replacement,setReplacement]=useState<Episode|null>(null), [dragging,setDragging]=useState(false);
   const [showCompleted,setShowCompleted]=useState(false);
+  const [serverUploads,setServerUploads]=useState<UploadAsset[]>([]),[checkingUploads,setCheckingUploads]=useState(false);
   const replaceInput=useRef<HTMLInputElement>(null), dragged=useRef<string|null>(null);
   useEffect(()=>{setReplacement(null);setError('');setDragging(false);setShowCompleted(false);},[series?.id]);
   const change=(action:(rows:Task[])=>Task[])=>{
     if(!alive.current)return;
     const rows=action(tasksRef.current); tasksRef.current=rows; setTasks(rows);
-    try {localStorage.setItem(key,JSON.stringify(rows));} catch {setError('无法保存续传记录，请勿关闭页面');}
-    callbacks.current.onActivity([...new Set(rows.filter(row=>row.state!=='ready').map(row=>row.seriesId))]);
+    try {localStorage.setItem(key,JSON.stringify(rows.map(row=>({...row,name:row.assetId||row.id}))));localStorage.removeItem(legacyKey);} catch {setError('无法保存续传记录，请勿关闭页面');}
   };
   const patch=(id:string,data:Partial<Task>)=>change(rows=>rows.map(row=>row.id===id?{...row,...data}:row));
   useEffect(()=>{
     alive.current=true;
+    change(rows=>rows);
     void request('uploads').then(data=>setMaximum(data.maximum)).catch(()=>{});
     return()=>{alive.current=false;};
   },[]);
+  const refreshUploads=async()=>{
+    if(!series)return;
+    const data=await request(`uploads?seriesId=${series.id}&pending=1`);
+    setServerUploads(data.items.filter((asset:UploadAsset)=>administrator||asset.owner_id===accountId));
+  };
   useEffect(()=>{
-    callbacks.current.onActivity([...new Set(tasks.filter(row=>row.state!=='ready').map(row=>row.seriesId))]);
+    let active=true;setServerUploads([]);
+    if(!series?.id||!visible)return;
+    const id=series.id;
+    const load=()=>{void request(`uploads?seriesId=${id}&pending=1`).then(data=>{if(active)setServerUploads(data.items.filter((asset:UploadAsset)=>administrator||asset.owner_id===accountId));}).catch(error=>{if(active)setError(accountError(error));});};
+    load();const timer=setInterval(load,5000);return()=>{active=false;clearInterval(timer);};
+  },[series?.id,visible,administrator]);
+  useEffect(()=>{callbacks.current.onActivity([...new Set([...tasks.filter(row=>row.state!=='ready').map(row=>row.seriesId),...serverUploads.map(asset=>asset.series_id)])]);},[tasks,serverUploads]);
+  const restoreUpload=(asset:UploadAsset)=>{
+    if(!series)return;
+    const task:Task={id:crypto.randomUUID(),seriesId:series.id,seriesTitle:series.title,name:asset.name,size:asset.size,kind:asset.kind,mime:asset.mime,number:asset.episode_number||Math.max(0,...series.episodes.map(episode=>episode.number))+1,title:'',assetId:asset.id,mode:'append',state:asset.status==='uploading'?'needsFile':'queued',progress:Math.floor(asset.offset/asset.size*100),sha256:asset.source_sha256||undefined,revision:asset.upload_revision};
+    change(rows=>[...rows,task]);
+  };
+  useEffect(()=>{
     const timer=setInterval(()=>{
       // 队列不随模块切换卸载，两条真实上传并行，处理状态按素材标识查询。
       for(const task of tasksRef.current) {
@@ -82,24 +96,28 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
     try {
       if(tasksRef.current.find(row=>row.id===id)?.state==='paused')return;
       let asset=initial.assetId ? await request(`uploads/${initial.assetId}`) : null;
+      if(asset&&!administrator&&asset.owner_id!==accountId)throw new Error('没有此作品的操作权限');
       const file=files.current.get(id);
       if(asset?.status==='failed') {
         if(!file){patch(id,{state:'needsFile',error:asset.error});return;}
         // 清理成功后才放弃旧编号，避免失败重试留下无法从队列移除的文件。
-        await axios.delete(`/api/admin/uploads/${asset.id}`);
+        await axios.delete(`/api/admin/uploads/${asset.id}`,{headers:{'X-Upload-Revision':String(asset.upload_revision)}});
         asset=null;patch(id,{assetId:undefined});
       }
       if(!asset || asset.status==='uploading') {
         if(!file) {patch(id,{state:'needsFile'});return;}
         if(tasksRef.current.find(row=>row.id===id)?.state==='paused')return;
-        if(!asset) {asset=await request('uploads',{name:initial.name,size:initial.size,kind:initial.kind,mime:initial.mime,seriesId:initial.seriesId,number:initial.number});patch(id,{assetId:asset.id});}
+        const sha256=initial.sha256||await uploadDigest(file);
+        if(asset&&asset.source_sha256&&asset.source_sha256!==sha256)throw new Error('原文件内容不匹配，请重新选择');
+        if(!asset) {asset=await request('uploads',{sha256,size:initial.size,kind:initial.kind,mime:initial.mime,seriesId:initial.seriesId,number:initial.number});patch(id,{assetId:asset.id,sha256});}
+        else if(!asset.source_sha256){asset=await request(`uploads/${asset.id}/verify`,{sha256,prefixSha256:await uploadDigest(file.slice(0,asset.offset)),offset:asset.offset,revision:asset.upload_revision});patch(id,{sha256,revision:asset.upload_revision});}
         if(tasksRef.current.find(row=>row.id===id)?.state==='paused')return;
         patch(id,{state:'uploading',progress:Math.floor(asset.offset/initial.size*100),error:''});
         while(asset.status==='uploading' && asset.offset<initial.size && alive.current) {
           if(tasksRef.current.find(row=>row.id===id)?.state==='paused')return;
           const start=asset.offset,end=Math.min(start+1048576,initial.size);
           asset=(await axios.put(`/api/admin/uploads/${asset.id}`,file.slice(start,end),{
-            headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes ${start}-${end-1}/${initial.size}`},timeout:60000,
+            headers:{'Content-Type':'application/octet-stream','Content-Range':`bytes ${start}-${end-1}/${initial.size}`,'X-Upload-Revision':String(asset.upload_revision)},timeout:60000,
             onUploadProgress:event=>{if(tasksRef.current.find(row=>row.id===id)?.state!=='paused')patch(id,{progress:Math.min(100,Math.floor((start+event.loaded)/initial.size*100))});},
           })).data;
           if(tasksRef.current.find(row=>row.id===id)?.state==='paused')return;
@@ -128,13 +146,15 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
         });
       }
       patch(id,{state:'ready',error:''}); files.current.delete(id);
+      setServerUploads(rows=>rows.filter(row=>row.id!==asset.id));
       // 顺序刷新，避免并行上传的较早响应把页面分集列表倒退。
       notifications.current=notifications.current.catch(()=>{}).then(async()=>{
         const data=await request(`series/${initial.seriesId}`);if(alive.current)callbacks.current.onUpdated(data);
       });
       await notifications.current;
     } catch(error) {
-      if(tasksRef.current.find(row=>row.id===id)?.state!=='paused')patch(id,{state:'failed',error:axios.isAxiosError(error)&&!error.response?'网络连接中断，请检查网络后继续上传':accountError(error)});
+      const message=axios.isAxiosError(error)&&!error.response?'网络连接中断，请检查网络后继续上传':accountError(error);
+      if(tasksRef.current.find(row=>row.id===id)?.state!=='paused')patch(id,{state:/原文件|已上传内容不匹配/.test(message)?'needsFile':'failed',error:message});
     }
   };
   const addFiles=async(list:File[],kind:'video'|'image',replace?:Episode)=>{
@@ -145,14 +165,14 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
       for(const file of sorted) {
         const valid=kind==='video'?/\.mp4$/i.test(file.name):['image/jpeg','image/png','image/webp'].includes(file.type);
         if(!valid||file.size<=0||file.size>(kind==='image'?8*1024**2:maximum)) {setError('文件格式或大小不符合要求');continue;}
-        const digest=await identity(file);
-        const existing=tasksRef.current.find(row=>row.seriesId===series.id&&row.kind===kind&&row.name===file.name&&row.size===file.size&&row.modified===file.lastModified&&row.digest===digest&&row.state!=='ready'&&row.mode===(replace?'replace':'append'));
+        const sha256=await uploadDigest(file);
+        const existing=tasksRef.current.find(row=>row.seriesId===series.id&&row.kind===kind&&row.size===file.size&&row.sha256===sha256&&row.state!=='ready'&&row.mode===(replace?'replace':'append'));
         if(existing) {files.current.set(existing.id,file);patch(existing.id,{state:existing.state==='confirm'?'confirm':'queued',error:''});continue;}
         if(tasksRef.current.some(row=>row.seriesId===series.id&&row.kind==='image'&&row.state!=='ready')&&kind==='image')throw Error('请先完成或移除当前封面任务');
         const used=[...series.episodes.map(ep=>ep.number),...tasksRef.current.filter(row=>row.seriesId===series.id&&row.kind==='video'&&row.state!=='ready').map(row=>row.number)];
         const number=replace?.number||fileNumber(file.name)||Math.max(0,...used)+1;
-        const task:Task={id:crypto.randomUUID(),seriesId:series.id,seriesTitle:series.title,name:file.name,size:file.size,modified:file.lastModified,digest,kind,mime:kind==='video'?'video/mp4':file.type,
-          number,title:replace?.title||'',mode:replace?'replace':'append',expectedEpisodeId:replace?.id,expectedAssetId:replace?.assetId,state:'confirm',progress:0};
+        const task:Task={id:crypto.randomUUID(),seriesId:series.id,seriesTitle:series.title,name:file.name,size:file.size,kind,mime:kind==='video'?'video/mp4':file.type,
+          number,title:replace?.title||'',mode:replace?'replace':'append',expectedEpisodeId:replace?.id,expectedAssetId:replace?.assetId,state:'confirm',progress:0,sha256};
         files.current.set(task.id,file);change(rows=>[...rows,task]);
       }
     } catch(error) {setError(error instanceof Error?error.message:accountError(error));}
@@ -171,16 +191,18 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
     change(all=>all.map(row=>{if(!ids.has(row.id))return row;const next={...rows[position],number:numbers[position]};position++;return next;}));
   };
   const remove=async(task:Task)=>{
-    try {if(task.assetId)await axios.delete(`/api/admin/uploads/${task.assetId}`);files.current.delete(task.id);change(rows=>rows.filter(row=>row.id!==task.id));}
+    try {if(task.assetId){const asset=await request(`uploads/${task.assetId}`);if(administrator||asset.owner_id===accountId)await axios.delete(`/api/admin/uploads/${task.assetId}`,{headers:{'X-Upload-Revision':String(asset.upload_revision)}});}files.current.delete(task.id);change(rows=>rows.filter(row=>row.id!==task.id));await refreshUploads();}
     catch(error){setError(accountError(error));}
   };
   const reselect=async(task:Task,file?:File)=>{
     if(!file)return;
     setSelecting(true);setError('');
     try {
-      if(file.name!==task.name||file.size!==task.size||file.lastModified!==task.modified||await identity(file)!==task.digest) {setError('请选择原文件，名称、大小或内容不匹配');return;}
-      files.current.set(task.id,file);patch(task.id,{state:'queued',error:''});
-    } finally {setSelecting(false);}
+      const sha256=await uploadDigest(file);
+      const expected=task.assetId?(await request(`uploads/${task.assetId}`)).source_sha256:task.sha256;
+      if(file.size!==task.size||expected&&sha256!==expected||task.legacyDigest&&await legacyUploadDigest(file)!==task.legacyDigest) {setError('原文件内容不匹配，请重新选择');return;}
+      files.current.set(task.id,file);patch(task.id,{state:'queued',name:file.name,sha256,legacyDigest:undefined,error:''});
+    } catch(error){setError(accountError(error));} finally {setSelecting(false);}
   };
   return <section hidden={!visible} className="admin-batch">
     <div className="admin-panel-title"><h3>{series?.title||t('封面与批量分集')}</h3><span>{t('前3集免费，后续集数需VIP')}</span></div>
@@ -194,6 +216,7 @@ export default function AdminUploadQueue({accountId, series, visible, onUpdated,
         </label>
       </div>
       <p className="admin-upload-hint">{t('视频支持H.264与AAC的MP4，封面支持JPEG、PNG、WebP')}</p>
+      {serverUploads.filter(asset=>!tasks.some(task=>task.assetId===asset.id)).map(asset=><article className="admin-upload-task" key={asset.id}><strong>{asset.kind==='video'?t('第{{number}}集',{number:asset.episode_number||1}):t('封面')} · <bdi>{asset.name}</bdi></strong><span>{t(asset.status==='processing'?'处理中':'上传中')} · {Math.floor(asset.offset/asset.size*100)}%</span><div className="admin-upload-task-controls"><button disabled={checkingUploads} onClick={()=>restoreUpload(asset)}>{t('继续上传')}</button><button disabled={checkingUploads||asset.status==='processing'} onClick={()=>{setCheckingUploads(true);void axios.delete(`/api/admin/uploads/${asset.id}`,{headers:{'X-Upload-Revision':String(asset.upload_revision)}}).then(refreshUploads).catch(error=>setError(accountError(error))).finally(()=>setCheckingUploads(false));}}>{t('取消上传任务')}</button></div></article>)}
       {current.length>0&&<div className="admin-batch-summary"><strong>{t('已完成{{done}}／{{total}}个文件',{done:current.filter(row=>row.state==='ready').length,total:current.length})}</strong>{current.some(row=>row.state==='ready')&&<button aria-pressed={showCompleted} onClick={()=>setShowCompleted(value=>!value)}>{t(showCompleted?'收起已完成记录':'查看已完成记录')}</button>}</div>}
       {selecting&&<p role="status">{t('正在检查文件')}</p>}
       {pending.length===0&&missing.length>0&&<p className="admin-upload-hint">{t('缺少第{{numbers}}集，发布前需补齐',{numbers:missing.slice(0,20).join(', ')})}</p>}

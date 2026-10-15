@@ -1,5 +1,17 @@
 // 团队界面沿用全站五种译文和中文键名，成员编号与作品名称保持原值。
 export const teamMessages = {
+  '取消上传任务':['Cancel upload','Cancelar carga','Cancelar envio','إلغاء مهمة الرفع','Annuler le transfert'],
+  '后台维护中，请稍后重试':['Workspace maintenance in progress. Try again later.','Panel en mantenimiento. Inténtalo más tarde.','Painel em manutenção. Tente mais tarde.','لوحة الإدارة قيد الصيانة. حاول لاحقاً.','Maintenance en cours. Réessayez plus tard.'],
+  '上传状态已变化，请刷新任务':['Upload state changed. Refresh the task.','La carga cambió. Actualiza la tarea.','O envio mudou. Atualize a tarefa.','تغيّرت حالة الرفع. حدّث المهمة.','Le transfert a changé. Actualisez la tâche.'],
+  '原文件内容不匹配，请重新选择':['Original file content does not match. Select it again.','El contenido no coincide. Selecciona el archivo original.','O conteúdo não corresponde. Selecione o arquivo original.','محتوى الملف الأصلي غير مطابق. اختره مجدداً.','Le contenu ne correspond pas. Sélectionnez le fichier original.'],
+  '无法校验原文件，请重新选择':['Unable to verify the file. Select it again.','No se puede verificar el archivo. Selecciónalo de nuevo.','Não foi possível verificar o arquivo. Selecione novamente.','تعذر التحقق من الملف. اختره مجدداً.','Impossible de vérifier le fichier. Sélectionnez-le à nouveau.'],
+  '原文件校验信息无效':['Invalid file verification data','Datos de verificación no válidos','Dados de verificação inválidos','بيانات التحقق من الملف غير صالحة','Données de vérification invalides'],
+  '请先校验原文件再继续上传':['Verify the original file before resuming','Verifica el archivo antes de continuar','Verifique o arquivo antes de retomar','تحقق من الملف الأصلي قبل المتابعة','Vérifiez le fichier original avant de reprendre'],
+  '已上传内容不匹配，不能继续此任务':['Uploaded content differs; this task cannot resume','El contenido subido difiere; no se puede continuar','O conteúdo enviado difere; não é possível retomar','المحتوى المرفوع غير مطابق؛ لا يمكن متابعة المهمة','Le contenu transféré diffère; reprise impossible'],
+  '创建文件上传':['Created upload','Carga creada','Envio criado','إنشاء رفع ملف','Transfert créé'],
+  '取消文件上传':['Cancelled upload','Carga cancelada','Envio cancelado','إلغاء رفع ملف','Transfert annulé'],
+  '校验上传原文件':['Verified upload source','Archivo original verificado','Arquivo original verificado','التحقق من مصدر الرفع','Fichier source vérifié'],
+  '重试HLS转码':['Retried HLS transcoding','Conversión HLS reintentada','Conversão HLS repetida','إعادة تحويل HLS','Transcodage HLS relancé'],
   '重设密码': ['Reset password','Restablecer contraseña','Redefinir senha','إعادة تعيين كلمة المرور','Réinitialiser le mot de passe'],
   '返回登录': ['Back to sign-in','Volver al acceso','Voltar ao login','العودة لتسجيل الدخول','Retour à la connexion'],
   '团队工作台': ['Team workspace','Espacio del equipo','Área da equipe','مساحة الفريق','Espace d’équipe'],

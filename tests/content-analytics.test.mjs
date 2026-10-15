@@ -42,7 +42,7 @@ test('分析权限：管理员看全部，创作者归属隔离且撤销权限�
   assert.deepEqual(f.analytics.series(f.requests.creator).items.map(row=>row.id),['91']);
   assert.throws(()=>f.report(f.requests.creator,{seriesId:'92'}),error=>error.status===404);
   assert.throws(()=>f.report(f.requests.viewer),error=>error.status===403);
-  f.content.assignCreator(f.admin,'91',f.other.id);
+  f.content.db.prepare('UPDATE content_series SET creator_id=? WHERE id=?').run(f.other.id,'91');
   assert.equal(f.analytics.series(f.requests.creator).items.length,0);
   assert.throws(()=>f.report(f.requests.creator),error=>error.status===404);
   f.users.db.prepare('DELETE FROM account_creators WHERE account_id=?').run(f.other.id);

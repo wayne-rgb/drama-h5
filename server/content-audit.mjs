@@ -1,6 +1,7 @@
 import { AccountError } from './account-store.mjs';
 
-const contentActions = ['保存短剧','发布短剧','下架短剧','设置短剧创作者','保存分集','移除分集','调整分集顺序','完成文件上传','处理评论'];
+const uploadActions = ['创建文件上传','完成文件上传','取消文件上传','校验上传原文件','重试HLS转码'];
+const contentActions = ['保存短剧','发布短剧','下架短剧','设置短剧创作者','保存分集','移除分集','调整分集顺序','处理评论',...uploadActions];
 const seriesActions = new Set(['保存短剧','发布短剧','下架短剧','设置短剧创作者','调整分集顺序']);
 const actionSlots = contentActions.map(()=>'?').join(',');
 const readDetail = row => { try { return JSON.parse(row.detail); } catch { return {}; } };
@@ -35,7 +36,7 @@ export function captureAuditContext(store,row) {
     const comment=db.prepare('SELECT series_id,episode_id FROM episode_comments WHERE id=?').get(row.target_id);
     if (comment) refs.push(episodeContext(store,comment.series_id,comment.episode_id,detail,row.created_at,sequence));
   }
-  if (row.action==='完成文件上传') {
+  if (uploadActions.includes(row.action)) {
     const asset=store.asset(row.target_id);
     for (const episode of db.prepare('SELECT * FROM content_episodes WHERE asset_id=?').all(row.target_id)) refs.push(episodeContext(store,episode.series_id,episode.id));
     for (const saved of db.prepare("SELECT rowid AS sequence,target_id,detail,created_at FROM content_audit WHERE action='保存分集' AND json_extract(detail,'$.assetId')=?").all(row.target_id)) {
@@ -98,15 +99,18 @@ export class ContentAudit {
     const rows=this.db.prepare(`SELECT a.* FROM content_audit a WHERE ${where} ORDER BY a.created_at DESC,a.rowid DESC LIMIT 101 OFFSET ?`).all(...values,(page-1)*100);
     const seriesTitle=current?.title || this.db.prepare('SELECT series_title FROM content_audit_refs WHERE series_id=? AND series_title IS NOT NULL LIMIT 1').get(seriesId)?.series_title || null;
     return {series:seriesId ? {id:seriesId,title:seriesTitle} : null,episodes:[...episodes.values()].sort((a,b)=>(a.number??Infinity)-(b.number??Infinity)||a.id.localeCompare(b.id)),hasMore:rows.length>100,items:rows.slice(0,100).map(row=>{
-      const detail=readDetail(row),actor=this.accounts.byId(row.admin_id),account=scope==='platform' ? this.accounts.byId(row.target_id) : null,creator=detail.creatorId ? this.accounts.byId(detail.creatorId) : null;
+      const detail=readDetail(row),accountAction=['开通手动会员','撤销手动会员'].includes(row.action),account=accountAction?this.accounts.byId(row.target_id):null;
+      const hasTable=name=>!!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+      const actorCode=hasTable('team_members')?this.db.prepare('SELECT code FROM team_members WHERE id=?').get(row.admin_id)?.code:null;
+      const historyCode=hasTable('team_history_actors')?this.db.prepare('SELECT code FROM team_history_actors WHERE id=?').get(row.admin_id)?.code:null;
       const targets=this.db.prepare('SELECT series_title AS seriesTitle,episode_number AS number,episode_title AS title FROM content_audit_refs WHERE audit_id=? AND (?=\'\' OR series_id=?) AND (?=\'\' OR episode_id=?) ORDER BY episode_number').all(row.id,seriesId,seriesId,episodeId,episodeId);
-      return {id:row.id,action:row.action,createdAt:row.created_at,actorName:detail.actorCode || detail.adminName || actor?.name || null,actorEmail:detail.actorCode ? null : detail.adminEmail || actor?.email || null,targets,
-        filename:detail.fileName || (row.action==='完成文件上传' ? detail.name : detail.assetId ? this.store.asset(detail.assetId)?.name : null) || null,
+      return {id:row.id,action:row.action,createdAt:row.created_at,actorName:actorCode || historyCode || (/^[MH]-[A-F0-9]{12}$/.test(detail.actorCode||'')?detail.actorCode:null),actorEmail:null,targets,
+        filename:uploadActions.includes(row.action)?row.target_id:detail.assetId||null,
         kind:row.action==='完成文件上传' ? detail.kind || null : row.action==='保存分集' ? 'video' : null,
         order:row.action==='调整分集顺序' ? (detail.order || (detail.ids || []).map((id,index)=>({number:index+1,title:this.db.prepare('SELECT episode_title FROM content_audit_refs WHERE audit_id=? AND episode_id=?').get(row.id,id)?.episode_title || ''}))).map(item=>({number:item.number,title:item.title})) : [],
-        accountName:detail.accountName || account?.name || null,accountEmail:detail.accountEmail || account?.email || null,
-        creatorName:detail.creatorName || creator?.name || null,creatorEmail:detail.creatorEmail || creator?.email || null,creatorAssigned:row.action==='设置短剧创作者' ? !!detail.creatorId : null,
-        status:row.action==='处理评论' ? detail.status : null,reason:detail.reason || null,periodEnd:detail.periodEnd || null};
+        accountName:accountAction?detail.accountName||account?.name||null:null,accountEmail:accountAction?detail.accountEmail||account?.email||null:null,
+        creatorName:detail.creatorCode||detail.memberCode||null,creatorEmail:null,creatorAssigned:row.action==='设置短剧创作者' ? detail.creatorAssigned ?? !!detail.creatorId : null,
+        status:row.action==='处理评论' ? detail.status : null,reason:accountAction?detail.reason||null:null,periodEnd:detail.periodEnd || null};
     })};
   }
 }

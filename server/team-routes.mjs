@@ -22,7 +22,7 @@ export function createTeamService(team, accounts, config = process.env) {
       rates.request(req, 'team', 90);
     }
     const input = async () => {
-      try { return await readJson(req); } catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : error instanceof AccountError ? error.message : '请求格式无效'); }
+      try { const data=await readJson(req);req.revalidateAccess?.();if(/^\/api\/team\/(members|invites)(\/|$)/.test(route))team.business?.writable();return data; } catch (error) { throw new AccountError(error.status || 400, error.status === 408 ? '请求读取超时，请稍后重试' : error instanceof AccountError ? error.message : '请求格式无效'); }
     };
     if (['/api/team/bootstrap', '/api/team/join', '/api/team/login', '/api/team/recover', '/api/team/mfa/verify', '/api/team/mfa/enable'].includes(route) && req.method === 'POST') {
       const data = await input(), scope = route === '/api/team/login' || route === '/api/team/recover' ? `team:${String(data.code || '').slice(0, 80).toUpperCase()}` : route;
@@ -49,9 +49,19 @@ export function createTeamService(team, accounts, config = process.env) {
       setCookie(res, ''); reply(res, { ok: true }); return true;
     }
     const owner = team.require(req, 'owner');
+    const business=team.business;
+    if(route==='/api/team/maintenance/preview'&&req.method==='GET'){reply(res,business.preview());return true;}
+    if(route.startsWith('/api/team/maintenance/')&&req.method==='POST') {
+      const data=await input();team.require(req,'owner');
+      const action=route.split('/').at(-1);
+      const result=action==='pause'?business.pause(owner):action==='resume'?business.resume(owner):action==='migrate'?await business.migrate(owner,data,()=>{req.revalidateAccess?.();team.require(req,'owner');}):action==='restore'?business.restore(owner,data.id):null;
+      if(!result)throw new AccountError(404,'团队接口不存在');reply(res,result);return true;
+    }
+    if(req.method==='POST')business?.writable();
     if (route === '/api/team/members' && req.method === 'GET') {
       const page = Math.max(1, Math.min(1000, Number(url.searchParams.get('page')) || 1));
-      const items = team.db.prepare('SELECT * FROM team_members ORDER BY created_at,id LIMIT 101 OFFSET ?').all((Math.floor(page) - 1) * 100);
+      const query=(url.searchParams.get('q')||'').trim().slice(0,80);
+      const items = team.db.prepare('SELECT * FROM team_members WHERE (?=\'\' OR code LIKE ?) ORDER BY created_at,id LIMIT 101 OFFSET ?').all(query,`%${query}%`,(Math.floor(page) - 1) * 100);
       reply(res, { items: items.slice(0, 100).map(member => team.publicMember(member)), hasMore: items.length > 100 });
     } else if (route === '/api/team/series' && req.method === 'GET') reply(res, { items: team.content.list({ preview: true, query: url.searchParams.get('q') || '', page: url.searchParams.get('page') }) });
     else if (route === '/api/team/invites' && req.method === 'GET') reply(res, { items: team.db.prepare('SELECT id,roles,series_ids,expires_at FROM team_invites WHERE used_at IS NULL AND expires_at>? ORDER BY expires_at DESC LIMIT 100').all(Date.now()).map(row => ({ id: row.id, roles: JSON.parse(row.roles), seriesIds: JSON.parse(row.series_ids), expiresAt: row.expires_at })) });

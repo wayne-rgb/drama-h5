@@ -87,6 +87,7 @@ export class TeamStore {
     });
   }
   invite(req, data) {
+    this.business?.writable();
     const actor = this.require(req, 'owner'), roles = this.roles(data.roles), seriesIds = this.series(data.seriesIds || []);
     const token = secret(), id = crypto.randomUUID(), expiresAt = Date.now() + 86400000;
     return this.transaction(() => {
@@ -191,6 +192,7 @@ export class TeamStore {
     });
   }
   update(req, id, data) {
+    this.business?.writable();
     const actor = this.require(req, 'owner'), roles = this.roles(data.roles), seriesIds = this.series(data.seriesIds || []);
     if (typeof data.enabled !== 'boolean') fail(400, '成员状态无效');
     return this.transaction(() => {
@@ -206,15 +208,17 @@ export class TeamStore {
   }
   authorize(req, url) {
     const route = url.pathname, member = this.require(req);
+    if (!['GET','HEAD'].includes(req.method)) this.business?.writable();
     if (route === '/api/admin/creators' || /^\/api\/admin\/series\/\d+\/creator$/.test(route)) fail(404, '管理接口不存在');
     if (/^\/api\/analytics\/(series|report)$/.test(route)) { if (!this.has(member, 'analyst')) fail(403, '没有此操作的团队权限'); if (url.searchParams.get('seriesId')) this.requireSeries(req, 'analyst', url.searchParams.get('seriesId')); return member; }
     if (this.owner(member)) return member;
     const series = /^\/api\/admin\/series(?:\/(\d+)(?:\/(?:episodes|publish|reorder)(?:\/\d+)?)?)?$/.exec(route);
     if (series) { if (!this.has(member, 'editor') || !series[1] && req.method !== 'GET') fail(403, '没有此操作的团队权限'); if (series[1]) this.requireSeries(req, 'editor', series[1]); return member; }
-    if (/^\/api\/admin\/uploads(?:\/[a-f0-9-]+(?:\/hls\/retry)?)?$/.test(route)) {
+    if (/^\/api\/admin\/uploads(?:\/[a-f0-9-]+(?:\/hls\/retry|\/verify)?)?$/.test(route)) {
       if (!this.has(member, 'editor')) fail(403, '没有此操作的团队权限');
-      const id = /^\/api\/admin\/uploads\/([^/]+)(?:\/hls\/retry)?$/.exec(route)?.[1], asset = id && this.content.asset(id);
-      if (id && (!asset || asset.owner_id !== member.id || !this.allowed(member, 'editor', asset.series_id))) fail(403, '没有此作品的操作权限');
+      const id = /^\/api\/admin\/uploads\/([^/]+)(?:\/hls\/retry|\/verify)?$/.exec(route)?.[1], asset = id && this.content.asset(id);
+      const shared = req.method==='GET' || route.endsWith('/hls/retry');
+      if (id && (!asset || !shared && asset.owner_id !== member.id || !this.allowed(member, 'editor', asset.series_id))) fail(403, '没有此作品的操作权限');
       return member;
     }
     if (/^\/api\/admin\/(comment-series|comments)(?:\/[a-f0-9-]+)?$/.test(route)) {

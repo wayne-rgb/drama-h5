@@ -42,7 +42,7 @@ test('播放连接复核当前免费集序、会员权益、分集存在性和�
   f.users.db.prepare('INSERT INTO account_manual_vip VALUES(?,?,?,?,?)').run(f.viewer.id,Date.now()+60000,f.admin.id,'独立会员回归',Date.now());assert.doesNotThrow(()=>req.revalidatePlayback(true));
   f.users.db.prepare('DELETE FROM account_manual_vip WHERE account_id=?').run(f.viewer.id);assert.throws(()=>req.revalidatePlayback(true),error=>error.status===403);
   f.store.publish(f.admin,f.series.id,'draft');f.store.reorder(f.admin,f.series.id,f.series.episodes.map(row=>row.id));f.store.publish(f.admin,f.series.id,'published');assert.doesNotThrow(()=>req.revalidatePlayback(true));
-  const replacement=crypto.randomUUID();f.store.db.prepare('INSERT INTO content_assets SELECT ?,owner_id,name,kind,mime,size,offset,status,metadata,error,created_at,series_id,episode_number FROM content_assets WHERE id=?').run(replacement,f.video);
+  const replacement=crypto.randomUUID();f.store.db.prepare('INSERT INTO content_assets(id,owner_id,name,kind,mime,size,offset,status,metadata,error,created_at,series_id,episode_number) SELECT ?,owner_id,name,kind,mime,size,offset,status,metadata,error,created_at,series_id,episode_number FROM content_assets WHERE id=?').run(replacement,f.video);
   f.store.publish(f.admin,f.series.id,'draft');f.store.saveEpisode(f.admin,f.series.id,{number:1,assetId:replacement,mode:'replace',expectedEpisodeId:episode.id,expectedAssetId:f.video});f.store.publish(f.admin,f.series.id,'published');
   assert.throws(()=>req.revalidatePlayback(true),error=>error.status===409);
   const updated=f.request('/',token);await f.content.resolveEpisode(updated,f.series.id,episode.id);assert.doesNotThrow(()=>updated.revalidatePlayback(true));
