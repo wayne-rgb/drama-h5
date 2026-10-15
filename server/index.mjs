@@ -15,6 +15,7 @@ import { RecommendationService, RecommendationError } from "./recommendation-ser
 import { AccountStore, AccountError } from "./account-store.mjs";
 import { createAccountService } from "./account-routes.mjs";
 import { createContentService } from "./content-service.mjs";
+import { mp4PlaybackSource } from './media-delivery.mjs';
 import { publicFailure } from "./http-error.mjs";
 import { CatalogCache } from './catalog-cache.mjs';
 import { PlaybackGuard } from './playback-guard.mjs';
@@ -1052,11 +1053,7 @@ const server = http.createServer(async (req, res) => {
       const episodeId = pMatch[1];
       const quality = u.searchParams.get("quality") || "auto";
       const seriesId = u.searchParams.get("seriesId") || u.searchParams.get("series_id") || vidToSeriesMap.get(episodeId) || "";
-      const sParam = seriesId ? `&seriesId=${encodeURIComponent(seriesId)}` : "";
-      return json(res, {
-        path: `/api/episodes/${episodeId}/stream?quality=${encodeURIComponent(quality)}${sParam}`,
-        contentType: "video/mp4",
-      });
+      return json(res, mp4PlaybackSource(episodeId, seriesId, quality));
     }
 
     // 11. MP4 视频媒体流代理 (支持官方全部实际拥有的 1080P/720P/540P/480P/360P 真实画质流，实时解密并支持 Range)

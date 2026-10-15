@@ -13,6 +13,7 @@ import { LikedEpisodes, useLikeCount } from "./LikedEpisodes";
 import { historyUuid } from "./history-outbox.mjs";
 import { RecommendationSession, RecommendationWatch, bindRecommendationPlayback } from "./recommendation-session.mjs";
 import { useContentAnalytics } from './use-content-analytics';
+import { usePlaybackSource } from './use-playback-source';
 import { 
   api,
   saveRecommendationSignal, resetRecommendationPreferences, commitRecommendationPreferences,
@@ -362,6 +363,14 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
   const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
   const qualitySwitchTimeRef = useRef<number | null>(null);
 
+  const currentEpisode: Episode | undefined = activeSeries?.episodes?.[currentEpisodeIndex];
+  const detailSource = usePlaybackSource(activeSeries?.id, currentEpisode?.id, currentQuality,
+    !!currentEpisode && qualityEpisodeId === currentEpisode.id && (currentEpisodeIndex < 3 || hasVipAccess), qualityRetry, accountState.session?.libraryOwner);
+  const streamSource = usePlaybackSource(streamDetail?.id, streamCurrentEpisode?.id, streamQuality,
+    tab === 'recommend' && !activeSeries && !!streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id && streamDetail?.id === streamList[streamIndex]?.id && (streamEpisodeIndex < 3 || hasVipAccess), streamPlaybackAttempt, accountState.session?.libraryOwner);
+  useEffect(() => { if (detailSource.error) setPlaybackError(playbackFailure(detailSource.error)); }, [detailSource.error]);
+  useEffect(() => { if (streamSource.error) setStreamError(playbackFailure(streamSource.error)); }, [streamSource.error]);
+
 
   const showToast = (key: string, values?: MessageValues) => {
     setToast({ key, values });
@@ -465,7 +474,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     const watch = streamWatchRef.current, video = streamVideoRef.current;
     if (tab !== "recommend" || activeSeries || !video) {watch.pause();return;}
     return bindRecommendationPlayback(video, watch);
-  }, [tab, activeSeries, streamCurrentEpisode?.id, streamQuality, streamQualityEpisodeId, streamPlaybackAttempt]);
+  }, [tab, activeSeries, streamCurrentEpisode?.id, streamQuality, streamQualityEpisodeId, streamPlaybackAttempt, streamSource.source?.url]);
 
   // 🌟 PC端键盘上下键切剧 (仅在 recommend 标签且无主动播放弹窗时生效)
   useEffect(() => {
@@ -866,14 +875,13 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     showToast(isFav ? "已加入我的追剧" : "已从我的追剧移除");
   };
 
-  const currentEpisode: Episode | undefined = activeSeries?.episodes?.[currentEpisodeIndex];
   useEffect(() => {
     if (accountPanel) { videoRef.current?.pause(); streamVideoRef.current?.pause(); }
   }, [accountPanel]);
   const playbackReturn = activeSeries && currentEpisode ? {seriesId:activeSeries.id,episodeId:currentEpisode.id} : tab==='recommend' && streamDetail && streamCurrentEpisode ? {seriesId:streamDetail.id,episodeId:streamCurrentEpisode.id} : undefined;
   const detailLocked = !!currentEpisode && (currentEpisodeIndex >= 3 && !hasVipAccess || playbackError === 'VIP_REQUIRED');
-  useContentAnalytics(videoRef, activeSeries?.id, currentEpisode?.id, !!activeSeries?.owned && !!accountState.session, `${qualityEpisodeId}:${currentQuality}`, 'detail', accountState.session?.libraryOwner, detailLocked, playbackError);
-  useContentAnalytics(streamVideoRef, streamDetail?.id, streamCurrentEpisode?.id, tab === 'recommend' && !activeSeries && !!streamDetail?.owned && !!accountState.session, `${streamQualityEpisodeId}:${streamQuality}:${streamPlaybackAttempt}`, 'feed', accountState.session?.libraryOwner, !!streamCurrentEpisode && (streamEpisodeIndex >= 3 && !hasVipAccess || streamError === 'VIP_REQUIRED'), streamError);
+  useContentAnalytics(videoRef, activeSeries?.id, currentEpisode?.id, !!activeSeries?.owned && !!accountState.session, `${qualityEpisodeId}:${currentQuality}:${detailSource.source?.url || ''}`, 'detail', accountState.session?.libraryOwner, detailLocked, playbackError);
+  useContentAnalytics(streamVideoRef, streamDetail?.id, streamCurrentEpisode?.id, tab === 'recommend' && !activeSeries && !!streamDetail?.owned && !!accountState.session, `${streamQualityEpisodeId}:${streamQuality}:${streamPlaybackAttempt}:${streamSource.source?.url || ''}`, 'feed', accountState.session?.libraryOwner, !!streamCurrentEpisode && (streamEpisodeIndex >= 3 && !hasVipAccess || streamError === 'VIP_REQUIRED'), streamError);
   const openMobileSearch = (origin: "recommend" | "category") => {
     mobileSearchOrigin.current = { tab: origin, series: activeSeries, episodeId: currentEpisode?.id };
     setTab("search"); setActiveSeries(null);
@@ -902,7 +910,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     const watch = detailWatchRef.current, video = videoRef.current;
     if (!activeSeries || !video) {watch.pause();return;}
     return bindRecommendationPlayback(video, watch);
-  }, [activeSeries, currentEpisode?.id, currentQuality, qualityEpisodeId]);
+  }, [activeSeries, currentEpisode?.id, currentQuality, qualityEpisodeId, detailSource.source?.url]);
 
   useEffect(() => {
     const snapshot = () => {
@@ -931,7 +939,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
       video?.removeEventListener("ended", snapshot);
       void flushPersonalLibrary().catch(()=>{});
     };
-  }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id, qualityEpisodeId, streamQualityEpisodeId]);
+  }, [activeSeries, currentEpisode?.id, streamIndex, streamCurrentEpisode?.id, qualityEpisodeId, streamQualityEpisodeId, detailSource.source?.url, streamSource.source?.url]);
 
 
   // 后台暂停与回到前台续播共用一套生命周期处理。
@@ -939,7 +947,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
     if (accountPanel) return;
     const video = activeSeries ? videoRef.current : tab === 'recommend' ? streamVideoRef.current : null;
     if (video) return bindPlaybackLifecycle(video);
-  }, [activeSeries?.id, currentEpisode?.id, qualityEpisodeId, currentQuality, streamCurrentEpisode?.id, streamQualityEpisodeId, streamQuality, streamPlaybackAttempt, tab, accountPanel]);
+  }, [activeSeries?.id, currentEpisode?.id, qualityEpisodeId, currentQuality, streamCurrentEpisode?.id, streamQualityEpisodeId, streamQuality, streamPlaybackAttempt, tab, accountPanel, detailSource.source?.url, streamSource.source?.url]);
 
   // 根据当前分集请求真实可用的视频源。
   useEffect(() => {
@@ -1833,10 +1841,10 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               >
                 {detailLocked ? <VipGate cover={activeSeries.cover} number={currentEpisode?.number} loading={!accountState.session} onSubscribe={() => setAccountPanel('membership')} onBack={() => setActiveSeries(null)} onEpisodes={mobilePrototype ? () => setMobileEpisodesOpen(true) : undefined} /> : currentEpisode && qualityEpisodeId === currentEpisode.id ? (
                   <>
-                    <video
+                    {detailSource.source && <video
                       ref={videoRef}
                       key={currentEpisode.id}
-                      src={api.getVideoStreamUrl(currentEpisode.id, currentQuality, activeSeries.id)}
+                      src={detailSource.source?.url}
                       autoPlay={!accountPanel}
                       playsInline
                       onTimeUpdate={handleTimeUpdate}
@@ -1858,7 +1866,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       onSeeked={handleTimeUpdate}
                       onClick={handleTogglePlay}
                       className="w-full h-full object-contain cursor-pointer"
-                    />
+                    />}
 
                     {mobilePrototype && <>
                       <div className="prototype-detail-shade" />
@@ -1882,7 +1890,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     </>}
 
                     {playbackError && <div role="alert" className="absolute inset-x-3 top-20 z-40 p-3 rounded-xl bg-black/85 text-sm text-rose-200">{localizeError(playbackError)} <button className="underline ms-2" onClick={retryDetailPlayback}>{t("重试")}</button></div>}
-                    {playbackBuffering && !playbackError && <div role="status" className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center gap-3 bg-black/20"><RefreshCw className="w-8 h-8 animate-spin"/><span>{t("加载中...")}</span></div>}
+                    {(playbackBuffering || detailSource.loading) && !playbackError && <div role="status" className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center gap-3 bg-black/20"><RefreshCw className="w-8 h-8 animate-spin"/><span>{t("加载中...")}</span></div>}
 
                     {/* 暂停时中央呼吸播放大按钮 */}
                     {!isPlaying && (
@@ -2869,7 +2877,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
               const isFav = favorites.some((f) => String(f.id) === String(currentItem.id));
               const streamLocked = !!streamCurrentEpisode && (streamEpisodeIndex >= 3 && !hasVipAccess || streamError === 'VIP_REQUIRED');
               const videoStreamUrl = !streamLocked && streamCurrentEpisode && streamQualityEpisodeId === streamCurrentEpisode.id
-                ? api.getVideoStreamUrl(streamCurrentEpisode.id, undefined, currentItem.id)
+                ? streamSource.source?.url || ''
                 : "";
 
               return (
@@ -2900,7 +2908,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                       <video
                         ref={streamVideoRef}
                         key={`${currentItem.id}-${streamCurrentEpisode?.id || 0}-${streamPlaybackAttempt}`}
-                        src={api.getVideoStreamUrl(streamCurrentEpisode?.id || "", streamQuality, currentItem.id)}
+                        src={videoStreamUrl}
                         onError={() => { setStreamBuffering(false); setStreamError("无法播放媒体"); setStreamIsPlaying(false); }}
                         onWaiting={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}
                         onStalled={event => { if (!event.currentTarget.paused) setStreamBuffering(true); }}
@@ -2988,7 +2996,7 @@ export default function App({ mobilePrototype: forceMobileLayout }: { mobileProt
                     )}
 
                     {/* 暂停时显示居中播放按钮（参考图二：精致半透明播放三角图标） */}
-                    {(streamDetailLoading || streamQualitiesLoading || streamBuffering) && !streamError ? (
+                    {(streamDetailLoading || streamQualitiesLoading || streamBuffering || streamSource.loading) && !streamError ? (
                       <div role="status" className="absolute inset-0 bg-black/35 flex flex-col gap-3 items-center justify-center pointer-events-none">
                         <RefreshCw className="w-8 h-8 animate-spin text-white" />
                         <span className="text-white">{t("加载中...")}</span>

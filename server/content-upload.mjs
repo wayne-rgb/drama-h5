@@ -2,28 +2,17 @@ import fs from 'node:fs';
 import { promises as files } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { AccountError } from './account-store.mjs';
 import { readBody } from '../shared/http-json.mjs';
-import { positiveLimit } from './request-guard.mjs';
-const execute = promisify(execFile);
+import { LocalMediaStorage } from './media-storage.mjs';
+import { createMediaProcessor } from './media-processing.mjs';
 
-export function createUploads(store, directory, config = process.env) {
-  const media = path.join(directory, 'media'); fs.mkdirSync(media, { recursive: true, mode: 0o700 });
+export function createUploads(store, directory, config = process.env, storage = new LocalMediaStorage(directory, config)) {
+  const media = storage.root, processor = createMediaProcessor(storage, config);
   const active = new Set();
   const processing = new Set(); let closing = false;
   const queue = [];
-  const memory = positiveLimit(config,'CONTENT_MEDIA_MEMORY_BYTES',512*1024**2);
-  const cpuSeconds = positiveLimit(config,'CONTENT_MEDIA_CPU_SECONDS',180,1800);
-  // 媒体工具不继承账号、邮件及支付密钥，只传运行所需的路径和临时目录。
-  const mediaEnvironment=Object.fromEntries(['PATH','SystemRoot','WINDIR'].filter(key=>typeof process.env[key]==='string').map(key=>[key,process.env[key]]));
-  Object.assign(mediaEnvironment,{LANG:'C',TMPDIR:media,TMP:media,TEMP:media,OMP_NUM_THREADS:'1',OPENBLAS_NUM_THREADS:'1'});
-  // Linux对解析器子进程施加硬限制；其他系统保留原有超时、队列和输出大小保护。
-  const executeMedia = (binary,args,options) => process.platform==='linux'
-    ? execute(config.PRLIMIT_PATH||'prlimit',[`--as=${memory}`,`--cpu=${cpuSeconds}`,'--nofile=64','--',binary,...args],{...options,env:mediaEnvironment})
-    : execute(binary,args,{...options,env:mediaEnvironment});
-  const filePath = (id, suffix = '') => path.join(media, `${id}${suffix}`);
+  const filePath = (id, suffix = '') => storage.filePath(id, suffix);
   const maximum = Math.min(10 * 1024 ** 3, Math.max(1024 ** 2, Number(config.CONTENT_MAX_VIDEO_BYTES) || 2 * 1024 ** 3));
   const storageMaximum = Number(config.CONTENT_MAX_STORAGE_BYTES || 100 * 1024 ** 3);
   if (!Number.isSafeInteger(storageMaximum) || storageMaximum <= 0) throw new Error('上传存储额度配置无效');
@@ -51,32 +40,20 @@ export function createUploads(store, directory, config = process.env) {
     const disk = fs.statfsSync(media, { bigint: true });
     if (disk.bavail * disk.bsize < BigInt(reserved + requested + 64 * 1024 ** 2)) throw new AccountError(507, '存储空间不足，请释放空间后重试');
   };
-  const sourcePath = asset => {
-    const part = filePath(asset.id, '.part');
-    const source = fs.existsSync(part) ? part : filePath(asset.id);
-    if (!fs.existsSync(source)) throw new Error('上传文件不存在，请重新上传');
-    if (source === part && fs.statSync(source).size !== asset.size) throw new Error('上传文件不完整，请重新上传');
-    return source;
-  };
   const finish = async (asset, metadata) => {
     await files.unlink(filePath(asset.id, '.part')).catch(error => { if (error.code !== 'ENOENT') throw error; });
     if (closing) return;
     const size = (await files.stat(filePath(asset.id))).size;
-    store.db.prepare("UPDATE content_assets SET status='ready',size=?,metadata=?,error=NULL WHERE id=?").run(size, metadata ? JSON.stringify(metadata) : null, asset.id);
+    store.transaction(() => {
+      store.saveAssetLocation(storage.reference(asset, size));
+      store.db.prepare("UPDATE content_assets SET status='ready',size=?,metadata=?,error=NULL WHERE id=?").run(size, metadata ? JSON.stringify(metadata) : null, asset.id);
+    });
   };
   const processVideo = async asset => {
     const controller = new AbortController(); processing.add(controller);
     try {
-      const source = sourcePath(asset);
-      const header = Buffer.alloc(12), handle = await files.open(source, 'r');
-      try { await handle.read(header, 0, 12, 0); } finally { await handle.close(); }
-      if (header.toString('ascii', 4, 8) !== 'ftyp') throw new Error('请上传有效的MP4视频');
-      const { stdout } = await executeMedia(config.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-threads', '1', '-protocol_whitelist', 'file,pipe', '-show_streams', '-show_format', '-of', 'json', source], { timeout: 120000, maxBuffer: 1048576, signal: controller.signal });
-      const info = JSON.parse(stdout), video = info.streams?.find(row => row.codec_type === 'video'), audio = info.streams?.filter(row => row.codec_type === 'audio') || [];
-      if (!video || video.codec_name !== 'h264' || !(video.width>0 && video.height>0) || !['yuv420p','yuvj420p'].includes(video.pix_fmt) || audio.some(row => row.codec_name !== 'aac') || !Number.isFinite(Number(info.format?.duration)) || Number(info.format.duration) <= 0 || video.width > 4096 || video.height > 4096) throw new Error('请上传8位H.264视频及AAC音轨的MP4文件，分辨率不超过4096像素');
-      await executeMedia(config.FFMPEG_PATH || 'ffmpeg', ['-v', 'error', '-nostdin', '-threads', '1', '-protocol_whitelist', 'file,pipe', '-i', source, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', '-y', filePath(asset.id, '.processing')], { timeout: 1800000, maxBuffer: 1048576, signal: controller.signal });
-      await files.rename(filePath(asset.id, '.processing'), filePath(asset.id));
-      await finish(asset, { duration: Number(info.format.duration), width: video.width, height: video.height });
+      const metadata = await processor.video(asset, controller.signal);
+      await finish(asset, metadata);
     } catch (error) {
       if (closing) return;
       const message = error.code === 'ENOENT' ? '视频处理工具不可用，请配置FFmpeg和FFprobe后重新上传' : /^(请上传|上传文件不)/.test(error.message) ? error.message : '视频处理失败，请检查文件后重新上传';
@@ -87,13 +64,7 @@ export function createUploads(store, directory, config = process.env) {
   const processImage = async asset => {
     const controller = new AbortController(); processing.add(controller);
     try {
-      const source = sourcePath(asset), image = await files.readFile(source);
-      const mime = image.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : image[0] === 255 && image[1] === 216 && image[2] === 255 ? 'image/jpeg' : image.toString('ascii', 0, 4) === 'RIFF' && image.toString('ascii', 8, 12) === 'WEBP' ? 'image/webp' : null;
-      if (mime !== asset.mime) throw Error('封面文件格式无效');
-      const {stdout} = await executeMedia(config.FFPROBE_PATH || 'ffprobe', ['-v','error','-threads','1','-protocol_whitelist','file,pipe','-show_entries','stream=codec_name,width,height','-of','json',source], {timeout:15000,maxBuffer:1048576,signal:controller.signal});
-      const info = JSON.parse(stdout).streams?.[0];
-      if (!info || !['png','mjpeg','webp'].includes(info.codec_name) || !(info.width>0 && info.height>0) || info.width>4096 || info.height>4096) throw Error('封面文件格式无效');
-      if (source !== filePath(asset.id)) await files.rename(source, filePath(asset.id));
+      await processor.image(asset, controller.signal);
       await finish(asset);
     } catch (error) {
       if (closing) return;

@@ -1,9 +1,10 @@
-import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { AccountError } from './account-store.mjs';
 import { isAdministrator } from './account-role.mjs';
 import { ContentStore, textValue } from './content-store.mjs';
 import { createUploads } from './content-upload.mjs';
+import { LocalMediaStorage } from './media-storage.mjs';
+import { mp4PlaybackSource, sendMedia } from './media-delivery.mjs';
 import { readJson } from '../shared/http-json.mjs';
 import { ContentAnalytics } from './content-analytics.mjs';
 import { CommentModeration } from './comment-moderation.mjs';
@@ -14,7 +15,7 @@ import {AnalyticsResource} from './analytics-resource.mjs';
 
 const reply = (res, data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(JSON.stringify(data)); };
 export function createContentService(directory, accountStore, accounts, provider, config = process.env) {
-  const store = new ContentStore(directory), uploads = createUploads(store, directory, config);
+  const store = new ContentStore(directory), storage = new LocalMediaStorage(directory, config), uploads = createUploads(store, directory, config, storage);
   const isAdmin = user => isAdministrator(user, config);
   const analytics = new ContentAnalytics(store, accountStore, accounts, isAdmin);
   const analyticsResource=new AnalyticsResource(store,directory,config);
@@ -73,30 +74,7 @@ export function createContentService(directory, accountStore, accounts, provider
   const commentModeration = new CommentModeration(store, detail);
   const contentAudit = new ContentAudit(store,accountStore);
   const streamFile = (req, res, asset, quality, cover = false, publicCover = false, revalidateCover) => {
-    const filename = uploads.filePath(asset.id), stat = fs.statSync(filename);
-    if(!cover&&asset.metadata?.duration>0)req.downloadRate=24*stat.size/asset.metadata.duration;
-    if(cover && publicCover){
-      const etag=`"${asset.id}-${stat.size}-${stat.mtimeMs}"`;
-      res.setHeader('ETag',etag);res.setHeader('Cache-Control','private, max-age=300');
-      // 访问资格已在封面入口校验；缓存命中没有响应正文，不预留或扣减媒体字节。
-      if((req.headers['if-none-match']||'').split(',').some(value=>value.trim()===etag||value.trim()===`W/${etag}`||value.trim()==='*')){res.writeHead(304);return res.end();}
-    }
-    if(cover){
-      req.guardPublicAsset?.();
-      const previous=req.revalidatePlayback;
-      req.revalidatePlayback=force=>{previous?.(force);revalidateCover?.(force);};
-    }
-    let start = 0, end = stat.size - 1, status = 200;
-    if (req.headers.range) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
-      if (!match || !match[1] && !match[2]) { res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); return res.end(); }
-      start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2])); end = match[1] && match[2] ? Math.min(Number(match[2]), end) : end;
-      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start < 0 || start >= stat.size) { res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }); return res.end(); } status = 206;
-    }
-    req.revalidatePlayback?.(true);
-    res.writeHead(status, { 'Content-Type': asset.mime, 'Content-Length': end - start + 1, 'Accept-Ranges': 'bytes', 'Cache-Control': publicCover?'private, max-age=300':'private, no-store', 'X-Content-Type-Options': 'nosniff', ...(quality ? {'X-Video-Quality':quality} : {}), ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${stat.size}` } : {}) });
-    if (req.method === 'HEAD') return res.end();
-    const stream = fs.createReadStream(filename, { start, end }); res.once('close', () => stream.destroy()); stream.once('error', () => res.destroy());if(req.sendDownload)req.sendDownload(stream);else stream.pipe(res);
+    sendMedia(req, res, storage.locate(store, asset), asset, { quality, cover, publicCover, revalidateCover });
   };
   return {
     store, detail, resolveEpisode, analytics,
@@ -127,7 +105,11 @@ export function createContentService(directory, accountStore, accounts, provider
       const requested = new URL(req.url,'http://localhost').searchParams.get('quality');
       if (kind!=='qualities' && requested && requested!=='auto' && requested!==quality) throw new AccountError(400,'当前视频不支持所选画质');
       if (kind === 'qualities') reply(res, { episodeId: resolved.episode.id, defaultQuality: quality, qualities: [{ key: quality, label: quality, qualityNum: Math.min(asset.metadata.width, asset.metadata.height), codec: 'H.264', isDefault: true }] });
-      else if (kind === 'play') reply(res, { path: `/api/episodes/${resolved.episode.id}/stream?seriesId=${resolved.series.id}`, contentType: 'video/mp4' });
+      else if (kind === 'play') {
+        const resource = storage.locate(store, asset);
+        resolved.revalidate(true);
+        reply(res, mp4PlaybackSource(resolved.episode.id, resolved.series.id, quality, resource.location.version));
+      }
       else streamFile(req, res, asset, quality);
       return true;
     },

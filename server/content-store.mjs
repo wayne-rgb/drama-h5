@@ -20,6 +20,7 @@ export class ContentStore {
       CREATE TABLE IF NOT EXISTS content_series(id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL,tags TEXT NOT NULL,content_type TEXT NOT NULL,language TEXT NOT NULL,cover_id TEXT,status TEXT NOT NULL DEFAULT 'draft',updated_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS content_episodes(id TEXT PRIMARY KEY,series_id TEXT NOT NULL,number INTEGER NOT NULL,title TEXT NOT NULL,asset_id TEXT NOT NULL,UNIQUE(series_id,number));
       CREATE TABLE IF NOT EXISTS content_assets(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,name TEXT NOT NULL,kind TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,offset INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'uploading',metadata TEXT,error TEXT,created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS content_asset_locations(asset_id TEXT PRIMARY KEY,storage_id TEXT NOT NULL,object_key TEXT NOT NULL,version TEXT NOT NULL,size INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS episode_likes(episode_id TEXT NOT NULL,account_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(episode_id,account_id));
       CREATE TABLE IF NOT EXISTS liked_episode_content(episode_id TEXT PRIMARY KEY,series_id TEXT NOT NULL,metadata TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS likes_account ON episode_likes(account_id,created_at,episode_id);
@@ -35,6 +36,8 @@ export class ContentStore {
     }
     if (!this.db.prepare('PRAGMA table_info(content_assets)').all().some(column=>column.name==='series_id')) this.db.exec('ALTER TABLE content_assets ADD COLUMN series_id TEXT');
     if (!this.db.prepare('PRAGMA table_info(content_assets)').all().some(column=>column.name==='episode_number')) this.db.exec('ALTER TABLE content_assets ADD COLUMN episode_number INTEGER');
+    // 旧素材登记为本地资源，不移动原文件；重复启动不能覆盖已保存的位置。
+    this.db.exec("INSERT OR IGNORE INTO content_asset_locations SELECT id,'local',id,id,size FROM content_assets WHERE status='ready'");
     initializeAuditContext(this);
   }
   close() { this.db.close(); }
@@ -45,6 +48,15 @@ export class ContentStore {
     captureAuditContext(this,row);
   }
   asset(id) { const row = this.db.prepare('SELECT * FROM content_assets WHERE id=?').get(id); return row ? { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null } : null; }
+  assetLocation(id) {
+    const row = this.db.prepare('SELECT * FROM content_asset_locations WHERE asset_id=?').get(id);
+    return row ? { assetId: row.asset_id, storageId: row.storage_id, objectKey: row.object_key, version: row.version, size: row.size } : null;
+  }
+  saveAssetLocation(location) {
+    const { assetId, storageId, objectKey, version, size } = location;
+    if (![assetId,storageId,objectKey,version].every(value=>typeof value==='string'&&value.length>0&&value.length<=200) || !Number.isSafeInteger(size) || size<=0) throw new AccountError(400,'素材存储信息无效');
+    this.db.prepare('INSERT INTO content_asset_locations VALUES(?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET storage_id=excluded.storage_id,object_key=excluded.object_key,version=excluded.version,size=excluded.size').run(assetId,storageId,objectKey,version,size);
+  }
   row(id) { return this.db.prepare('SELECT * FROM content_series WHERE id=?').get(id) || null; }
   detail(id, preview = false) {
     const row = this.row(id);
